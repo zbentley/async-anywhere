@@ -16,7 +16,8 @@ import warnings
 
 import pytest
 
-from async_anywhere.captive import CaptiveWorker, CleanStop, WorkerStopped
+from async_anywhere.captive import CaptiveWorker
+from async_anywhere.captive._exceptions import CleanStop, WorkerStopped
 from async_anywhere.futures import AwaitableFuture
 
 IDLE = 0.2  # The idle timeout of the workers that expire

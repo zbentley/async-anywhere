@@ -176,85 +176,20 @@ Caveats
   (asyncio.futures._convert_future_exc).
 """
 import asyncio
-import copy
+import concurrent.futures
 import logging
 import os
-from asyncio import CancelledError, current_task, wrap_future
-from collections.abc import Awaitable, Callable, Collection, Coroutine
-from concurrent.futures import CancelledError as FutureCancelledError, Future, InvalidStateError
 from contextlib import suppress
 from contextvars import Context
 from functools import wraps
 from threading import Lock, Thread, current_thread, main_thread
-from typing import Any, ClassVar, Concatenate, Literal, Never, NoReturn, Self
+from typing import Any, ClassVar, Concatenate, Literal, Never, NoReturn, Self, Callable, Coroutine
 from weakref import WeakSet
 
+from async_anywhere.captive._exceptions import WorkerInterrupted
+from async_anywhere.captive._stopped import WorkerStopFuture
 from async_anywhere.futures import AwaitableFuture
 
-
-class WorkerStopped(Exception):
-    def __init__(self, summary: str, cause: BaseException | None = None):
-        super().__init__(summary)
-        self.__cause__ = cause
-
-
-class CleanStop(WorkerStopped): ...
-
-
-class _Interrupted(FutureCancelledError):
-    """What a call's waiters get when an interrupt cancels it (see CaptiveWorker._job()): a subclass, as wrap_future()
-    remakes concurrent.futures.CancelledError itself as asyncio's for those awaiting it, losing its __cause__."""
-
-
-class _StopFuture(AwaitableFuture[Never]):
-    """Why the worker stopped, once it has: a future that only ever fails, with the WorkerStopped it logs as it does. It
-    can be waited on from any thread, or awaited on any loop, but not cancelled. (CaptiveWorker._finished is one too,
-    failed with that WorkerStopped, unlogged, once the worker has finished.) Only the worker's own thread records
-    stops (except in a process forked from the worker's: see CaptiveWorker._after_fork()), and only the first one counts.
-    `calls` are those in flight, for the reasons it gives."""
-
-    def __init__(self, loop: asyncio.AbstractEventLoop, logger: logging.Logger):
-        super().__init__(loop)
-        self._logger = logger
-
-    def cancel(self):
-        return False  # Waiters giving up (as wrap_future() does, once its awaiter is cancelled) mustn't undo it
-
-    def exception(self, timeout: float | None = None) -> WorkerStopped:
-        # A copy, keeping the cause, each time: every raise adds its frames to the exception's traceback, so raising one
-        # instance for every caller, on every thread, would pile theirs up on it. wrap_future() reads it through this too.
-        stop = super().exception(timeout)
-        copied = copy.copy(stop)
-        copied.__cause__ = stop.__cause__
-        return copied
-
-    def result(self, timeout: float | None = None) -> Never:
-        raise self.exception(timeout)
-
-    def clean_stop(self, why: Literal["expired", "stopped", "_run() returned"], calls: Collection) -> bool:
-        match why:
-            case "expired":
-                assert not calls, "Invariant violation: expiry with calls in flight"
-                reason = "(idle) expired"
-            case "stopped":
-                reason = "(waiting for running jobs) manually stopped" if calls else "(idle) manually stopped"
-            case "_run() returned":
-                reason = f"({'interrupted' if calls else 'idle'}) _run() returned"
-        return self._stop(CleanStop(reason))
-
-    def unclean_stop(self, reason: str, calls: Collection, cause: BaseException | None = None) -> bool:
-        return self._stop(WorkerStopped(f"({'interrupted' if calls else 'idle'}) {reason}", cause))
-
-    def _stop(self, stop: WorkerStopped) -> bool:
-        # Whether this was the first stop, so recorded
-        if self.done():
-            return False
-        self.set_exception(stop)
-        if isinstance(stop, CleanStop):
-            self._logger.info(stop.args[0])
-        else:
-            self._logger.error("Stopping due to error:", exc_info=stop)
-        return True
 
 
 
@@ -268,8 +203,8 @@ class CaptiveWorker:
         self._calls: set[asyncio.Task] = set()
         # The loop is created here but run by _main() on the worker's thread: until then, work is just queued on it.
         self._loop = asyncio.new_event_loop()
-        self._stopped = _StopFuture(self._loop, self.logger)
-        self._finished = _StopFuture(self._loop, self.logger)  # Which stop() waits for: see _main()
+        self._stopped = WorkerStopFuture(self._loop, self.logger)
+        self._finished = WorkerStopFuture(self._loop, self.logger)  # Which stop() waits for: see _main()
         self._stopped.add_done_callback(lambda _: self._on_own_thread and self.on_stop_requested())
         self._finished.add_done_callback(lambda _: self._on_own_thread and self.on_shutdown())
 
@@ -393,13 +328,13 @@ class CaptiveWorker:
 
         future.add_done_callback(forward)
 
-    def _fail(self, future: Future, error: BaseException | None = None) -> bool:
+    def _fail(self, future: concurrent.futures.Future, error: BaseException | None = None) -> bool:
         # Whether it took `error` (by default, why the worker stopped): not if it finished after all, or its caller
         # cancelled it, or it has been failed already
         try:
             future.set_exception(error or self._stopped.exception())
             return True
-        except InvalidStateError:
+        except concurrent.futures.InvalidStateError:
             return False
 
     def _dead_or_forked(self) -> bool:
@@ -442,7 +377,7 @@ class CaptiveWorker:
         try:
             try:
                 loop.run_until_complete(self._runner)
-            except (Exception, CancelledError) as ex:
+            except (Exception, asyncio.CancelledError) as ex:
                 # If a stop came first, it has recorded why already, so this does nothing. Otherwise, _run() raised
                 # (CancelledError included) of its own accord.
                 stopping = self._stopped.unclean_stop(f"_run() raised {ex!r}", self._calls, ex)
@@ -491,7 +426,7 @@ class CaptiveWorker:
     async def _job(self, func, args, kwargs, future: AwaitableFuture):
         # Runs a call (see _start()), and settles its future. It raises only crashes, and what the future can't take
         # (cancelled by its caller, say), which asyncio then logs, if it's an error, as for any task.
-        task = current_task(self._loop)
+        task = asyncio.current_task(self._loop)
         try:
             if self._dead_or_forked() or self._stopped.done():
                 raise self._stopped.exception()
@@ -508,15 +443,15 @@ class CaptiveWorker:
                 self._reschedule()  # Which restarts the countdown, once no calls are left in flight
         except BaseException as ex:
             error = ex  # Raised by func itself, if a CancelledError, as its task isn't being cancelled
-            if isinstance(ex, CancelledError) and task.cancelling() and self._interrupted:
+            if isinstance(ex, asyncio.CancelledError) and task.cancelling() and self._interrupted:
                 # Its waiters get where the job was cancelled, raised from (a copy of) why the worker stopped, itself raised
                 # from what caused that, if anything. (Otherwise, its caller cancelled the future.)
-                error = _Interrupted(*ex.args).with_traceback(ex.__traceback__)
+                error = WorkerInterrupted(*ex.args).with_traceback(ex.__traceback__)
                 error.__cause__ = self._stopped.exception()
-            if not self._fail(future, error) or not isinstance(ex, Exception | CancelledError):
+            if not self._fail(future, error) or not isinstance(ex, Exception | asyncio.CancelledError):
                 raise
         else:
-            with suppress(InvalidStateError):  # Its caller cancelled it
+            with suppress(concurrent.futures.InvalidStateError):  # Its caller cancelled it
                 future.set_result(result)
 
 
