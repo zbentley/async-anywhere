@@ -8,6 +8,8 @@ from sys import exc_info
 from threading import RLock, Lock
 from typing import Awaitable, AsyncGenerator, Self, Callable
 
+from async_anywhere.futures import AwaitableFuture
+
 
 def running_loop() -> AbstractEventLoop | None:
     try:
@@ -81,55 +83,6 @@ async def gather_stream[T](*coros: Awaitable[T]) -> AsyncGenerator[T]:
     for result in await gather(*coros):
         for item in result:
             yield item
-
-class AwaitableFuture[T](ConcurrentFuture[T], Awaitable[T]):
-    """concurrent.Future implementation that can be awaited on from async code, but without the unfortunate
-    cancellation behavior Python enforces with the typical wrapping method 'wrap_future'. If this future is cancelled
-    from an async waiter, its underlying concurrent.Future state is not cancelled."""
-
-    def set_exception(self, exception) -> Self:
-        assert isinstance(exception, BaseException)
-        super().set_exception(exception)
-        return self
-
-    def set_result(self, result) -> Self:
-        super().set_result(result)
-        return self
-
-    def as_async_future(self):
-        # TODO can we make this API-compatible enough with asyncio.Future that we can set _asyncio_future_blocking
-        #   on the class and let it work with ensure_future?
-        loop = get_running_loop()
-        mirror = loop.create_future()
-
-        def copy_state(source: ConcurrentFuture):
-            if mirror.cancelled():
-                return
-            if source.cancelled():
-                mirror.cancel()
-            elif (exc := source.exception()) is not None:
-                mirror.set_exception(exc)
-            else:
-                mirror.set_result(source.result())
-
-        def on_done(source: ConcurrentFuture):
-            with suppress(RuntimeError):  # The mirror's loop has closed
-                loop.call_soon_threadsafe(copy_state, source)
-
-        def forget(_):
-            # Drop on_done once the mirror is abandoned. Only safe while pending: once done, _invoke_callbacks() may be
-            # iterating the list without holding the lock.
-            with self._condition:
-                if not self.done():
-                    self._done_callbacks.remove(on_done)
-
-        self.add_done_callback(on_done)
-        mirror.add_done_callback(forget)
-        return mirror
-
-    def __await__(self):
-        return self.as_async_future().__await__()
-
 
 def raise_errors(*args: Exception):
     if len(args) == 0:

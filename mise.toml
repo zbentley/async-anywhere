@@ -1,0 +1,30 @@
+[settings]
+experimental = true
+python.uv_venv_auto = "source"
+
+[tools]
+python = "3.14"
+uv = "latest"
+
+[deps.uv]
+auto = true
+
+[tasks]
+'check.deptry' = "deptry ."
+'check.safety' = "safety check --ignore 67599 --full-report --file=uv.lock"
+'check.pyright' = "pyright ."
+'check.test' = 'pytest'
+'docs.clean' = "rm -rf docs/_build"
+
+[tasks.'docs.build']
+depends = ["docs.clean"]
+run = "sphinx-build docs docs/_build --color"
+
+# TODO needed still?
+[tasks.'docs.apidoc']
+depends = ["docs.clean"]
+run = "sphinx-apidoc -o docs/reference --remove-old --tocfile index --no-headings -e -M src/async_anywhere"
+
+[tasks.docs]
+depends = ["docs.build"]
+run = "open docs/_build/index.html"

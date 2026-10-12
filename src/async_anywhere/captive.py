@@ -189,6 +189,8 @@ from threading import Lock, Thread, current_thread, main_thread
 from typing import Any, ClassVar, Concatenate, Literal, Never, NoReturn, Self
 from weakref import WeakSet
 
+from async_anywhere.futures import AwaitableFuture
+
 
 class WorkerStopped(Exception):
     def __init__(self, summary: str, cause: BaseException | None = None):
@@ -202,35 +204,6 @@ class CleanStop(WorkerStopped): ...
 class _Interrupted(FutureCancelledError):
     """What a call's waiters get when an interrupt cancels it (see CaptiveWorker._job()): a subclass, as wrap_future()
     remakes concurrent.futures.CancelledError itself as asyncio's for those awaiting it, losing its __cause__."""
-
-
-class AwaitableFuture[T](Future[T], Awaitable[T]):
-    """A concurrent.futures.Future that can also be awaited, on any loop, as asyncio.wrap_future() would (so cancelling
-    the awaiting task cancels it). Waiting on it unfinished with result() or exception() on `loop`, which would block
-    forever if that's the loop that finishes it, raises RuntimeError."""
-
-    def __init__(self, loop: asyncio.AbstractEventLoop):
-        super().__init__()
-        self._loop = loop
-
-    def __await__(self):
-        if self.done():  # Needing no loop: in a process forked from inside a task, asyncio has none running
-            if self.cancelled():
-                raise CancelledError  # Asyncio's, as wrap_future() would give: result() raises concurrent.futures'
-            return self.result()
-        return (yield from wrap_future(self).__await__())
-
-    def result(self, timeout: float | None = None) -> T:
-        self._check_blocking()
-        return super().result(timeout)
-
-    def exception(self, timeout: float | None = None) -> BaseException | None:
-        self._check_blocking()
-        return super().exception(timeout)
-
-    def _check_blocking(self):
-        if not self.done() and asyncio._get_running_loop() is self._loop:
-            raise RuntimeError(f"Waiting for {self!r} on its own loop would block forever: await it instead")
 
 
 class _StopFuture(AwaitableFuture[Never]):
