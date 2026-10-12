@@ -9,8 +9,7 @@ Subclass CaptiveWorker. Connect, and run the client, in _run(). Expose its opera
 worker's own, bridged in its __init__() as `self.fetch = self.bridge(self._fetch)`, gets it twice, as (self, worker, ...).
 Set idle_timeout to stop a worker that has gone that many seconds without calls. Override on_stop_requested() and
 on_shutdown() to act as the worker stops, and once it has finished: each is called once, on the worker's thread, and must
-never block. Subclass CachedCaptiveWorker instead, and get workers with `await Subclass.get(*args, **kwargs)`, to keep one
-per class and arguments, replaced once it has stopped.
+never block.
 
 Lifecycle
 ---------
@@ -79,9 +78,7 @@ up on one shared exception.
 
 Once _run() and every call have finished, the loop cancels any tasks left on it (work that _run() or calls spawned and
 didn't wait for), gives them 0.05s, shuts down async generators and the default executor (abandoning, with a RuntimeWarning,
-threads that haven't finished by then), and closes. Only then do stop()'s waiters wake, and on_shutdown() run: a
-CachedCaptiveWorker's leaves get()'s cache. get() replaces a worker only once it has finished, so never has two workers,
-and two connections, for the same arguments.
+threads that haven't finished by then), and closes. Only then do stop()'s waiters wake, and on_shutdown() run.
 
 Invariants
 ----------
@@ -103,8 +100,9 @@ loop there would run the client on that loop.
 
 Calling a bridged function, compared with awaiting a coroutine
 --------------------------------------------------------------
-Calling a bridged function is like create_task() with an eager task factory: the work may start right away, and runs in
-the background, whatever the caller's await points (calls made together run concurrently).
+Calling a bridged function is like create_task() with an eager task factory: the job starts as soon as the worker's loop
+takes the call, ahead of anything queued after it, and runs in the background, whatever the caller's await points (calls
+made together run concurrently).
 
 From any thread, it returns an AwaitableFuture: a concurrent.futures.Future, which can also be awaited on any loop.
 - It can be waited on repeatedly, and from several threads at once. One nobody waits on runs all the same, but what it
@@ -136,9 +134,10 @@ From any thread, it returns an AwaitableFuture: a concurrent.futures.Future, whi
 
 Calls made on the worker's own thread are no different.
 
-stop(interrupt=False, wait=True) isn't bridged. It begins the stop as it's called, and returns an AwaitableFuture that
-raises why the worker stopped: once the worker has finished, or with wait=False, once the stop has begun. On the worker's
-own thread, wait=True is an error, as it would wait for itself, and interrupt=True cancels the calling task as it does any
+stop(interrupt=False, wait=True) isn't bridged. It queues the stop on the worker's loop, behind calls already made (which
+a drain lets finish), from any thread, the worker's own included. It returns an AwaitableFuture that raises why the
+worker stopped: once the worker has finished, or with wait=False, once the stop has begun. On the worker's own thread,
+wait=True raises RuntimeError, as it would wait for itself, and interrupt=True cancels the calling task as it does any
 other.
 
 Caveats
@@ -148,26 +147,23 @@ Caveats
   pending!"), so _run() should wait for whatever it spawns.
 - Synchronous code blocking the worker's loop delays everything on it: calls start, and cancellations land, once it yields.
 - KeyboardInterrupt or SystemExit from _run() or a call crash the loop, as asyncio lets them escape any task. The crash is
-  recorded as the stop (and logged, if it's the first), and re-raised on the worker's thread, and by the call that raised
-  it, in its caller. Other calls in flight are interrupted, with only the teardown's 0.05s to clean up.
+  recorded as the stop (and logged, if it's the first), and re-raised on the worker's thread, and, as a copy, by the call
+  that raised it, in its caller. Other calls in flight are interrupted, with only the teardown's 0.05s to clean up.
 - CaptiveWorker.__init__ starts the thread, so _run() may begin before a subclass's __init__ has finished: set what it needs
   before calling super().__init__(). Make the client in _run(), not __init__(), which runs on the constructing thread,
   perhaps in a caller's loop, which a client made there would be bound to.
 - Once the worker has stopped, bridged functions are refused even to _run(): its cleanup must use the client directly. And
   a drain waits for calls that _run()'s own tasks have in flight, as for any other.
 - anyio's task groups cut their children's cleanup short as they're cancelled, unless it's shielded: as ever with anyio.
-- A worker that CachedCaptiveWorker.get() returns may stop before it's called, by expiry for one: callers that should
-  carry on can retry on CleanStop, with a fresh get(). get() keys workers by its arguments as given, so get("x") and get(key="x") make two.
-- get() can't replace a stopped worker from that worker's own thread, as waiting for it to finish would wait for itself.
+- A worker may stop just as a call is made, by expiry for one: callers that should carry on can retry on CleanStop, with
+  a fresh worker.
 - Workers run on daemon threads: one not shut down before the interpreter exits stops without cleaning up (_run()'s
   cleanup never runs). Shut workers down with atexit if that matters.
 - A process forked with workers alive inherits copies of them, but not their threads: in the child, each is stopped (a
   WorkerStopped, logged there), with its calls in flight failed, and calls refused. That goes for a call that forked too,
   whose child runs on in a copy of the worker's loop (one asyncio no longer counts as running): the worker carries on only
   in the parent. This relies on Python's handling of the fork, which native code calling fork() bypasses unless it calls
-  PyOS_AfterFork_Child(), as CPython requires anyway, for the child to run Python. get() hangs in the child,
-  though, if its cache has run anything in the parent: it constructs workers through asgiref's sync_to_async(), whose
-  executor's thread doesn't survive the fork either.
+  PyOS_AfterFork_Child(), as CPython requires anyway, for the child to run Python.
 - If you perform blocking waits on this worker when completed or interrupted code inside the worker is garbage collected
   or during handling of its exception classes, you may break this class's invariant (this is generally also true for all
   other asyncio code in Python).
@@ -183,14 +179,12 @@ from contextlib import suppress
 from contextvars import Context
 from functools import wraps
 from threading import Lock, Thread, current_thread, main_thread
-from typing import Any, ClassVar, Concatenate, Literal, Never, NoReturn, Self, Callable, Coroutine
+from typing import Any, ClassVar, Concatenate, NoReturn, Self, Callable, Coroutine
 from weakref import WeakSet
 
-from async_anywhere.captive._exceptions import WorkerInterrupted
+from async_anywhere.captive._exceptions import WorkerInterrupted, copied
 from async_anywhere.captive._stopped import WorkerStopFuture
 from async_anywhere.futures import AwaitableFuture
-
-
 
 
 class CaptiveWorker:
@@ -299,14 +293,11 @@ class CaptiveWorker:
                 self._stopped.clean_stop("stopped", self._calls)
             if interrupt or not self._calls:
                 self._interrupt(interrupt)  # Otherwise the last call to end does: see _job()
-
-        if self.in_worker:
-            assert not wait, "stop(wait=True) on the worker's own thread would wait for itself"
-            begin()  # Interrupting cancels the calling task as it does any other: see _interrupt()
-            return self._stopped
+        if wait and self.in_worker:
+            raise RuntimeError("stop(wait=True) on the worker's own thread would wait for itself")
         if not self._dead_or_forked():  # Which fails both futures, in a forked process _after_fork() has somehow missed
             with suppress(RuntimeError):  # The loop has closed, so the worker has already stopped
-                self._loop.call_soon_threadsafe(begin)
+                self._loop.call_soon_threadsafe(begin)  # Queued even on the worker's thread, behind calls made before it
         return self._finished if wait else self._stopped
 
     def _start(self, future: AwaitableFuture, func, args, kwargs):
@@ -316,7 +307,7 @@ class CaptiveWorker:
             return
         job = self._job(func, args, kwargs, future)
         job.__qualname__ += f"[{func.__qualname__}]"  # Only shown, in reprs, so needn't make an identifier
-        task = self._loop.create_task(job)
+        task = self._loop.create_task(job, eager_start=True)  # So it's in flight before anything queued after it
 
         def cancel():
             # Not once the worker has interrupted it: an interrupt also cancelling what awaits it (_run()'s TaskGroup
@@ -449,8 +440,9 @@ class CaptiveWorker:
             if isinstance(ex, asyncio.CancelledError) and task.cancelling() and self._interrupted:
                 # Its waiters get where the job was cancelled, raised from (a copy of) why the worker stopped, itself raised
                 # from what caused that, if anything. (Otherwise, its caller cancelled the future.)
-                error = WorkerInterrupted(*ex.args).with_traceback(ex.__traceback__)
-                error.__cause__ = self._stopped.exception()
+                error = WorkerInterrupted.from_cancellation(ex, self._stopped.exception())
+            elif type(ex) in (KeyboardInterrupt, SystemExit):
+                error = copied(ex)  # This thread raises the original too, crashing the loop
             if not self._fail(future, error) or not isinstance(ex, Exception | asyncio.CancelledError):
                 raise
         else:

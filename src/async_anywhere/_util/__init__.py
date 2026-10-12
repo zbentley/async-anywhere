@@ -1,15 +1,15 @@
 from asyncio import Future, AbstractEventLoop, run_coroutine_threadsafe
 from asyncio import wrap_future, wait, FIRST_COMPLETED, ensure_future, get_running_loop, gather as asyncio_gather
 from concurrent.futures import Future as ConcurrentFuture
-from contextlib import AbstractContextManager, suppress
+from contextlib import AbstractContextManager
 from functools import partial
 from inspect import iscoroutinefunction
 from sys import exc_info
 from threading import RLock, Lock
-from typing import Awaitable, AsyncGenerator, Self, Callable
+from typing import Awaitable, AsyncGenerator, Callable, TYPE_CHECKING
 
-from async_anywhere.futures import AwaitableFuture
-
+if TYPE_CHECKING:  # async_anywhere.futures imports this module
+    from async_anywhere.futures import AwaitableFuture
 
 def running_loop() -> AbstractEventLoop | None:
     try:
@@ -110,6 +110,8 @@ async def race(*args: AwaitableFuture | ConcurrentFuture | Awaitable, timeout: f
     - Waits for all finished futures (raising exceptions encountered) in the order they were supplied.
     - Returns an iterable of the results of the finished futures in the order they were supplied.
     """
+    from async_anywhere.futures import AwaitableFuture
+
     if len(args) == 0:
         return ()
 

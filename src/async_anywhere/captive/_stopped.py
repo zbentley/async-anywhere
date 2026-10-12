@@ -1,9 +1,8 @@
 from asyncio import AbstractEventLoop
-from copy import copy
 from logging import Logger
 from typing import Never, Collection, Literal
 
-from async_anywhere.captive._exceptions import WorkerStopped, CleanStop
+from async_anywhere.captive._exceptions import WorkerStopped, CleanStop, copied
 from async_anywhere.futures import AwaitableFuture
 
 
@@ -24,10 +23,7 @@ class WorkerStopFuture(AwaitableFuture[Never]):
     def exception(self, timeout: float | None = None) -> WorkerStopped:
         # A copy, keeping the cause, each time: every raise adds its frames to the exception's traceback, so raising one
         # instance for every caller, on every thread, would pile theirs up on it. wrap_future() reads it through this too.
-        stop = super().exception(timeout)
-        copied = copy(stop)
-        copied.__cause__ = stop.__cause__
-        return copied
+        return copied(super().exception(timeout))
 
     def result(self, timeout: float | None = None) -> Never:
         raise self.exception(timeout)

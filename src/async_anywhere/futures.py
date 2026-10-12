@@ -38,9 +38,15 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     #     self._async_future_cache = LockProtected(dict())
     #
     # def as_async_future(self, loop: asyncio.AbstractEventLoop | None = None, require_running_loop=True) -> asyncio.Future[T]:
-    #     """Returns an asyncio.Future that is linkeds to this AwaitableFuture.
+    #     """
+    #     Returns an asyncio.Future that is linked to this AwaitableFuture on the specified event loop.
     #
-    #     If require_active_loop is True, "loop" must be a non-closed, running event loop.
+    #     Note that the returned future may not be new/unique; use wrap_future on the result of this method if a unique
+    #     future is required.
+    #
+    #     :param loop: the event loop to which the returned future should be bound, or the current event loop if None.
+    #     :param require_running_loop: if True, a RuntimeError will be raised if the event loop to be used is not running or is closed.
+    #     :return: an asyncio.Future linked to the invocant.
     #     """
     #
     #     if loop is None:
