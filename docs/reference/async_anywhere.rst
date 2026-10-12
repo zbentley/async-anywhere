@@ -1,23 +1,5 @@
-async\_anywhere package
-=======================
+``async_anywhere``
+==================
 
 .. automodule:: async_anywhere
    :members:
-   :show-inheritance:
-   :undoc-members:
-
-Subpackages
------------
-
-.. toctree::
-   :maxdepth: 4
-
-   async_anywhere.captive
-
-Submodules
-----------
-
-.. toctree::
-   :maxdepth: 4
-
-   async_anywhere.futures

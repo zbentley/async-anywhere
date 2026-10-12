@@ -1,7 +1,5 @@
-async\_anywhere.captive package
-===============================
+``async_anywhere.captive``
+==========================
 
 .. automodule:: async_anywhere.captive
    :members:
-   :show-inheritance:
-   :undoc-members:
