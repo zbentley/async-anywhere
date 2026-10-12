@@ -1,0 +1,147 @@
+[build-system]
+build-backend = "flit_core.buildapi"
+requires = ["flit_core >=4,<5"]
+
+[project]
+authors = [
+  {name = "Zac Bentley", email = "zbentley@users.noreply.github.com"},
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3",
+  "Topic :: Async Concurrency Management",
+]
+dependencies = [
+    "attrs>=26.1.0",
+]
+description = "async_anywhere"
+dynamic = ["version"]
+license = {file = "LICENSE"}
+name = "async_anywhere"
+readme = "README.md"
+requires-python = ">=3.14"
+
+[dependency-groups]
+dev = [
+  "coverage[toml]>=7.5.4,<8",
+  "deptry>=0.19.1",
+  "furo>=2021.11.12",
+  "ipython>=8",
+  "myst-parser>=0.16.1",
+  "packaging>=24,<25",
+  "pip>=24.2,<25",
+  "Pygments>=2.10.0",
+  "pyright>=1.1.376",
+  "pytest-clarity>=1.0.1,<2",
+  "pytest-cov>=5,<6",
+  "ruff>=0.5.7",
+  "sphinx-click>=3.0.2",
+  "sphinx>=4.3.2",
+  "typeguard>=2.13.3",
+  "xdoctest[colors]>=1.1.6",
+  'safety>=3.0',
+  "ipython>=9.13.0",
+"pytest>=9.0.3",
+"pytest-asyncio>=1.4.0",
+"pytest-icdiff>=0.9",
+  'pytest-doctestplus',
+]
+
+[project.urls]
+Changelog = "https://github.com/zbentley/async-anywhere/releases"
+Documentation = "https://async-anywhere.readthedocs.io"
+Homepage = "https://github.com/zbentley/async-anywhere"
+Issues = "https://github.com/zbentley/async-anywhere/issues"
+Repository = "https://github.com/zbentley/async-anywhere"
+Source = "https://github.com/zbentley/async-anywhere"
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+
+[tool.deptry]
+experimental_namespace_package = true
+pep621_dev_dependency_groups = ["dev"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = [
+    "-vvx",
+  "--strict-markers",
+  "--full-trace",
+]
+python_files = "tests/**.py"
+pythonpath = ["src", "."]
+
+[tool.black]
+line-length = 120
+target-version = ["py314"]
+
+
+[tool.ruff]
+line-length = 120
+format.docstring-code-format = true
+format.skip-magic-trailing-comma = false
+
+[tool.ruff.lint]
+extend-select = [
+  "B",
+  "B9",
+  "C",
+  "D",
+  "PL",
+  "E",
+  "F",
+  "N",
+  "I",
+  "S",
+  "W",
+  "N",
+  "UP",
+  "ASYNC",
+  "S",
+  "B",
+  "A",
+  "C4",
+  "EXE",
+  "ISC",
+  "RUF",
+]
+ignore = [
+  "E203",
+  "E501",
+  "ISC001",
+  "D100",
+  "D101",
+  "D102",
+  "D103",
+  "D104",
+  "D105",
+  "D106",
+  "D107",
+  "D211",
+  # "RST201","RST203","RST301",
+  # "W503",
+  "D213",
+  "S101",
+  "S606",
+  "PLR2004",
+  "UP006",  # Compat with older Pythons
+  "UP032", # Compat with older Pythons
+  "S311",  # Yells about all uses of random
+  "C408", # I like dict() literals, bite me
+  "PLW2901", # For-loop variable rebinding: I think the potential efficiency cost outweighs the bug risk.
+  "E731", # Sometimes assigning a lambda is the clearest way to express something.
+  "PLR0913", # Long signatures are fine
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+lines-after-imports = 2
+required-imports = ["from __future__ import annotations"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
