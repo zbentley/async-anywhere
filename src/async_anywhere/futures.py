@@ -2,6 +2,30 @@ import asyncio
 import concurrent.futures
 from typing import Awaitable
 
+# from async_anywhere._util import LockProtected
+
+
+# def chain_futures(
+#     source,
+#     dest,
+#     on_source_success=None,
+#     on_source_exception=None,
+#     on_source_cancelled=None,
+#     on_dest_success=None,
+#     on_dest_exception=None,
+#     on_dest_cancelled=None,
+# ):
+#     """
+#     Added callbacks are idempotent to the best of their ability, but it's still not recommended to call this function on
+#     a source or destination that have already been wrapped with chain_futures or asyncio.wrap_future, as the resulting
+#     behavior is confusing and likely not intended.
+#
+#     :param source:
+#     :param dest:
+#     :return:
+#     """
+
+
 
 class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     """A concurrent.futures.Future that can also be awaited, on any loop, as asyncio.wrap_future() would (so cancelling
@@ -11,18 +35,22 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     def __init__(self, loop: asyncio.AbstractEventLoop):
         super().__init__()
         self._loop = loop
-
-    def as_async_future(self, loop: asyncio.AbstractEventLoop | None = None, require_open_loop=True) -> asyncio.Future[T]:
-        """Returns an asyncio.Future that is linkeds to this AwaitableFuture.
-
-        If require_active_loop is True, "loop" must be a non-closed, running event loop.
-        """
-
-        if loop is None:
-            loop = asyncio.get_running_loop() if require_open_loop else asyncio.get_event_loop()
-        elif require_active_loop: # TODO TODO TODO
-            loop.is_closed() # TODO
-        return asyncio.wrap_future(self, loop=loop)
+    #     self._async_future_cache = LockProtected(dict())
+    #
+    # def as_async_future(self, loop: asyncio.AbstractEventLoop | None = None, require_running_loop=True) -> asyncio.Future[T]:
+    #     """Returns an asyncio.Future that is linkeds to this AwaitableFuture.
+    #
+    #     If require_active_loop is True, "loop" must be a non-closed, running event loop.
+    #     """
+    #
+    #     if loop is None:
+    #         loop = asyncio.get_running_loop() if require_running_loop else asyncio.get_event_loop()
+    #     elif require_running_loop and loop.is_closed():
+    #         raise RuntimeError('Event loop is closed')
+    #     with self._async_future_cache as cache:
+    #         if not (cached := cache.get(loop)):
+    #             cached = cache[loop] = asyncio.wrap_future(self, loop=loop)
+    #         return cached
 
     def __await__(self):
         if self.done():  # Needing no loop: in a process forked from inside a task, asyncio has none running
