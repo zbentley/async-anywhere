@@ -18,3 +18,9 @@ async_anywhere general:
 - Dual-future that can be awaited on anywhere, with as_async_future.
 - Async state machine
 - Volunteer cache (probably sans-asgiref threading)
+
+now:
+attrify
+future caching
+fast tests
+torture tests

@@ -1,5 +1,7 @@
-``async_anywhere.captive`` - Captive Async Event Loop
-=====================================================
+async\_anywhere.captive package
+===============================
 
 .. automodule:: async_anywhere.captive
    :members:
+   :show-inheritance:
+   :undoc-members:

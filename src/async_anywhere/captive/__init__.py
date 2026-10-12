@@ -225,7 +225,10 @@ class CaptiveWorker:
     def bridge[**P, T](
         self, func: Callable[Concatenate[Self, P], Coroutine[Any, Any, T]]
     ) -> Callable[P, AwaitableFuture[T]]:
-        """`func`, bridged to the worker (see the module's docstring), which it's called with as its first argument."""
+        """`func`, bridged to the worker (see the module's docstring), which it's called with as its first argument.
+
+        Note: do not assume that the returned future is unique/newly constructed, depending on worker state it may not be.
+        """
 
         @wraps(func)
         def call(*args: P.args, **kwargs: P.kwargs) -> AwaitableFuture[T]:

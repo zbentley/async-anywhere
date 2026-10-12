@@ -20,11 +20,6 @@ auto = true
 depends = ["docs.clean"]
 run = "sphinx-build docs docs/_build --color"
 
-# TODO needed still?
-[tasks.'docs.apidoc']
-depends = ["docs.clean"]
-run = "sphinx-apidoc -o docs/reference --remove-old --tocfile index --no-headings -e -M src/async_anywhere"
-
 [tasks.docs]
 depends = ["docs.build"]
 run = "open docs/_build/index.html"

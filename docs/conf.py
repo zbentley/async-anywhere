@@ -7,12 +7,24 @@ project = "async-anywhere"
 author = "Zac Bentley"
 copyright = "2026, Zac Bentley"  # noqa: A001
 extensions = [
+    "sphinx.ext.apidoc",
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     'sphinx.ext.intersphinx',
     "sphinx_click",
     "myst_parser",
     "pytest_doctestplus.sphinx.doctestplus",
+]
+# Emulates: sphinx-apidoc -o docs/reference --remove-old --no-headings -e -M src/async_anywhere
+# (--remove-old is always on in the extension; --tocfile cannot be set, so the TOC is reference/modules.rst, not index.rst.)
+apidoc_modules = [
+    {
+        "path": "../src/async_anywhere",
+        "destination": "reference",
+        "no_headings": True,
+        "separate_modules": True,
+        "module_first": True,
+    },
 ]
 autodoc_typehints = "both"
 intersphinx_mapping = {'python': ('https://docs.python.org/3', None)}

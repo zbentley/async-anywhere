@@ -10,6 +10,6 @@ hidden:
 maxdepth: 1
 ---
 
-reference/index
+reference/modules
 License <license>
 ```
