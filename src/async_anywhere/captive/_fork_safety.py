@@ -39,12 +39,17 @@ if hasattr(os, "register_at_fork"):
         - The worker is marked as shut down.
         """
         for worker in workers:
-            # Its lock may be held, by a thread that isn't in this one, which an RLock won't let this one release
+            try:
+                worker._submitting.release()
+            except RuntimeError:
+                pass
+            # Its lock (an RLock, which this thread can't release for another) may be held by a thread that isn't in
+            # this process. Breaks if concurrent.futures.Future ever stops reading self._condition afresh on each use.
             worker._stopped._condition = threading.Condition()
+
             worker._stopped.unclean_stop(f"forked into process {os.getpid()}", worker._calls)  # Unless it had stopped
             if worker._fail(worker._finished, WorkerForked()):  # Unless it had finished before the fork
                 worker._finalize()  # Failing calls in flight with WorkerForked, as _finished now has
-                worker._pending.clear()
         workers.clear()  # None of them can be used here, nor in what forks from here, which needn't revisit them
 
     os.register_at_fork(after_in_child=_after_fork_in_child)

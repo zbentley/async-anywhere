@@ -21,13 +21,6 @@ class WorkerStopFuture(AwaitableFuture[WorkerStopped]):
         self._logger = worker.logger
         self.interrupted = False  # Whether the worker has cancelled its parent task, calls, or what they left running
 
-    # A lock too, its condition's (an RLock): on the class, as with statements don't look on instances
-    def __enter__(self):
-        return self._condition.__enter__()
-
-    def __exit__(self, *exc_info):
-        return self._condition.__exit__(*exc_info)
-
     def cancel(self):
         return False  # Waiters giving up (as wrap_future() does, once its awaiter is cancelled) mustn't undo it
 

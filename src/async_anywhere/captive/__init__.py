@@ -13,7 +13,10 @@ it has started, so a closure might not hold the worker yet: hence the argument. 
 close over the worker, if it needs it. Pass idle_timeout to stop a worker that has gone that many seconds without calls,
 and on_stopped and on_shutdown to act as the worker stops, and once it has finished: each is called once, with the
 worker, on its thread, and must never block (by default, they do nothing). Pass loop_factory to make the worker's event
-loop other than with asyncio.new_event_loop(), as for asyncio.Runner.
+loop other than with asyncio.new_event_loop(), as for asyncio.Runner. It MUST return a brand-new event loop, not yet
+started, whose state isn't bound to the thread that calls it: the worker calls it on the thread constructing the worker,
+but runs the loop on the worker's own. Loops that bind themselves to the thread making them as they're made (installing
+signal handlers, say) aren't supported.
 
 Lifecycle
 ---------
@@ -180,7 +183,7 @@ import logging
 from contextlib import suppress
 from contextvars import Context
 from functools import cached_property, wraps
-from threading import Thread, current_thread, main_thread
+from threading import Thread, current_thread, main_thread, Lock
 from typing import Any, Callable, Coroutine, final
 from weakref import WeakSet
 
@@ -190,17 +193,15 @@ from async_anywhere._util import validate_coroutine_function
 from async_anywhere.captive import _fork_safety
 from async_anywhere.captive._exceptions import WorkerInterrupted, WorkerStopped, copied
 from async_anywhere.captive._stopped import WorkerStopFuture
-from async_anywhere.captive._timer import _Timer
+from async_anywhere.captive._timer import Timer
 from async_anywhere.futures import AwaitableFuture
 
 
 async def _until_cancelled(_):
-    await asyncio.Future()  # The default parent task
-
-
+    await asyncio.Future()
 
 def _timer_factory(worker: CaptiveWorker):
-    return _Timer(
+    return Timer(
         loop=worker._loop,
         callback=lambda: worker._stopped.clean_stop("expired", worker._calls) and worker._interrupt(True),
     )
@@ -234,16 +235,18 @@ class CaptiveWorker:
         init=False,
         factory=lambda: logging.getLogger(CaptiveWorker.__qualname__),
     )
+
     # Bridged calls in flight: their jobs' tasks. They hold off idle expiry, and drains wait for them; see _interrupt().
     _calls: set[asyncio.Task] = field(init=False, factory=set)
     _stopped: WorkerStopFuture = field(init=False, default=Factory(WorkerStopFuture, takes_self=True))
     _finished: WorkerStopFuture = field(init=False, default=Factory(WorkerStopFuture, takes_self=True))  # For stop()
     # The parent task's task, once it has started, which the constructor waits for: see _main()
-    _runner: concurrent.futures.Future[asyncio.Task] = field(init=False, factory=concurrent.futures.Future)
+    _runner: AwaitableFuture[asyncio.Task] = field(init=False, factory=AwaitableFuture)
     # Calls' futures, which _finalize() fails if the worker won't finish them (if the loop drops them unrun as it closes,
     # say). Weak, as a call that's done, and dropped by its caller, needs nothing more.
     _pending: WeakSet[AwaitableFuture] = field(init=False, factory=WeakSet)
-    _expiry: _Timer = field(init=False, default=Factory(_timer_factory, takes_self=True))
+    _expiry: Timer = field(init=False, default=Factory(_timer_factory, takes_self=True))
+    _submitting: Lock = field(init=False, factory=Lock)
     _thread: Thread = field(
         init=False,
         default=Factory(lambda self: Thread(target=self._main, name=self.logger.name, daemon=True), takes_self=True),
@@ -260,9 +263,9 @@ class CaptiveWorker:
 
     def __attrs_post_init__(self):
         # Whatever fails _finished fails _stopped too, if it's pending: in case anything ever fails just the one
-        self._finished.add_done_callback(lambda done: (why := done.failure()) and self._fail(self._stopped, why))
-        self._stopped.add_done_callback(lambda _: self.in_worker and self.on_stopped(self))
-        self._finished.add_done_callback(lambda _: self.in_worker and self.on_shutdown(self))
+        self._finished.add_done_callback(lambda done: (why := done.exception_or_none()) and self._fail(self._stopped, why))
+        self._stopped.add_done_callback(lambda _: self.in_worker() and self.on_stopped(self))
+        self._finished.add_done_callback(lambda _: self.in_worker() and self.on_shutdown(self))
         _fork_safety.workers.add(self)  # Before the thread starts, so the fork handler knows of every worker running
         self._thread.start()
         self._runner.result()  # So that, once constructed, the worker is running
@@ -272,35 +275,39 @@ class CaptiveWorker:
 
         Note: do not assume that the returned future is unique/newly constructed, depending on worker state it may not be.
         """
-        if broken := self._finished.failure():  # Best-effort: it's calling bridged functions that's always checked
-            raise broken
+        self._finished.raise_if_failed()  # Best-effort: it's calling bridged functions that's always checked
 
         @wraps(func)
         def call(*args: P.args, **kwargs: P.kwargs) -> AwaitableFuture[T]:
             # A call's future, with its job queued for _start(). Refused (failed with why it stopped) once the worker has stopped:
             # _job() would refuse it too, but without waiting for the loop is better. And so _finalize(), failing what's
             # pending once the worker has stopped, after taking _stopped's lock, can't miss anything.
-            if broken := self._finished.failure():
-                raise broken
-            in_loop = self.in_worker
-            with self._stopped:  # As a lock, so _main() can't miss a submission as it fails what's pending
+            in_loop = self.in_worker()
+            loop = self._loop
+            with self._submitting:
                 if self._stopped.done():
-                    self._fail(refused := AwaitableFuture(prevent_blocking_wait_in_loops=(self._loop,)))
+                    self._finished.raise_if_failed()  # Only here, as _stopped is always done once _finished has failed
+                    refused = AwaitableFuture(prevent_blocking_wait_in_loops=(loop,))
+                    self._fail(refused)
                     return refused
-                future = AwaitableFuture(prevent_blocking_wait_in_loops=(self._loop,))
+                future = AwaitableFuture(prevent_blocking_wait_in_loops=(loop,))
                 self._pending.add(future)
                 # Only queues a callback, so never waits for the worker's loop. It runs in a copy of the caller's context.
-                queue = self._loop.call_soon if in_loop else self._loop.call_soon_threadsafe
-                queue(self._start, future, func, args, kwargs)
+                if in_loop:
+                    loop.call_soon(self._start, future, func, args, kwargs)
+                else:
+                    loop.call_soon_threadsafe(self._start, future, func, args, kwargs)
             return future
 
         return call
 
-    @property
     def in_worker(self) -> bool:
-        # On the worker's thread, so in its loop, as no other may run there. And in its own process: not in one forked
-        # from a call, where that thread is the main one.
-        return current_thread() is self._thread and self._thread is not main_thread()
+        """
+        Returns True if called from the worker's captive event loop thread. Returns False otherwise. Also returns False
+        if the worker's thread has fork(2)ed and this method is called from a child process.
+        """
+        # The worker's thread becomes the main thread if a fork() has occurred.
+        return current_thread() is self._thread is not main_thread()
 
     def stop(self, interrupt=False, wait=True) -> AwaitableFuture[WorkerStopped]:
         """Stop the worker, and return a future that resolves to why once the worker has finished, or with `wait=False`, once
@@ -312,6 +319,12 @@ class CaptiveWorker:
         worker's own thread, `wait` is an error, as it would wait for itself, and interrupting cancels the calling task
         too."""
 
+        self._finished.raise_if_failed()
+        # Eagerly, rather than leaving it to _finished's own check: that catches result(), but not a call awaiting it,
+        # which would deadlock, as a drain would wait for that very call.
+        if wait and self.in_worker():
+            raise RuntimeError("stop(wait=True) on the worker's own thread would wait for itself")
+
         def begin():  # On the worker's loop. Not a call, so it isn't refused once the worker has stopped: it can cut a drain short.
             if interrupt and self._calls:
                 self._stopped.unclean_stop("manually stopped", self._calls)
@@ -319,10 +332,7 @@ class CaptiveWorker:
                 self._stopped.clean_stop("stopped", self._calls)
             if interrupt or not self._calls:
                 self._interrupt(interrupt)  # Otherwise the last call to end does: see _job()
-        if broken := self._finished.failure():
-            raise broken
-        if wait and self.in_worker:
-            raise RuntimeError("stop(wait=True) on the worker's own thread would wait for itself")
+
         with suppress(RuntimeError):  # The loop has closed, so the worker has already stopped
             self._loop.call_soon_threadsafe(begin)  # Queued even on the worker's thread, behind calls made before it
         return self._finished if wait else self._stopped
@@ -336,34 +346,31 @@ class CaptiveWorker:
         job.__qualname__ += f"[{func.__qualname__}]"  # Only shown, in reprs, so needn't make an identifier
         task = self._loop.create_task(job, eager_start=True)  # So it's in flight before anything queued after it
 
-        def cancel():
-            # Not once the worker has interrupted it: an interrupt also cancelling what awaits it (the parent task's
-            # TaskGroup cancelling its children, say) mustn't cancel it twice.
-            if not (self._stopped.interrupted and task.cancelling()):
-                task.cancel()
 
-        def forward(_):
-            if future.cancelled():
+        def forward(fut):
+            if fut.cancelled():
+
+                def cancel():
+                    # Not once the worker has interrupted it: an interrupt also cancelling what awaits it (the parent task's
+                    # TaskGroup cancelling its children, say) mustn't cancel it twice.
+                    if not (self._stopped.interrupted and task.cancelling()):
+                        task.cancel()
+
                 with suppress(RuntimeError):  # The loop has closed
                     self._loop.call_soon_threadsafe(cancel)
 
         future.add_done_callback(forward)
 
-    def _fail(self, future: concurrent.futures.Future, error: BaseException | None = None) -> bool:
-        # Whether it took `error` (by default, why the worker stopped, or why it can't be used at all): not if it finished
-        # after all, or its caller cancelled it, or it has been failed already
-        try:
-            future.set_exception(error or self._finished.failure() or self._stopped.result())
-            return True
-        except concurrent.futures.InvalidStateError:
-            return False
+    def _fail(self, future: AwaitableFuture, error: BaseException | None = None) -> bool:
+        return future.set_exception_if_not_done(error or self._finished.exception_or_none() or self._stopped.result(timeout=0))
 
     def _finalize(self):
         # Wait for any jobs that were being submitted at the moment of shutdown to finish being submitted. Because
         # _stopped has been set already everywhere this method is called, serializing here ensures that any submits
         # after this point in time will observe stopped.done and fail.
-        with self._stopped:
+        with self._submitting:
             pending = list(self._pending)
+            self._pending.clear()
         while len(pending):
             self._fail(pending.pop())  # Never run, or abandoned (or here, in a forked process)
 
@@ -415,11 +422,9 @@ class CaptiveWorker:
             finally:
                 self._finalize()
                 self._calls.clear()
-                self._pending.clear()
                 self._loop.close()  # Shuts the executor down without waiting, if it hasn't been already
                 # The very last action: stop()'s waiters wait for it, and on_shutdown() follows
-                with suppress(concurrent.futures.InvalidStateError):
-                    self._finished.set_result(self._stopped.result())
+                self._finished.set_result_if_not_done(self._stopped.result())
 
     def _interrupt(self, again: bool):
         # Once the worker has stopped: cancels the parent task and every call in flight. Each time with `again` (for
@@ -431,34 +436,59 @@ class CaptiveWorker:
                     self._stopped.interrupted = True
 
     async def _job(self, func, args, kwargs, future: AwaitableFuture):
-        # Runs a call (see _start()), and settles its future. It raises only crashes, and what the future can't take
-        # (cancelled by its caller, say), which asyncio then logs, if it's an error, as for any task.
-        task = asyncio.current_task(self._loop)
+        """
+        Runs a call on the worker's event loop. All calls are submitted by _start().
+        Only raises in the thread on a crash (e.g. a cancel race or a broken event loop); all errors from user code are
+        forwarded back to the user if the user is still accepting responses (that is, the waiting future hasn't been
+        cancelled or aborted with an interrupt error).
+        """
+
+        # We're a little precious about performance in this method since it's on the hot path:
+        task, stopped, calls, expiry = asyncio.current_task(), self._stopped, self._calls, self._expiry
         try:
-            if self._stopped.done():
-                raise self._stopped.result()  # Which raises itself, if the worker is broken
-            self._calls.add(task)
-            self._expiry.reset(None) # Suspend the idle timeout
+            if stopped.done():
+                raise stopped.result()  # Raise if the worker is stopping or broken/shut down
+            calls.add(task)
+            expiry.reset(None) # Suspend the idle timeout
             try:
                 result = await func(*args, **kwargs)
             finally:
-                self._calls.remove(task)
+                # TODO can these be moved into the outer finally?
+                calls.remove(task)
                 # A drain (a stop that leaves calls in flight to finish) cancels the parent task only once the last has
                 # ended: here. Nothing else would, unless the parent task ended of its own accord, or a later stop()
                 # interrupted.
-                if self._stopped.done() and not self._calls:
-                    self._interrupt(False)
-                self._expiry.reset(None if len(self._calls) > 0 else self.idle_timeout) # Restart the idle timeout
+                if len(calls) == 0:
+                    # Not a done-callback on _stopped: that fires once, as the stop is recorded (begin() covers there
+                    # being no calls then), on whichever thread records it, rather than as the last call ends.
+                    if stopped.done():
+                        self._interrupt(False)
+                    expiry.reset(self.idle_timeout)
+
+        except asyncio.CancelledError as ex:
+            # Check if we got a CancelledError because the worker was interrupted with stop(interrupt=True). If so, this
+            # job's waiters get an error indicating where the job was cancelled, with exception-chain-context about why
+            # the worker stopped.
+            if stopped.interrupted and task.cancelling():
+                # TODO is timeout=0 safe here? It should be...
+                error = WorkerInterrupted.from_cancellation(ex, stopped.result(timeout=0))
+            else:
+                error = ex
+            # If we can't report it to the user, crash the task so Python's logger reports the failure
+            if not self._fail(future, error):
+                raise
+        except (KeyboardInterrupt, SystemExit) as ex:
+            # These two exception types are specially handled by CPython:
+            # 1. They're handled in the interpreter in a racy way, so copy them.
+            # 2. They always signal thread/loop-wide crash to the runtime, so they're always reraised.
+            self._fail(future, copied(ex))
+            raise
         except BaseException as ex:
-            error = ex  # Raised by func itself, if a CancelledError, as its task isn't being cancelled
-            if isinstance(ex, asyncio.CancelledError) and task.cancelling() and self._stopped.interrupted:
-                # Its waiters get where the job was cancelled, raised from (a copy of) why the worker stopped, itself raised
-                # from what caused that, if anything. (Otherwise, its caller cancelled the future.)
-                error = WorkerInterrupted.from_cancellation(ex, self._stopped.result())
-            elif type(ex) in (KeyboardInterrupt, SystemExit):
-                error = copied(ex)  # This thread raises the original too, crashing the loop
-            if not self._fail(future, error) or not isinstance(ex, Exception | asyncio.CancelledError):
+            # If we can't report the error to the user, or if it's a non-CancelledError BaseException, reraise:
+            if not self._fail(future, ex) or not isinstance(ex, (Exception, asyncio.CancelledError)):
                 raise
         else:
-            with suppress(concurrent.futures.InvalidStateError):  # Its caller cancelled it
-                future.set_result(result)
+            # Transmit a successful result to the user.
+            # NB: if the caller cancelled it before it finished here, we WANT users to see the "task exception never
+            # retrieved" error for InvalidStateError raised from the below call.
+            future.set_result(result)

@@ -6,28 +6,6 @@ from typing import Awaitable, Iterable
 from async_anywhere._util import LockProtected
 
 
-# def chain_futures(
-#     source,
-#     dest,
-#     on_source_success=None,
-#     on_source_exception=None,
-#     on_source_cancelled=None,
-#     on_dest_success=None,
-#     on_dest_exception=None,
-#     on_dest_cancelled=None,
-# ):
-#     """
-#     Added callbacks are idempotent to the best of their ability, but it's still not recommended to call this function on
-#     a source or destination that have already been wrapped with chain_futures or asyncio.wrap_future, as the resulting
-#     behavior is confusing and likely not intended.
-#
-#     :param source:
-#     :param dest:
-#     :return:
-#     """
-
-
-
 class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     """A concurrent.futures.Future subclass that can also be awaited. Provides the following behaviors:
 
@@ -68,10 +46,13 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
             return cached
 
     def __await__(self):
-        if self.done():  # Needing no loop: in a process forked from inside a task, asyncio has none running
+        # If we're already done, __await__ can resolve without dealing with any loop machinery at all
+        if self.done():
             if self.cancelled():
-                raise asyncio.CancelledError  # Asyncio's, as wrap_future() would give: result() raises concurrent.futures'
+                # Since result() raises concurrent.futures.CancelledError, convert to asyncio.CancelledError here
+                raise asyncio.CancelledError
             return self.result()
+        # Using "yield from" flags this function as a generator so that the above "return" works right:
         return (yield from asyncio.wrap_future(self).__await__())
 
     def cancel(self) -> bool:
@@ -92,10 +73,31 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         self._check_blocking()
         return super().exception(timeout)
 
-    def failure(self) -> BaseException | None:
+    def raise_if_failed(self):
+        if error := self.exception_or_none():
+            raise error
+
+    def set_result_if_not_done(self, result: T) -> bool:
+        try:
+            self.set_result(result)
+            return True
+        except concurrent.futures.InvalidStateError:
+            return False
+
+    def set_exception_if_not_done(self, exception: BaseException) -> bool:
+        try:
+            self.set_exception(exception)
+            return True
+        except concurrent.futures.InvalidStateError:
+            return False
+
+    def result_or_none(self) -> T | None:
+        return self.result() if self.done() else None
+
+    def exception_or_none(self) -> BaseException | None:
         return self.exception() if self.done() else None  # What it failed with, once done: cancelled, it raises
 
     def _check_blocking(self):
         if not self.done() and (loop := asyncio._get_running_loop()) in self._prevent_blocking_wait_in_loops:
-            raise RuntimeError(f"Waiting for {self!r} on {loop!r}, which is to finish it, would block forever: await it")
+            raise RuntimeError(f"Waiting for {self!r} would deadlock: event loop '{loop!r}' was set in 'prevent_blocking_wait_in_loops'")
 

@@ -5,7 +5,7 @@ from attrs import define, field, validators
 
 
 @define(kw_only=True)
-class _Timer:
+class Timer:
     _loop: asyncio.AbstractEventLoop = field()
     _callback: Callable[[], Any] = field(validator=validators.is_callable())
     _handle: asyncio.TimerHandle | None = field(default=None)
