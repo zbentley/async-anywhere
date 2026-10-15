@@ -16,21 +16,53 @@ import warnings
 
 import pytest
 
-from async_anywhere.captive import CaptiveWorker
-from async_anywhere.captive._exceptions import CleanStop, WorkerStopped
+from async_anywhere.captive import CaptiveWorker, _fork_safety
+from async_anywhere.captive._stopped import WorkerStopFuture
+from async_anywhere.captive._exceptions import CleanStop, WorkerBroken, WorkerForked, WorkerStopped
 from async_anywhere.futures import AwaitableFuture
 
 IDLE = 0.2  # The idle timeout of the workers that expire
 
 
 class bridge:
-    """Bridges a method of the test workers' with each worker's own bridge(), as worker.method(...)."""
+    """Bridges a method of a Harness to its worker, as harness.method(...)."""
 
     def __init__(self, func):
         self.func = func
 
-    def __get__(self, worker, owner=None):
-        return self if worker is None else worker.bridge(self.func)
+    def __get__(self, harness, owner=None):
+        return self if harness is None else harness.worker.bridge(self.func.__get__(harness))
+
+
+class Harness:
+    """A worker, held as code using CaptiveWorker would hold one, with what tests give it: bridged methods (see bridge),
+    _run() as its parent task, on_stopped() and on_shutdown(), and idle_timeout. The worker's attributes are its too."""
+
+    idle_timeout = float("inf")
+
+    def __init__(self):
+        self.worker = CaptiveWorker(
+            parent_task=self._parent,
+            on_stopped=self.on_stopped,
+            on_shutdown=self.on_shutdown,
+            idle_timeout=self.idle_timeout,
+        )
+
+    def __getattr__(self, name):
+        if name == "worker":  # Not yet set
+            raise AttributeError(name)
+        return getattr(self.worker, name)
+
+    async def _parent(self, worker):
+        self.worker = worker  # Before the constructor returns it, as _run() may want it at once
+        await self._run()
+
+    async def _run(self):
+        await asyncio.Event().wait()
+
+    def on_stopped(self, worker): ...
+
+    def on_shutdown(self, worker): ...
 
 
 @pytest.fixture(autouse=True)
@@ -42,11 +74,11 @@ def no_errors_in_callbacks(caplog):
     assert not [record for record in errors if record.getMessage().startswith("Exception in callback")]
 
 
-async def stop(worker: CaptiveWorker, **kwargs) -> WorkerStopped:
+async def stop(worker: CaptiveWorker | Harness, **kwargs) -> WorkerStopped:
     """Shuts `worker` down, and returns why it stopped."""
-    with pytest.raises(WorkerStopped) as stopped:
-        await worker.stop(**kwargs)
-    return stopped.value
+    stopped = await worker.stop(**kwargs)
+    assert isinstance(stopped, WorkerStopped)
+    return stopped
 
 
 async def until(condition, timeout=2.0):
@@ -72,11 +104,11 @@ async def in_thread(function):
     return outcome
 
 
-def reason(worker: CaptiveWorker) -> str:
-    return worker._stopped.exception().args[0]
+def reason(worker: CaptiveWorker | Harness) -> str:
+    return worker._stopped.result().args[0]
 
 
-class Worker(CaptiveWorker):
+class Worker(Harness):
     @bridge
     async def work(self, seconds=0.0, result="done"):
         await asyncio.sleep(seconds)
@@ -146,7 +178,7 @@ class SeesContext(Worker):
 @pytest.mark.parametrize("interrupt", [False, True])
 def test_idle_stop(interrupt):
     async def main():
-        worker = Worker()
+        worker = CaptiveWorker()  # With the default parent task and hooks
         stopped = await stop(worker, interrupt=interrupt)
         assert type(stopped) is CleanStop and stopped.args == ("(idle) manually stopped",)
         worker._thread.join(1)
@@ -159,7 +191,7 @@ def test_expires_when_idle():
     async def main():
         worker = Expiring()
         await until(lambda: worker._stopped.done())
-        assert type(worker._stopped.exception()) is CleanStop and reason(worker) == "(idle) expired"
+        assert type(worker._stopped.result()) is CleanStop and reason(worker) == "(idle) expired"
         worker._thread.join(1)
         assert not worker._thread.is_alive()
 
@@ -236,31 +268,6 @@ def test_call_from_run_holds_off_expiry():
     asyncio.run(main())
 
 
-class Busy(Expiring):
-    async def _run(self):
-        try:
-            while True:
-                await asyncio.sleep(IDLE / 4)
-                self._reschedule()  # Activity of its own
-        except asyncio.CancelledError:
-            for _ in range(8):
-                await asyncio.sleep(IDLE / 4)
-                self._reschedule()  # Mustn't restart the countdown now, which would cancel this cleanup
-            self.cleaned_up = True
-            raise
-
-
-def test_run_can_hold_off_expiry_with_activity_of_its_own():
-    async def main():
-        worker = Busy()
-        await asyncio.sleep(IDLE * 3)
-        assert not worker._stopped.done()
-        await stop(worker)
-        assert worker.cleaned_up
-
-    asyncio.run(main())
-
-
 def test_calls_during_expiry_cleanup_are_refused():
     async def main():
         worker = SlowCleanup()
@@ -277,8 +284,8 @@ def test_calls_during_expiry_cleanup_are_refused():
 @pytest.mark.parametrize(
     "cls, kind, text",
     [
-        (Returns, CleanStop, "(interrupted) _run() returned"),
-        (Fails, WorkerStopped, "(interrupted) _run() raised ValueError('boom')"),
+        (Returns, CleanStop, "(interrupted) parent task returned"),
+        (Fails, WorkerStopped, "(interrupted) parent task raised ValueError('boom')"),
         (StopsItself, WorkerStopped, "(interrupted) manually stopped"),
     ],
 )
@@ -287,7 +294,7 @@ def test_run_ending_stops_the_worker(cls, kind, text):
         worker = cls()
         with pytest.raises(concurrent.futures.CancelledError):
             await worker.work(10)  # In flight as _run() ends, so interrupted
-        assert type(worker._stopped.exception()) is kind and reason(worker) == text
+        assert type(worker._stopped.result()) is kind and reason(worker) == text
         worker._thread.join(1)
         assert not worker._thread.is_alive()
 
@@ -310,11 +317,11 @@ class Hooked(Worker):
         self.hooks = []
         super().__init__()
 
-    def on_stop_requested(self):
-        self.hooks.append(("stop requested", self.in_worker, self._stopped.done(), self._finished.done()))
+    def on_stopped(self, worker):
+        self.hooks.append(("stopped", worker.in_worker, worker._stopped.done(), worker._finished.done()))
 
-    def on_shutdown(self):
-        self.hooks.append(("shutdown", self.in_worker, self._finished.done(), self._loop.is_closed()))
+    def on_shutdown(self, worker):
+        self.hooks.append(("shutdown", worker.in_worker, worker._finished.done(), worker._loop.is_closed()))
 
 
 @pytest.mark.parametrize("interrupt", [False, True])
@@ -325,29 +332,83 @@ def test_hooks_are_called_once_each_on_the_workers_thread(interrupt):
         await stop(worker, interrupt=interrupt)
         await stop(worker, interrupt=True)  # Again, which changes nothing
         worker._thread.join(1)  # As on_shutdown() runs just after stop()'s waiters wake
-        assert worker.hooks == [("stop requested", True, True, False), ("shutdown", True, True, True)]
+        assert worker.hooks == [("stopped", True, True, False), ("shutdown", True, True, True)]
 
     asyncio.run(main())
 
 
-class Fetches(CaptiveWorker):
-    def __init__(self):
-        self.fetch = self.bridge(self._fetch)  # Before super().__init__(), which starts _run(): it might use it
-        super().__init__()
+@pytest.mark.parametrize(
+    "kwargs, error",
+    [
+        (dict(parent_task=lambda worker: asyncio.sleep(0)), TypeError),  # Making a coroutine, but not an async def
+        (dict(parent_task=print), TypeError),
+        (dict(on_stopped=None), TypeError),
+        (dict(on_shutdown="on_shutdown"), TypeError),
+        (dict(idle_timeout="1"), TypeError),
+        (dict(idle_timeout=0), ValueError),
+        (dict(loop_factory=3), TypeError),
+        (dict(loop_factory=lambda: "not a loop"), TypeError),
+    ],
+)
+def test_arguments_are_checked_as_workers_are_constructed(kwargs, error):
+    threads = threading.active_count()
+    with pytest.raises(error):
+        CaptiveWorker(**kwargs)
+    assert threading.active_count() == threads  # Refused before anything started
 
-    async def _fetch(self, worker, key):
-        return worker is self, key
+
+class Fetcher:
+    """Code using a worker, which bridges its own methods to it."""
+
+    def __init__(self, worker: CaptiveWorker):
+        self.fetch = worker.bridge(self._fetch)
+
+    async def _fetch(self, key):
+        return key
 
 
-def test_bridging_functions_and_the_workers_own_methods():
+def test_functions_can_be_bridged_whenever():
     async def main():
-        worker = Fetches()
+        async def parent_task(worker):
+            got.append(await Fetcher(worker).fetch("at once"))  # Bridged, and called, as the worker starts
+            await asyncio.Event().wait()
+
+        got = []
+        worker = CaptiveWorker(parent_task=parent_task)
+        await until(lambda: got == ["at once"])
+        await asyncio.sleep(0.05)
+        assert await Fetcher(worker).fetch("later") == "later"  # Once the worker has been running a while
+        await stop(worker)
+        refused = Fetcher(worker)  # Once it has stopped, which is allowed, though calls are refused
+        with pytest.raises(CleanStop):
+            await refused.fetch("too late")
+
+    asyncio.run(main())
+
+
+def test_workers_are_slotted():
+    worker = CaptiveWorker()
+    assert not hasattr(worker, "__dict__")  # Not unslotted, as attrs would leave it if it couldn't slot cached_property
+    assert type(vars(CaptiveWorker)["_loop"]).__name__ == "member_descriptor" and worker._loop is worker._loop
+    asyncio.run(stop(worker))
+
+
+def test_the_parent_task_gets_the_worker_and_bridged_functions_just_their_callers_arguments():
+    async def main():
+        given = []
+
+        async def parent_task(worker):
+            given.append(worker)
+            await asyncio.Event().wait()
+
+        worker = CaptiveWorker(parent_task=parent_task)
+        assert worker._loop.is_running()  # Constructed only once it was
+        await until(lambda: given == [worker])
 
         @worker.bridge
-        async def free(worker, key):
+        async def free(key):
             return worker.in_worker, key
 
-        assert await worker.fetch("x") == (True, "x")
         assert await free("y") == (True, "y") and free.__name__ == "free"
         assert await asyncio.to_thread(lambda: free("z").result(1)) == (True, "z")
         await stop(worker)
@@ -441,8 +502,7 @@ def test_an_interrupt_cancels_calls_once_though_what_awaits_them_is_cancelled_to
     workers = [Supervises() for _ in range(10)]
     time.sleep(0.05)
     for worker in workers:
-        with pytest.raises(WorkerStopped):
-            worker.stop(interrupt=True).result(2)
+        assert isinstance(worker.stop(interrupt=True).result(2), WorkerStopped)
     assert [event for worker in workers for event in worker.events] == ["cleaned up"] * 30
 
 
@@ -539,10 +599,11 @@ def test_a_crash_stops_the_worker_and_interrupts_calls_in_flight(caplog):
             assert worker.cleaned_up  # Cancelled once, by the teardown
             worker._thread.join(1)
             frames = [frame.name for frame in traceback.extract_tb(exiting["error"].__traceback__)]
-            assert "exit" in frames and "_main" not in frames  # A copy, untouched by the worker's thread raising the original
+            assert "exit" in frames and "_main" not in frames  # A copy, untouched by the worker raising the original
             assert (await stop(worker)).args == why.args
 
         asyncio.run(main())
+        gc.collect()  # So asyncio's report of the crashing job's unretrieved exception lands here, not in a later test
     finally:
         threading.excepthook = hook
     assert crashes == [SystemExit]  # Raised again on the worker's thread
@@ -571,6 +632,7 @@ def test_a_crash_in_run_stops_the_worker_and_interrupts_calls_in_flight():
             worker._thread.join(1)
 
         asyncio.run(main())
+        gc.collect()  # Likewise, for the parent task's
     finally:
         threading.excepthook = hook
     assert crashes == [KeyboardInterrupt]  # Raised again on the worker's thread
@@ -581,7 +643,7 @@ def test_interrupting_during_expiry_cleanup_cancels_run_again():
         worker = SlowCleanup()
         await until(lambda: worker._stopped.done())
         stopped = await stop(worker, interrupt=True)
-        assert stopped.args == ("(idle) expired",) and worker._interrupted
+        assert stopped.args == ("(idle) expired",) and worker._stopped.interrupted
         assert not hasattr(worker, "cleaned_up")  # Cut short
 
     asyncio.run(main())
@@ -616,11 +678,9 @@ def test_each_interrupting_stop_cancels_run_and_calls_again():
         worker = Endures()
         call = worker.call()
         await asyncio.sleep(0.05)
-        with pytest.raises(WorkerStopped):
-            await worker.stop(interrupt=True, wait=False)
+        await worker.stop(interrupt=True, wait=False)
         await until(lambda: worker.cancels == {"_run": 1, "call": 1})
-        with pytest.raises(WorkerStopped):
-            await worker.stop(wait=False)  # Doesn't interrupt, so cancels nothing
+        await worker.stop(wait=False)  # Doesn't interrupt, so cancels nothing
         await asyncio.sleep(0.05)
         assert worker.cancels == {"_run": 1, "call": 1}
         await stop(worker, interrupt=True)
@@ -636,8 +696,7 @@ def test_a_callers_cancellation_after_an_interrupt_doesnt_cancel_the_call_again(
         worker = Tidy()
         call = worker.tidy()
         await asyncio.sleep(0.05)
-        with pytest.raises(WorkerStopped):
-            await worker.stop(interrupt=True, wait=False)
+        await worker.stop(interrupt=True, wait=False)
         assert call.cancel()  # While it's cleaning up
         await stop(worker)
         assert worker.tidied  # Not cut short
@@ -716,8 +775,8 @@ def test_drain_refuses_new_calls_and_lets_calls_in_flight_finish():
         call = asyncio.ensure_future(worker.work(0.3, "finished"))
         await asyncio.sleep(0.05)
         started = time.monotonic()
-        with pytest.raises(CleanStop, match=r"\(waiting for running jobs\) manually stopped"):
-            await worker.stop(wait=False)
+        stopped = await worker.stop(wait=False)
+        assert type(stopped) is CleanStop and stopped.args == ("(waiting for running jobs) manually stopped",)
         assert time.monotonic() - started < 0.1  # Only until the stop began
         with pytest.raises(CleanStop):
             await worker.work()
@@ -732,8 +791,7 @@ def test_drain_refuses_new_calls_and_lets_calls_in_flight_finish():
 class CallsThenStops(Worker):
     async def _run(self):
         self.call = self.work(0.05, "finished")
-        with contextlib.suppress(WorkerStopped):
-            await self.stop(wait=False)
+        await self.stop(wait=False)
 
 
 def test_calls_made_just_before_a_drain_finish():
@@ -765,8 +823,7 @@ def test_calls_made_during_a_drain_are_refused_without_waiting_for_the_loop():
         worker = BlocksLoop()
         blocking = asyncio.ensure_future(worker.blocks())
         await asyncio.sleep(0.02)
-        with pytest.raises(CleanStop, match="waiting for running jobs"):
-            await worker.stop(wait=False)
+        assert "waiting for running jobs" in (await worker.stop(wait=False)).args[0]
         await asyncio.sleep(0.1)  # Its loop is blocked now
         started = time.monotonic()
         refused = (await in_thread(lambda: worker.work().exception(0.3)))["result"]
@@ -784,7 +841,7 @@ def test_calls_made_after_a_stop_is_queued_are_refused_once_it_begins():
         await asyncio.sleep(0.1)  # Its loop is blocked now, so the stop can't begin yet
         worker.stop(wait=False)
         call = worker.work()
-        assert call is not worker._stopped  # Not refused yet, as the worker hasn't stopped
+        assert not call.done()  # Not refused yet, as the worker hasn't stopped
         with pytest.raises(CleanStop):
             await call
         await blocking
@@ -825,8 +882,7 @@ def test_draining_caller_gets_why_when_another_stop_finishes_the_worker():
             drain = asyncio.ensure_future(worker.stop())
             await asyncio.sleep(0.02)
             await stop(worker, interrupt=True)
-            with pytest.raises(CleanStop):  # Not a CancelledError, though the teardown may cancel the drain's stop
-                await drain
+            assert type(await drain) is CleanStop  # Not asyncio.CancelledError, though the teardown may cancel it
             with pytest.raises(concurrent.futures.CancelledError):
                 await call
 
@@ -835,8 +891,7 @@ def test_draining_caller_gets_why_when_another_stop_finishes_the_worker():
 
 class ReturnsWhenStopped(Worker):
     async def _run(self):
-        with contextlib.suppress(WorkerStopped):
-            await self._stopped  # Returns as soon as the worker stops, rather than waiting to be cancelled
+        await self._stopped  # Returns as soon as the worker stops, rather than waiting to be cancelled
 
 
 def test_a_drain_outlasts_run_returning():
@@ -905,10 +960,9 @@ class Stops(Worker):
 
     @bridge
     async def drain_from_inside(self):
-        with pytest.raises(CleanStop) as stopped:
-            await self.stop(wait=False)  # Once the stop has begun
+        stopped = await self.stop(wait=False)  # Once the stop has begun
         await asyncio.sleep(0.2)  # This call may still finish
-        return stopped.value
+        return stopped
 
 
 def test_stop_cant_wait_on_the_workers_own_thread():
@@ -954,7 +1008,7 @@ def test_stop_can_be_waited_on_from_a_plain_thread():
     async def main():
         worker = Worker()
         outcome = await in_thread(lambda: worker.stop().result(2))
-        assert type(outcome["error"]) is CleanStop and outcome["error"].args == ("(idle) manually stopped",)
+        assert type(outcome["result"]) is CleanStop and outcome["result"].args == ("(idle) manually stopped",)
         worker._thread.join(1)
         assert not worker._thread.is_alive()
 
@@ -1012,20 +1066,18 @@ def test_stop_future_can_be_waited_on_anywhere_and_not_cancelled(caplog):
 
         def on_another_loop():
             async def wait():
-                await worker._stopped
+                return await worker._stopped
 
-            asyncio.run(wait())
+            return asyncio.run(wait())
 
         blocked = asyncio.ensure_future(in_thread(lambda: worker._stopped.result(2)))
         blocked_too = asyncio.ensure_future(in_thread(lambda: worker._stopped.result(2)))
         awaited = asyncio.ensure_future(in_thread(on_another_loop))
         await asyncio.sleep(0.05)
         stopped = await stop(worker)
-        errors = [(await blocked)["error"], (await blocked_too)["error"], (await awaited)["error"], stopped]
-        assert all(type(error) is CleanStop and error.args == stopped.args for error in errors)
-        assert len({id(error) for error in errors}) == 4  # Each a copy
-        first, second = (traceback.extract_tb(error.__traceback__) for error in errors[:2])
-        assert len(first) == len(second)  # Neither carries the other's frames
+        whys = [(await blocked)["result"], (await blocked_too)["result"], (await awaited)["result"], stopped]
+        assert all(type(why) is CleanStop and why.args == stopped.args for why in whys)
+        assert len({id(why) for why in whys}) == 4  # Each a copy
         gc.collect()
 
     asyncio.run(main())
@@ -1230,16 +1282,47 @@ def test_calls_async_futures_are_cancelled_and_interrupted_as_awaiting_them_is()
     asyncio.run(main())
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: one waiter giving up on stop() cancels it for every waiter on its loop")
-def test_giving_up_waiting_on_stop_leaves_other_waiters_alone():
+@pytest.mark.parametrize("awaitable", [lambda future: future, lambda future: future.as_async_future()], ids=["awaited", "async"])
+def test_giving_up_waiting_on_stop_leaves_other_waiters_alone(awaitable, caplog):
     async def main():
         worker = SlowStop()
-        other = asyncio.ensure_future(stop(worker))
+
+        async def wait():
+            return await awaitable(worker.stop())
+
+        other = asyncio.ensure_future(wait())
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(worker.stop(), 0.05)
-        assert type(await other) is CleanStop
+            await asyncio.wait_for(wait(), 0.05)
+        later = asyncio.ensure_future(wait())  # Waiting on the same loop after one gave up, before the stop finishes
+        assert type(await other) is CleanStop and type(await later) is CleanStop
+        gc.collect()
 
     asyncio.run(main())
+    assert "shielded future" not in caplog.text and "never retrieved" not in caplog.text
+
+
+def test_stop_futures_only_fail_once_the_worker_is_broken():
+    worker = Worker()
+    with pytest.raises(AssertionError, match="Invariant violation"):
+        worker._stopped.set_exception(CleanStop("not like this"))
+    assert not worker._stopped.done()
+    asyncio.run(stop(worker))
+    broken = WorkerStopFuture(worker.worker)
+    broken.set_exception(why := WorkerBroken("like this"))
+    copy = broken.exception()
+    assert type(copy) is WorkerBroken and copy.args == why.args and copy is not why
+
+
+def test_calls_cancelled_by_their_callers_count_as_done_for_concurrent_futures_wait():
+    worker = Tidy()
+    call = worker.tidy()
+    time.sleep(0.05)
+    threading.Timer(0.05, call.cancel).start()  # Cancelled while concurrent.futures.wait() waits
+    started = time.monotonic()
+    done, _ = concurrent.futures.wait([call], timeout=2)
+    assert call in done and time.monotonic() - started < 1
+    assert list(concurrent.futures.as_completed([call], timeout=0.1)) == [call]
+    asyncio.run(stop(worker))
 
 
 def test_calls_made_together_run_together():
@@ -1365,7 +1448,7 @@ def test_calls_cancelled_before_they_start_never_run():
         worker, ran = BlocksLoop(), []
 
         @worker.bridge
-        async def record(worker, label):
+        async def record(label):
             ran.append(label)
 
         blocking = worker.blocks()
@@ -1485,27 +1568,27 @@ def test_work_left_running_is_cancelled_then_abandoned(kind, left, caplog):
     assert ("Task was destroyed but it is pending" in caplog.text) == (kind == "stubborn")
 
 
-class Late(Worker):
-    late = None
+def test_submission_the_loop_never_runs_fails_instead_of_hanging(monkeypatch):
+    late, finalize = [], CaptiveWorker._finalize
 
-    def _finalize(self):
+    def finalize_late(worker):
         # After the loop has run for the last time, but before the worker fails what's pending: submitting as a call
         # made just before the stop, which the loop then never ran, would be. (Past bridge()'s refusing calls once the
         # worker has stopped.) Only on the worker's own thread, as it finishes: not in a forked process, whose copy's loop
         # has closed.
-        if self.in_worker:
-            with self._submitting:
-                Late.late = AwaitableFuture(self._loop)
-                self._pending.add(Late.late)
-                self._loop.call_soon_threadsafe(self._start, Late.late, Worker.work.func, (), {})
-        super()._finalize()
+        if worker.in_worker:
+            with worker._stopped:
+                late.append(future := AwaitableFuture(prevent_blocking_wait_in_loops=(worker._loop,)))
+                worker._pending.add(future)
+                worker._loop.call_soon_threadsafe(worker._start, future, asyncio.sleep, (0,), {})
+        finalize(worker)
 
+    monkeypatch.setattr(CaptiveWorker, "_finalize", finalize_late)
 
-def test_submission_the_loop_never_runs_fails_instead_of_hanging():
     async def main():
-        await stop(Late())
+        await stop(CaptiveWorker())
         with pytest.raises(CleanStop):
-            Late.late.result(1)
+            late[0].result(1)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -1521,6 +1604,14 @@ def fork() -> int:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)  # About forking a process with threads
         return os.fork()
+
+
+def raised(function) -> BaseException | None:
+    """What `function` raises, if anything."""
+    try:
+        function()
+    except BaseException as error:
+        return error
 
 
 def child_status(pid: int, timeout: float = 10) -> int:
@@ -1549,10 +1640,10 @@ class Forks(Worker):
         self.other, self.hooked = other, False
         super().__init__()
 
-    def on_stop_requested(self):
+    def on_stopped(self, worker):
         self.hooked = True
 
-    def on_shutdown(self):
+    def on_shutdown(self, worker):
         self.hooked = True
 
     @bridge
@@ -1568,6 +1659,7 @@ class Forks(Worker):
                     and self.other._stopped.done()
                     and all(future.done() for future in self._pending)  # This call's own, for one
                     and not self.hooked  # Not on the worker's thread here, though this one was it
+                    and not self.in_worker  # Likewise
                     else 1
                 )
             finally:
@@ -1577,12 +1669,16 @@ class Forks(Worker):
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
 def test_a_forked_process_cant_use_its_copies_of_workers_nor_wait_for_them():
-    worker, other = Remembers(), Worker()
+    worker, other, slow, finished, draining = Remembers(), Worker(), SlowStop(), Worker(), Worker()
+    asyncio.run(stop(finished))
+    drained = draining.work(10)
+    assert type(draining.stop(wait=False).result(1)) is CleanStop  # Draining as the process forks
     in_flight = worker.waits()  # Submitted as made, so in flight as the process forks
+    stopping = slow.stop()  # Still waiting for _run() to clean up as the process forks
     holding, release = threading.Event(), threading.Event()
 
     def hold():
-        with worker._submitting:  # Held as the process forks
+        with worker._stopped:  # Held as the process forks
             holding.set()
             release.wait()
 
@@ -1591,15 +1687,26 @@ def test_a_forked_process_cant_use_its_copies_of_workers_nor_wait_for_them():
     holding.wait()
     if (pid := fork()) == 0:
         try:
-            refused = worker.work().exception(1)  # Needs the lock, which a thread that isn't here holds
+            refused = raised(lambda: worker.work())  # Rather than waiting for the lock, which a thread that isn't here holds
             ok = (
-                type(refused) is WorkerStopped
-                and "forked" in refused.args[0]
-                and type(in_flight.exception(1)) is WorkerStopped  # Rather than a TimeoutError: nothing here runs it
-                and type(worker.stop(wait=False).exception(1)) is WorkerStopped
-                and type(worker.stop().exception(1)) is WorkerStopped  # Rather than waiting for it to finish
+                type(refused) is WorkerForked
+                and str(os.getpid()) in refused.args[0]
+                and worker._stopped.result().args[0].endswith(f" forked into process {os.getpid()}")
+                and type(raised(lambda: worker.stop(wait=False))) is WorkerForked
+                and type(raised(worker.stop)) is WorkerForked
+                and type(in_flight.exception(1)) is WorkerForked  # Rather than timing out: nothing here runs it
+                and type(stopping.exception(1)) is WorkerForked  # Likewise
+                and type(raised(lambda: other.work())) is WorkerForked
+                and type(raised(lambda: worker.bridge(asyncio.sleep))) is WorkerForked  # Best-effort, but so here
+                and type(raised(lambda: draining.work())) is WorkerForked  # Draining at the fork, so as if running...
+                and type(raised(draining.stop)) is WorkerForked
+                and type(drained.exception(1)) is WorkerForked
+                and draining._stopped.result().args == ("(waiting for running jobs) manually stopped",)  # ...but not quite
+                and type(finished.work().exception(1)) is CleanStop  # Finished before the fork, so as in the parent
+                and type(finished.bridge(asyncio.sleep)(0).exception(1)) is CleanStop
+                and type(finished.stop().result(1)) is CleanStop
                 and getattr(worker, "cleaned_up_in", None) != os.getpid()  # Cleanup meant for the parent, not run here
-                and type(other.work().exception(1)) is WorkerStopped
+                and not _fork_safety.workers  # Nothing in this process need revisit them
             )
             os._exit(0 if ok else 1)
         finally:
@@ -1610,8 +1717,25 @@ def test_a_forked_process_cant_use_its_copies_of_workers_nor_wait_for_them():
     assert worker.work().result(1) == "done" and not worker._stopped.done()  # The parent's carries on
     asyncio.run(stop(worker, interrupt=True))
     asyncio.run(stop(other))
+    asyncio.run(stop(draining, interrupt=True))
+    assert isinstance(drained.exception(1), concurrent.futures.CancelledError)
+    assert type(stopping.result(2)) is CleanStop
     assert isinstance(in_flight.exception(1), concurrent.futures.CancelledError)  # Interrupted, here
     assert worker.cleaned_up_in == os.getpid()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
+def test_failing_finished_fails_stopped_too():
+    worker = Worker()
+    _fork_safety.workers.discard(worker.worker)  # So that, in the child, it's up to this test to fail _finished
+    if (pid := fork()) == 0:
+        try:
+            worker._fail(worker._finished, WorkerForked())
+            os._exit(0 if type(worker._stopped.exception()) is WorkerForked else 1)
+        finally:
+            os._exit(2)
+    assert child_status(pid) == 0
+    asyncio.run(stop(worker))
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
@@ -1625,25 +1749,20 @@ def test_a_call_that_forks_carries_on_only_in_the_parent():
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
-def test_workers_the_fork_handler_misses_are_stopped_in_the_child_once_used():
+def test_workers_stay_unusable_in_processes_forked_from_a_fork():
     worker = Worker()
-    CaptiveWorker._WORKERS.discard(worker)  # As one would be if registered just after the fork, say
     if (pid := fork()) == 0:
         try:
-            refused = worker.work().exception(1)
-            ok = type(refused) is WorkerStopped and "forked" in refused.args[0]
-            os._exit(0 if ok and type(worker.stop().exception(1)) is WorkerStopped else 1)
-        finally:
-            os._exit(2)
-    assert child_status(pid) == 0
-    if (pid := fork()) == 0:  # stop() first, which waits on _finished, rather than on a call
-        try:
-            os._exit(0 if type(worker.stop().exception(1)) is WorkerStopped else 1)
+            if (grandchild := fork()) == 0:
+                try:
+                    os._exit(0 if type(raised(lambda: worker.work())) is WorkerForked else 1)
+                finally:
+                    os._exit(2)
+            os._exit(child_status(grandchild))
         finally:
             os._exit(2)
     assert child_status(pid) == 0
     asyncio.run(stop(worker))
-
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
@@ -1651,11 +1770,11 @@ def test_hooks_arent_called_in_a_forked_process():
     worker = Hooked()
     if (pid := fork()) == 0:
         try:
-            worker.stop().exception(1)  # Stopped here, by the fork handler, and finished
-            os._exit(0 if worker._finished.done() and worker.hooks == [] else 1)
+            ok = type(raised(worker.stop)) is WorkerForked  # Stopped here, by the fork handler, and finished
+            os._exit(0 if ok and worker._finished.done() and worker.hooks == [] else 1)
         finally:
             os._exit(2)
     assert child_status(pid) == 0
     asyncio.run(stop(worker))
     worker._thread.join(1)
-    assert [hook for hook, *_ in worker.hooks] == ["stop requested", "shutdown"]
+    assert [hook for hook, *_ in worker.hooks] == ["stopped", "shutdown"]

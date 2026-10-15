@@ -11,6 +11,12 @@ from typing import Awaitable, AsyncGenerator, Callable, TYPE_CHECKING
 if TYPE_CHECKING:  # async_anywhere.futures imports this module
     from async_anywhere.futures import AwaitableFuture
 
+def validate_coroutine_function(_, attribute, value):
+    if not iscoroutinefunction(value):
+        raise TypeError(f"{attribute.name} must be a coroutine function (an async def), not {value!r}")
+
+
+
 def running_loop() -> AbstractEventLoop | None:
     try:
         return get_running_loop()

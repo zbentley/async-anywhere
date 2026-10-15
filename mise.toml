@@ -15,6 +15,8 @@ auto = true
 'check.pyright' = "pyright ."
 'check.test' = 'pytest'
 'docs.clean' = "rm -rf docs/_build"
+# TODO only if no gitdiff on docs folder
+'docs.regenerate_apidoc' = "sphinx-apidoc -o docs/reference --remove-old --tocfile index --no-headings -e -M src/async_anywhere"
 
 [tasks.'docs.build']
 depends = ["docs.clean"]

@@ -1,8 +1,12 @@
+`async_anywhere`
+================
+
+
 Modules
-=======
+-------
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 4
 
    async_anywhere
    async_anywhere.futures

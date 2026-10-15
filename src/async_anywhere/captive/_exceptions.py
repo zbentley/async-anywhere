@@ -1,4 +1,5 @@
 import concurrent.futures
+import os
 from copy import copy
 from typing import Self
 
@@ -27,6 +28,17 @@ class WorkerStopped(Exception):
 
 
 class CleanStop(WorkerStopped): ...
+
+
+class WorkerBroken(WorkerStopped):
+    """Why a worker can't be used at all: rather than refusing calls, it raises this for them, and for stop()."""
+
+
+class WorkerForked(WorkerBroken):
+    """Why a worker can't be used: this is a process forked from its own (see _fork_safety)."""
+
+    def __init__(self, summary: str = "", cause: BaseException | None = None):
+        super().__init__(summary or f"forked into process {os.getpid()}", cause)
 
 
 class WorkerInterrupted(concurrent.futures.CancelledError):
