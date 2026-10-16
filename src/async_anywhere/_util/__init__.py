@@ -6,62 +6,26 @@ from functools import partial
 from inspect import iscoroutinefunction
 from sys import exc_info
 from threading import RLock, Lock
-from typing import Awaitable, AsyncGenerator, Callable, TYPE_CHECKING
+from typing import Awaitable, AsyncGenerator, Callable, TYPE_CHECKING, Iterable, Collection
 
 if TYPE_CHECKING:  # async_anywhere.futures imports this module
     from async_anywhere.futures import AwaitableFuture
+
+FAST_COLLECTION_SET_CUTOFF = 5
 
 def validate_coroutine_function(_, attribute, value):
     if not iscoroutinefunction(value):
         raise TypeError(f"{attribute.name} must be a coroutine function (an async def), not {value!r}")
 
-
+def fast_collection[T](items: Iterable[T]) -> Collection[T]:
+    items = tuple(items)
+    return frozenset(items) if len(items) > FAST_COLLECTION_SET_CUTOFF else items
 
 def running_loop() -> AbstractEventLoop | None:
     try:
         return get_running_loop()
     except RuntimeError:
         return None
-
-
-def run_on_loop[_T, **_P](
-        loop: Future | AbstractEventLoop,
-        delay: float | None,
-        func: Callable[_P, _T],
-        *args: _P.args,
-        **kwargs: _P.kwargs,
-):
-    """Given a loop source (a loop, asyncio.Future, or asyncio.Task), a delay, a function, and arguments, arranges
-    for the function to be called "on" the supplied loop (in its execution/thread context).
-
-    To distinguish exceptions raised by the async runtime (e.g. dead-loop, invalid-timeout) from exceptions raised by
-    user code, consider handling the result of this method separately from the result of its call. For an async "func",
-    that would look like "try: f = run_on_loop(...); except: ...; await f". For a synchronous call, consider using
-    functools.partial as "func".
-
-    Note that unless "delay" is None, this function does NOT produce an awaitable whose result is the return value of
-    the supplied function (TODO, that might be convenient).
-    """
-    if not isinstance(loop, AbstractEventLoop):
-        loop = loop.get_loop()
-    loop: AbstractEventLoop
-
-    func = partial(func, *args, **kwargs)
-    if loop is running_loop():
-        if delay is None:
-            return func()
-        else:
-            return loop.call_later(delay, func)
-    elif delay is None:
-        if iscoroutinefunction(func):
-            return run_coroutine_threadsafe(func(), loop)
-        else:
-            return loop.call_soon_threadsafe(func)
-    else:
-        # Have the loop start a timer, thread-safely, to call our code in the future.
-        return loop.call_soon_threadsafe(run_on_loop, loop, None, loop.call_later, delay, func)
-
-
 
 
 class LockProtected[T](AbstractContextManager[T]):

@@ -287,10 +287,10 @@ class CaptiveWorker:
             with self._submitting:
                 if self._stopped.done():
                     self._finished.raise_if_failed()  # Only here, as _stopped is always done once _finished has failed
-                    refused = AwaitableFuture(prevent_blocking_wait_in_loops=(loop,))
+                    refused = AwaitableFuture(prevent_blocking_wait_in_loops=loop)
                     self._fail(refused)
                     return refused
-                future = AwaitableFuture(prevent_blocking_wait_in_loops=(loop,))
+                future = AwaitableFuture(prevent_blocking_wait_in_loops=loop)
                 self._pending.add(future)
                 # Only queues a callback, so never waits for the worker's loop. It runs in a copy of the caller's context.
                 if in_loop:

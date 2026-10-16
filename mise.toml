@@ -14,6 +14,8 @@ auto = true
 'check.safety' = "safety check --ignore 67599 --full-report --file=uv.lock"
 'check.pyright' = "pyright ."
 'check.test' = 'pytest'
+'check.test.debug' = 'pytest --asyncio-debug-all'  # Every event loop in asyncio's debug mode, workers' included
+'check.test.torture' = 'pytest --torture'  # Each test 50 times over, with more concurrency: see tests/conftest.py
 'docs.clean' = "rm -rf docs/_build"
 # TODO only if no gitdiff on docs folder
 'docs.regenerate_apidoc' = "sphinx-apidoc -o docs/reference --remove-old --tocfile index --no-headings -e -M src/async_anywhere"

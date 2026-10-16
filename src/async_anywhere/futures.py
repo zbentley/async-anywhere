@@ -1,9 +1,10 @@
 import asyncio
 import concurrent.futures
 from concurrent.futures._base import CANCELLED
-from typing import Awaitable, Iterable
+from threading import Thread, current_thread
+from typing import Awaitable, Iterable, Collection
 
-from async_anywhere._util import LockProtected
+from async_anywhere._util import LockProtected, fast_collection
 
 
 class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
@@ -11,17 +12,37 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
 
     - Calling "await AwaitableFuture(...)" can be done from any event loop.
     - If an AwaitableFuture has already completed, "await"ing it is significantly cheaper than "await"ing an
-      asyncio.Future.
-    - Using the blocking wait methods inherited from concurrent.futures.Future will fail with a RuntimeError if an
-      AwaitableFuture is not done, and the blocking wait is issued on a thread running one of the event loops given as
-      prevent_blocking_wait_in_loops: those intended to eventually complete the AwaitableFuture from async code in that
-      same loop. This helps prevent accidental deadlocks by surfacing them as errors instead of hangs.
+      asyncio.Future or using asyncio.wrap_future.
+    - Users can specify one or more event loops or threads within which blocking wait methods inherited from
+      concurrent.futures.Future (e.g. fut.result(timeout=10)) will fail immediately if the invoking AwaitableFuture is
+      not done. This turns a common cause of deadlocks (erroneously synchronously waiting for an incomplete future on
+      the loop or thread which was intended to complete it) into an error.
+    - Several other convenience methods to save on common future-related code.
 
     """
 
-    def __init__(self, prevent_blocking_wait_in_loops: Iterable[asyncio.AbstractEventLoop] = ()):
+    __slots__ = (
+        *sorted(vars(concurrent.futures.Future()).keys()),
+        '_prevent_blocking_wait_in_threads',
+        '_prevent_blocking_wait_in_loops',
+        '_async_future_cache',
+    )
+
+    @staticmethod
+    def _blocking_checker[K](vals: K | Iterable[K], kind: type[K]) -> Collection[K] | None:
+        vals = fast_collection((vals,) if isinstance(vals, kind) else vals)
+        assert all(isinstance(val, kind) for val in vals)
+        return vals or None
+
+    def __init__(
+        self,
+        prevent_blocking_wait_in_loops: asyncio.AbstractEventLoop | Iterable[asyncio.AbstractEventLoop] = (),
+        prevent_blocking_wait_in_threads: Thread | Iterable[Thread] = (),
+    ):
         super().__init__()
-        self._prevent_blocking_wait_in_loops = tuple(prevent_blocking_wait_in_loops)
+
+        self._prevent_blocking_wait_in_threads = self._blocking_checker(prevent_blocking_wait_in_threads, Thread)
+        self._prevent_blocking_wait_in_loops = self._blocking_checker(prevent_blocking_wait_in_loops, asyncio.AbstractEventLoop)
         self._async_future_cache = LockProtected(dict())
 
     def as_async_future(self, loop: asyncio.AbstractEventLoop | None = None, require_running_loop=True) -> asyncio.Future[T]:
@@ -98,6 +119,12 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         return self.exception() if self.done() else None  # What it failed with, once done: cancelled, it raises
 
     def _check_blocking(self):
-        if not self.done() and (loop := asyncio._get_running_loop()) in self._prevent_blocking_wait_in_loops:
-            raise RuntimeError(f"Waiting for {self!r} would deadlock: event loop '{loop!r}' was set in 'prevent_blocking_wait_in_loops'")
-
+        # This hokey control flow is intentional; it speeds up checks on happy paths.
+        if self._prevent_blocking_wait_in_loops is self._prevent_blocking_wait_in_threads is None or self.done():
+            return
+        if self._prevent_blocking_wait_in_loops and asyncio._get_running_loop() in self._prevent_blocking_wait_in_loops:
+            raise RuntimeError(
+                f"Waiting for {self!r} would deadlock: current event loop '{asyncio._get_running_loop()!r}' was set in 'prevent_blocking_wait_in_loops'")
+        if self._prevent_blocking_wait_in_threads and current_thread() in self._prevent_blocking_wait_in_threads:
+            raise RuntimeError(
+                f"Waiting for {self!r} would deadlock: current thread '{current_thread()!r}' was set in 'prevent_blocking_wait_in_threads'")

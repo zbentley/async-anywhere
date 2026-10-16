@@ -17,7 +17,7 @@ class WorkerStopFuture(AwaitableFuture[WorkerStopped]):
     flight, for the reasons it gives."""
 
     def __init__(self, worker: CaptiveWorker):
-        super().__init__(prevent_blocking_wait_in_loops=(worker._loop,))
+        super().__init__(prevent_blocking_wait_in_loops=worker._loop)
         self._logger = worker.logger
         self.interrupted = False  # Whether the worker has cancelled its parent task, calls, or what they left running
 

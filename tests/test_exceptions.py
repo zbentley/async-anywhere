@@ -1,44 +1,41 @@
 """Tests for the helpers that assemble CaptiveWorker's exceptions."""
+from __future__ import annotations
+
 import sys
+
+import pytest
 
 from async_anywhere.captive._exceptions import copied
 
 
-def caught(fail) -> BaseException:
-    try:
-        fail()
-    except BaseException as error:
-        return error
-    raise AssertionError("Didn't raise")
-
-
 def test_copies_keep_the_originals_state():
-    def fail():
+    with pytest.raises(SystemExit) as raised:
         try:
             raise KeyError("context")
         except KeyError:
             raise SystemExit(3) from ValueError("cause")
 
-    original = caught(fail)
+    original = raised.value
     original.add_note("note")
     copy = copied(original)
     assert copy is not original and type(copy) is SystemExit and copy.code == 3  # Builtins' own state too
     assert copy.__traceback__ is original.__traceback__ and copy.__notes__ == ["note"]
     assert (copy.__cause__, copy.__context__) == (original.__cause__, original.__context__) and copy.__suppress_context__
-    assert not copied(caught(lambda: sys.exit(3))).__suppress_context__
+    with pytest.raises(SystemExit) as raised:
+        sys.exit(3)
+    assert not copied(raised.value).__suppress_context__
 
 
 def test_raising_a_copy_leaves_the_original_alone():
-    original = caught(lambda: sys.exit(3))
+    with pytest.raises(SystemExit) as raised:
+        sys.exit(3)
+    original = raised.value
     copy, traceback = copied(original), original.__traceback__
-
-    def fail():
+    with pytest.raises(SystemExit):
         try:
             raise KeyError("elsewhere")
         except KeyError:
             raise copy
-
-    caught(fail)
     copy.add_note("note")
     assert copy.__traceback__ is not traceback and type(copy.__context__) is KeyError
     assert original.__traceback__ is traceback and original.__context__ is None and not hasattr(original, "__notes__")
