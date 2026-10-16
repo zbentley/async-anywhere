@@ -1,11 +1,30 @@
 import asyncio
 import concurrent.futures
-from concurrent.futures._base import CANCELLED
 from threading import Thread, current_thread
 from typing import Awaitable, Iterable, Collection
 
 from async_anywhere._util import LockProtected, fast_collection
 
+
+class _AsyncFuture[T](asyncio.Future[T]):
+    __slots__ = ('_source',)
+
+    def __init__(self, source: concurrent.futures.Future[T], loop: asyncio.AbstractEventLoop):
+        super().__init__(loop=loop)
+        self._source = source
+        asyncio.futures._chain_future(source, self)  # As asyncio.wrap_future() does
+
+    def cancel(self, msg=None) -> bool:
+        """Changes cancellation behavior of asyncio.Future in two ways:
+            1. Cancels the underlying concurrent.futures.Future right away, rather than in a later loop iteration.
+            2. Refuses cancellation (returns False) if the underlying concurrent.futures.Future is already done.
+        """
+        if self._source.cancel() or not self._source.done():
+            return super().cancel(msg)
+        return False
+
+_template = concurrent.futures.Future()
+_template.cancel()
 
 class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     """A concurrent.futures.Future subclass that can also be awaited. Provides the following behaviors:
@@ -18,11 +37,12 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
       not done. This turns a common cause of deadlocks (erroneously synchronously waiting for an incomplete future on
       the loop or thread which was intended to complete it) into an error.
     - Several other convenience methods to save on common future-related code.
-
+    - Cancelling awaits on this class or asyncio.Futures provided by it immediately cancels the underlying
+      concurrent.futures.Future, rather than postponing cancellation until a later event loop iteration as CPython does.
     """
 
     __slots__ = (
-        *sorted(vars(concurrent.futures.Future()).keys()),
+        *sorted(vars(_template).keys()),
         '_prevent_blocking_wait_in_threads',
         '_prevent_blocking_wait_in_loops',
         '_async_future_cache',
@@ -52,6 +72,8 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         Note that the returned future may not be new/unique; use wrap_future on the result of this method if a unique
         future is required.
 
+        Cancelling the returned future cancels this one, unless this one has already finished, in which case it is refused.
+
         :param loop: the event loop to which the returned future should be bound, or the current event loop if None.
         :param require_running_loop: if True, a RuntimeError will be raised if the event loop to be used is not running or is closed.
         :return: an asyncio.Future linked to the invocant.
@@ -63,7 +85,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
             raise RuntimeError('Event loop is closed')
         with self._async_future_cache as cache:
             if not (cached := cache.get(loop)):
-                cached = cache[loop] = asyncio.wrap_future(self, loop=loop)
+                cached = cache[loop] = _AsyncFuture(self, loop)
             return cached
 
     def __await__(self):
@@ -79,7 +101,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     def cancel(self) -> bool:
         cancelled = super().cancel()
         with self._condition:  # So only one of several threads cancelling it notifies
-            if self._state == CANCELLED:
+            if self._state == _template._state:
                 # As an executor does on dequeuing it: until then, concurrent.futures.wait() and
                 # concurrent.futures.as_completed() neither count it as done nor wake for it, and nothing here
                 # dequeues it.

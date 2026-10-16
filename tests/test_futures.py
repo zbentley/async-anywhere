@@ -26,7 +26,7 @@ async def test_awaiting_works_on_any_loop():
 
     elsewhere = asyncio.ensure_future(asyncio.to_thread(asyncio.run, wait()))
     here = asyncio.ensure_future(wait())
-    while len(future._done_callbacks) < 2:  # noqa: ASYNC110 (Until both wait, through asyncio.wrap_future(), rather than find it done)
+    while len(future._done_callbacks) < 2:  # noqa: ASYNC110 (Until both wait, through their loops' async futures, rather than find it done)
         await asyncio.sleep(0.001)
     threading.Thread(target=future.set_result, args=("done",)).start()
     assert await here == "done" and await elsewhere == "done"
@@ -82,6 +82,12 @@ async def test_async_futures_are_one_per_loop():
     assert await here == "done"
 
 
+async def test_async_futures_are_asyncio_futures():
+    async_future = AwaitableFuture().as_async_future()
+    assert asyncio.isfuture(async_future) and isinstance(async_future, asyncio.Future)
+    assert asyncio.ensure_future(async_future) is async_future  # So APIs that take futures use it as it is
+
+
 async def test_async_futures_follow_the_future():
     done, failed, cancelled = futures = [AwaitableFuture() for _ in range(3)]
     waiting = [future.as_async_future() for future in futures]
@@ -94,8 +100,7 @@ async def test_async_futures_follow_the_future():
 async def test_cancelling_an_async_future_cancels_the_future():
     future = AwaitableFuture()
     future.as_async_future().cancel()
-    await asyncio.sleep(0)  # For the cancellation to reach it
-    assert future.cancelled()
+    assert future.cancelled()  # At once, so it can't finish first, leaving the async future cancelled though it isn't
 
 
 def test_async_futures_need_a_running_loop_unless_told_otherwise():
@@ -121,14 +126,31 @@ def test_async_futures_refuse_a_given_loop_that_isnt_running(owner):
         AwaitableFuture().as_async_future(owner)
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: a cached async future, once cancelled, is returned for good")
 async def test_an_async_future_cancelled_after_the_future_finished_isnt_returned_again():
     future = AwaitableFuture()
     future.set_result("done")
-    future.as_async_future().cancel()  # As its awaiter is cancelled before the result reaches it
+    assert not future.as_async_future().cancel()  # As its awaiter is cancelled before the result reaches it: refused
     await asyncio.sleep(0)
     assert future.result() == "done"
     assert await future.as_async_future() == "done"
+
+
+@pytest.mark.parametrize(
+    "awaitable", [lambda future: future, lambda future: future.as_async_future()], ids=["awaited", "as_async_future"]
+)
+async def test_an_awaiter_cancelled_as_the_future_finishes_leaves_other_waiters_alone(awaitable):
+    future = AwaitableFuture()
+
+    async def wait():
+        return await awaitable(future)
+
+    cancelled, other = asyncio.ensure_future(wait()), asyncio.ensure_future(wait())
+    await asyncio.sleep(0)  # Both waiting, on the loop's one async future
+    future.set_result("done")  # Which a callback, queued on the loop but not yet run, passes on to it
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    assert await other == "done"
 
 
 @pytest.mark.xfail(strict=True, reason="BUG: one waiter giving up cancels the cached async future for all on its loop")
@@ -137,7 +159,7 @@ async def test_an_async_future_cancelled_after_the_future_finished_isnt_returned
 )
 async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_waiters_alone(awaitable):
     """as_async_future() caches one asyncio.Future per loop, which all waiters there share, and cancelling a waiting task
-    cancels the asyncio.Future it awaits. asyncio.wrap_future() passes that on to the source, through its
+    cancels the asyncio.Future it awaits. That passes it on to the source, through its
     concurrent.futures.Future.cancel(), which the source refuses if it's running: as an executor's job is, once started.
     The shared asyncio.Future is then cancelled though its source isn't, so one waiter giving up cancels it for every
     other waiter on that loop, now and later. Nothing in this package runs its futures (WorkerStopFuture, which refuses
