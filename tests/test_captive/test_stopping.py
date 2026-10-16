@@ -477,8 +477,8 @@ async def test_calls_made_during_a_drain_are_refused_without_waiting_for_the_loo
         assert "waiting for running jobs" in (await worker.stop(wait=False)).args[0]
         go.set_result(None)
         await worker.reached("blocked")  # Its loop is blocked now
-        refused = worker.work()
-        assert refused.done() and type(refused.exception()) is CleanStop
+        with pytest.raises(CleanStop):
+            worker.work()  # Raised by the call itself, without a future
         worker.mark("release")
         await blocking
 
@@ -802,9 +802,9 @@ def test_submission_the_loop_never_runs_fails_instead_of_hanging(monkeypatch):
         # worker has stopped.) Only on the worker's own thread, as it finishes: not in a forked process, whose copy's loop
         # has closed.
         if worker.in_worker():
-            with worker._submitting:
+            with worker._submitting as pending:
                 late.append(future := AwaitableFuture(prevent_blocking_wait_in_loops=(worker._loop,)))
-                worker._pending.add(future)
+                pending.add(future)
                 worker._loop.call_soon_threadsafe(worker._start, future, asyncio.sleep, (0,), {})
         finalize(worker)
 

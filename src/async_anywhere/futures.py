@@ -72,7 +72,9 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         Note that the returned future may not be new/unique; use wrap_future on the result of this method if a unique
         future is required.
 
-        Cancelling the returned future cancels this one, unless this one has already finished, in which case it is refused.
+        Cancelling the returned future cancels this one, unless this one has already finished, in which case cancellation
+        is "refused" (the returned asyncio.Future's cancel() method returns False). If mutual cancellation behavior is
+        not desired, use a different awaitable or wrap the result of this method in asyncio.shield.
 
         :param loop: the event loop to which the returned future should be bound, or the current event loop if None.
         :param require_running_loop: if True, a RuntimeError will be raised if the event loop to be used is not running or is closed.
@@ -117,10 +119,16 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         return super().exception(timeout)
 
     def raise_if_failed(self):
+        """If this future was completed with an error, raise that error.
+        If this future was cancelled, raise CancelledError."""
         if error := self.exception_or_none():
             raise error
 
     def set_result_if_not_done(self, result: T) -> bool:
+        """Sets this future's completion state to "success", with the supplied value.
+        Returns False if the future was already completed or cancelled.
+        Returns True if the result was saved on the future.
+        """
         try:
             self.set_result(result)
             return True
@@ -128,6 +136,10 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
             return False
 
     def set_exception_if_not_done(self, exception: BaseException) -> bool:
+        """Sets this future's completion state to "failed", with the supplied error.
+        Returns False if the future was already completed or cancelled.
+        Returns True if the error was saved on the future.
+        """
         try:
             self.set_exception(exception)
             return True
@@ -135,10 +147,19 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
             return False
 
     def result_or_none(self) -> T | None:
+        """Returns the result of this future if it is done.
+        Returns None if the future is still running. If the future failed or was cancelled, raises an exception.
+
+        If your future was completed with the value None, this method is likely not useful.
+        """
         return self.result() if self.done() else None
 
     def exception_or_none(self) -> BaseException | None:
-        return self.exception() if self.done() else None  # What it failed with, once done: cancelled, it raises
+        """Returns this future's exception if it failed with an error.
+        Returns None if the future is still running, or if it completed without an exception.
+        If the future was cancelled, a CancelledError will be raised.
+        """
+        return self.exception() if self.done() else None
 
     def _check_blocking(self):
         # This hokey control flow is intentional; it speeds up checks on happy paths.

@@ -38,7 +38,8 @@ def test_a_forked_process_cant_use_its_copies_of_workers_nor_wait_for_them():
     holding, release = AwaitableFuture(), AwaitableFuture()
 
     def hold():
-        with worker._submitting, worker._stopped._condition:  # Held as the process forks
+        # Held as the process forks
+        with worker._submitting, worker._stopped._condition, worker._finished._condition, in_flight._condition:
             holding.set_result(None)
             release.result(10)
 
@@ -67,8 +68,10 @@ def test_a_forked_process_cant_use_its_copies_of_workers_nor_wait_for_them():
                 draining.stop()
             assert type(drained.exception(1)) is WorkerForked
             assert draining._stopped.result().args == ("(waiting for running jobs) manually stopped",)  # ...but not quite
-            assert type(finished.work().exception(1)) is CleanStop  # Finished before the fork, so as in the parent
-            assert type(finished.bridge(asyncio.sleep)(0).exception(1)) is CleanStop
+            with pytest.raises(CleanStop):
+                finished.work()  # Finished before the fork, so as in the parent
+            with pytest.raises(CleanStop):
+                finished.bridge(asyncio.sleep)(0)
             assert type(finished.stop().result(1)) is CleanStop
             assert getattr(worker, "cleaned_up_in", None) != pid  # Cleanup meant for the parent, not run here
             assert not _fork_safety.workers  # Nothing in this process need revisit them
@@ -101,12 +104,14 @@ class Forks(Worker):
 
     @bridge
     async def forks(self) -> forked:
+        with self._submitting as pending:
+            in_flight = list(pending)  # Before the fork handler fails and drops them
         with forked(wait=False) as f:  # For the test to check(), rather than blocking the worker's loop
             if f.child:  # Carrying on in this call, on its copy of the worker's loop
                 with pytest.raises(WorkerStopped, match="forked"):
                     await self.work()  # Made and run on the worker's thread, as its forking thread is that here
                 assert self._stopped.done() and self.other._stopped.done()
-                assert all(future.done() for future in self._pending)  # This call's own, for one
+                assert in_flight and all(future.done() for future in in_flight)  # This call's own, for one
                 assert not self.in_worker()  # Not on the worker's thread here, though this one was it
                 assert not self.reached("stopped").done() and not self.reached("shutdown").done()
         return f
