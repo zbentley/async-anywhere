@@ -1,7 +1,9 @@
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Collection, Literal
 
-from async_anywhere.captive._exceptions import WorkerStopped, CleanStop, WorkerBroken, copied
+from async_anywhere._util import copy_exception
+from async_anywhere.captive._exceptions import WorkerStopped, CleanStop, WorkerBroken
 from async_anywhere.futures import AwaitableFuture
 
 if TYPE_CHECKING:
@@ -18,7 +20,7 @@ class WorkerStopFuture(AwaitableFuture[WorkerStopped]):
 
     def __init__(self, worker: CaptiveWorker):
         super().__init__(prevent_blocking_wait_in_loops=worker._loop)
-        self._logger = worker.logger
+        self._log = worker._log
         self.interrupted = False  # Whether the worker has cancelled its parent task, calls, or what they left running
 
     def cancel(self):
@@ -30,14 +32,14 @@ class WorkerStopFuture(AwaitableFuture[WorkerStopped]):
         super().set_exception(exception)
 
     def exception(self, timeout: float | None = None) -> WorkerBroken | None:
-        return (error := super().exception(timeout)) and copied(error)  # A copy, as for result()
+        return (error := super().exception(timeout)) and copy_exception(error)  # A copy, as for result()
 
     def result(self, timeout: float | None = None) -> WorkerStopped:
         # A copy, keeping the cause, each time: every raise adds its frames to the exception's traceback, so raising one
         # instance for every caller, on every thread, would pile theirs up on it. wrap_future() reads it through this too.
         if error := self.exception(timeout):
             raise error
-        return copied(super().result(timeout))
+        return copy_exception(super().result(timeout))
 
     def as_async_future(
         self, *args, **kwargs
@@ -68,7 +70,7 @@ class WorkerStopFuture(AwaitableFuture[WorkerStopped]):
             return False
         self.set_result(stop)
         if isinstance(stop, CleanStop):
-            self._logger.info(stop.args[0])
+            self._log(logging.INFO, stop.args[0])
         else:
-            self._logger.error("Stopping due to error:", exc_info=stop)
+            self._log(logging.ERROR, "Stopping due to error:", exc_info=stop)
         return True

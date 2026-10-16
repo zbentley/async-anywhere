@@ -2,10 +2,16 @@
 
 __version__ = "0.0.0"
 
-from typing import Awaitable
+from typing import Awaitable, Literal, overload
 import asyncio
 
-async def gather[T](*coros: Awaitable[T], return_exceptions: bool = False) -> tuple[T]:
+@overload
+async def gather(*, return_exceptions: bool = False) -> tuple[()]: ...
+@overload
+async def gather[T](*coros: Awaitable[T], return_exceptions: Literal[False] = False) -> tuple[T, ...]: ...
+@overload
+async def gather[T](*coros: Awaitable[T], return_exceptions: bool) -> tuple[T | BaseException, ...]: ...
+async def gather[T](*coros: Awaitable[T], return_exceptions: bool = False) -> tuple[T | BaseException, ...]:
     """
     Convenience wrapper for asyncio.gather which behaves exactly as it does. Exists for two reasons:
 
@@ -17,4 +23,4 @@ async def gather[T](*coros: Awaitable[T], return_exceptions: bool = False) -> tu
     """
     if not len(coros):
         return ()
-    return await asyncio.gather(*coros, return_exceptions=return_exceptions)
+    return tuple(await asyncio.gather(*coros, return_exceptions=return_exceptions))

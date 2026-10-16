@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 import os
+import select
 import threading
+import time
 
 import pytest
 
@@ -140,3 +143,37 @@ def test_hooks_arent_called_in_a_forked_process():
             assert worker._finished.done()
             assert not worker.reached("stopped").done() and not worker.reached("shutdown").done()
     assert worker.reached("stopped").done() and worker.reached("shutdown").done()
+
+
+def test_a_forked_process_can_make_and_use_workers_of_its_own():
+    with running(Worker), forked() as f:
+        if f.child:
+            with running(Worker) as fresh:
+                assert fresh.work().result(1) == "done"
+            assert fresh.reached("stopped").done() and fresh.reached("shutdown").done()  # Unlike its inherited copy's
+
+
+def test_a_forked_process_never_logs_for_its_copies_of_workers():
+    # A handler whose stream's lock a thread holds as the process forks, blocked writing to a pipe nothing reads
+    read, write = os.pipe()
+    stream = open(write, "w", buffering=1)
+    handler = logging.StreamHandler(stream)
+    blocked = threading.Thread(target=stream.buffer.write, args=(b"x" * (1 << 20),))
+    with running(Worker) as worker:
+        worker.logger.addHandler(handler)
+        blocked.start()
+        while select.select([], [write], [], 0)[1]:  # Until the pipe is full, so the write blocks holding the lock
+            time.sleep(0.001)
+        try:
+            with forked() as f:
+                if f.child:  # The fork handler logged nothing as it stopped the worker, else it would have hung here
+                    worker._log(logging.ERROR, "never written")  # Nor does anything the worker logs later
+                    assert not worker.logger.disabled  # Though the logger itself is still the user's to use
+                    assert worker._stopped.result().args[0].endswith(f" forked into process {os.getpid()}")
+        finally:
+            worker.logger.removeHandler(handler)
+            while blocked.is_alive():  # Draining the pipe, so the write finishes
+                if select.select([read], [], [], 0.01)[0]:
+                    os.read(read, 1 << 16)
+            stream.close()
+            os.close(read)

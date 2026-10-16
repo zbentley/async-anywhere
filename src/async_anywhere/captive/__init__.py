@@ -189,9 +189,9 @@ from weakref import WeakSet
 
 from attrs import Factory, define, field, validators
 
-from async_anywhere._util import validate_coroutine_function, LockProtected
+from async_anywhere._util import validate_coroutine_function, LockProtected, copy_exception
 from async_anywhere.captive import _fork_safety
-from async_anywhere.captive._exceptions import WorkerInterrupted, WorkerStopped, copied, WorkerForked
+from async_anywhere.captive._exceptions import WorkerInterrupted, WorkerStopped, WorkerForked
 from async_anywhere.captive._stopped import WorkerStopFuture
 from async_anywhere.captive._timer import Timer
 from async_anywhere.futures import AwaitableFuture
@@ -301,7 +301,8 @@ class CaptiveWorker:
         Returns True if called from the worker's captive event loop thread. Returns False otherwise. Also returns False
         if the worker's thread has fork(2)ed and this method is called from a child process.
         """
-        # The worker's thread becomes the main thread if a fork() has occurred.
+        # The worker's thread becomes the main thread if a fork() has occurred. Since the worker's thread is a daemon,
+        # it'll never become the main thread in the parent, even if the original main thread exits.
         return current_thread() is self._thread is not main_thread()
 
     def stop(self, interrupt=False, wait=True) -> AwaitableFuture[WorkerStopped]:
@@ -359,6 +360,11 @@ class CaptiveWorker:
 
     def _fail(self, future: AwaitableFuture, error: BaseException | None = None) -> bool:
         return future.set_exception_if_not_done(error or self._finished.exception_or_none() or self._stopped.result(timeout=0))
+
+    def _log(self, level: int, msg: str, *args, **kwargs):
+        # Only on the worker's thread, as for hooks: in a forked process, a handler's stream may be locked forever
+        if self.in_worker():
+            self.logger.log(level, msg, *args, stacklevel=2, **kwargs)
 
     def _after_fork_in_child(self, pid: int):
         """
@@ -431,23 +437,29 @@ class CaptiveWorker:
             # run), fail the runner future. The constructor waits on that future as a signal that the worker's ready;
             # failures here will crash the constructor with an informative error.
             self._fail(self._runner)
+            # Not in a process forked from a call: its copy of the loop would run cleanup that talks over the parent's
+            # sockets, and closing it may unregister fds from the epoll it shares with the parent
+            in_worker = self.in_worker()
             try:
-                # TODO log the non-call/non-run tasks this cancels
-                tasks = asyncio.all_tasks(loop)
-                for task in tasks:
-                    if task.cancel():
-                        # Calls among them (after a crash) tell their waiters why: see _job()
-                        self._stopped.interrupted = True
-                # TODO: log the threads this abandons, per worker: asyncio only warns, with a RuntimeWarning shown once.
-                # Created before the wait below starts its clock, so its own timeout fires (and warns) first.
-                # TODO some event loops may not accept timeout for executor shutdown, deal with that
-                tasks.add(loop.create_task(loop.shutdown_default_executor(timeout=0.05)))
-                tasks.add(loop.create_task(loop.shutdown_asyncgens()))
-                loop.run_until_complete(asyncio.wait(tasks, timeout=0.05))
+                if in_worker:
+                    # TODO log the non-call/non-run tasks this cancels
+                    tasks = asyncio.all_tasks(loop)
+                    for task in tasks:
+                        if task.cancel():
+                            # Calls among them (after a crash) tell their waiters why: see _job()
+                            self._stopped.interrupted = True
+                    # TODO: log the threads this abandons, per worker: asyncio only warns, with a RuntimeWarning shown
+                    # once.
+                    # Created before the wait below starts its clock, so its own timeout fires (and warns) first.
+                    # TODO some event loops may not accept timeout for executor shutdown, deal with that
+                    tasks.add(loop.create_task(loop.shutdown_default_executor(timeout=0.05)))
+                    tasks.add(loop.create_task(loop.shutdown_asyncgens()))
+                    loop.run_until_complete(asyncio.wait(tasks, timeout=0.05))
             finally:
                 self._finalize()
                 self._calls.clear()
-                self._loop.close()  # Shuts the executor down without waiting, if it hasn't been already
+                if in_worker:
+                    self._loop.close()  # Shuts the executor down without waiting, if it hasn't been already
                 # The very last action: stop()'s waiters wait for it, and on_shutdown() follows
                 self._finished.set_result_if_not_done(self._stopped.result())
 
@@ -505,7 +517,7 @@ class CaptiveWorker:
             # These two exception types are specially handled by CPython:
             # 1. They're handled in the interpreter in a racy way, so copy them.
             # 2. They always signal thread/loop-wide crash to the runtime, so they're always reraised.
-            self._fail(future, copied(ex))
+            self._fail(future, copy_exception(ex))
             raise
         except BaseException as ex:
             # If we can't report the error to the user, or if it's a non-CancelledError BaseException, reraise:
