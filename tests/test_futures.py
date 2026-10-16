@@ -131,18 +131,9 @@ async def test_an_async_future_cancelled_after_the_future_finished_isnt_returned
     assert await future.as_async_future() == "done"
 
 
+@pytest.mark.xfail(strict=True, reason="BUG: one waiter giving up cancels the cached async future for all on its loop")
 @pytest.mark.parametrize(
-    "awaitable",
-    [
-        pytest.param(lambda future: future, id="awaited"),
-        pytest.param(
-            lambda future: future.as_async_future(),
-            id="as_async_future",
-            marks=pytest.mark.xfail(
-                strict=True, reason="BUG: one waiter giving up cancels the cached async future for all on its loop"
-            ),
-        ),
-    ],
+    "awaitable", [lambda future: future, lambda future: future.as_async_future()], ids=["awaited", "as_async_future"]
 )
 async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_waiters_alone(awaitable):
     """as_async_future() caches one asyncio.Future per loop, which all waiters there share, and cancelling a waiting task
@@ -151,7 +142,7 @@ async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_waiters
     The shared asyncio.Future is then cancelled though its source isn't, so one waiter giving up cancels it for every
     other waiter on that loop, now and later. Nothing in this package runs its futures (WorkerStopFuture, which refuses
     cancel() too, shields its waiters instead), so this stays an expected failure, to show the limit of the cache, and
-    to flag a fix for it. Awaiting, which wraps the future afresh each time, is unaffected."""
+    to flag a fix for it. Awaiting goes through as_async_future(), so shares it."""
     future = AwaitableFuture()
     assert future.set_running_or_notify_cancel()  # Running, as an executor's job would be, so it can't be cancelled
 

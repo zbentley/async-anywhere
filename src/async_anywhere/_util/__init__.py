@@ -1,12 +1,10 @@
-from asyncio import Future, AbstractEventLoop, run_coroutine_threadsafe
-from asyncio import wrap_future, wait, FIRST_COMPLETED, ensure_future, get_running_loop, gather as asyncio_gather
+from asyncio import wrap_future, wait, FIRST_COMPLETED, ensure_future, gather as asyncio_gather
 from concurrent.futures import Future as ConcurrentFuture
 from contextlib import AbstractContextManager
-from functools import partial
 from inspect import iscoroutinefunction
 from sys import exc_info
 from threading import RLock, Lock
-from typing import Awaitable, AsyncGenerator, Callable, TYPE_CHECKING, Iterable, Collection
+from typing import Awaitable, AsyncGenerator, TYPE_CHECKING, Iterable, Collection
 
 if TYPE_CHECKING:  # async_anywhere.futures imports this module
     from async_anywhere.futures import AwaitableFuture
@@ -21,14 +19,9 @@ def fast_collection[T](items: Iterable[T]) -> Collection[T]:
     items = tuple(items)
     return frozenset(items) if len(items) > FAST_COLLECTION_SET_CUTOFF else items
 
-def running_loop() -> AbstractEventLoop | None:
-    try:
-        return get_running_loop()
-    except RuntimeError:
-        return None
-
-
 class LockProtected[T](AbstractContextManager[T]):
+    __slots__ = ("_lock", "_value")
+
     def __init__(self, initial: T, recursive=False):
         self._lock = RLock() if recursive else Lock()
         self._value = initial

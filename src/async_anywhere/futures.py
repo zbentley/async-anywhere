@@ -74,7 +74,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
                 raise asyncio.CancelledError
             return self.result()
         # Using "yield from" flags this function as a generator so that the above "return" works right:
-        return (yield from asyncio.wrap_future(self).__await__())
+        return (yield from self.as_async_future().__await__())
 
     def cancel(self) -> bool:
         cancelled = super().cancel()
@@ -120,11 +120,18 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
 
     def _check_blocking(self):
         # This hokey control flow is intentional; it speeds up checks on happy paths.
-        if self._prevent_blocking_wait_in_loops is self._prevent_blocking_wait_in_threads is None or self.done():
+        if (loops := self._prevent_blocking_wait_in_loops) is (threads := self._prevent_blocking_wait_in_threads) is None or self.done():
             return
-        if self._prevent_blocking_wait_in_loops and asyncio._get_running_loop() in self._prevent_blocking_wait_in_loops:
+        if (
+            loops is not None
+            and (loop := asyncio._get_running_loop()) is not None
+            and loop in loops
+        ):
             raise RuntimeError(
-                f"Waiting for {self!r} would deadlock: current event loop '{asyncio._get_running_loop()!r}' was set in 'prevent_blocking_wait_in_loops'")
-        if self._prevent_blocking_wait_in_threads and current_thread() in self._prevent_blocking_wait_in_threads:
+                f"Waiting for {self!r} would deadlock: current event loop '{loop!r}' was set in 'prevent_blocking_wait_in_loops'")
+        if (
+            threads is not None
+            and current_thread() in threads
+        ):
             raise RuntimeError(
                 f"Waiting for {self!r} would deadlock: current thread '{current_thread()!r}' was set in 'prevent_blocking_wait_in_threads'")
