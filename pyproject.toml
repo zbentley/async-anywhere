@@ -26,6 +26,7 @@ requires-python = ">=3.14"
 
 [dependency-groups]
 dev = [
+  "anyio>=4.15.1",
   "asgiref>=3.12.1",
   "coverage[toml]>=7.16.2",
   "deptry>=0.25.1",
@@ -36,7 +37,6 @@ dev = [
   "Pygments>=2.21.0",
   "pyright>=1.1.414",
   "pytest>=9.1.1",
-  "pytest-asyncio>=1.4.0",
   "pytest-clarity>=1.0.1",
   "pytest-cov>=7.1.0",
   "pytest-doctestplus>=1.7.1",
@@ -47,7 +47,9 @@ dev = [
   "ruff>=0.17.1",
   "safety>=3.8.1",
   "sphinx>=9.1.0",
+  "trio>=0.34.0",
   "typeguard>=4.6.0",
+  "uvloop>=0.23.0",
   "xdoctest[colors]>=1.3.2",
 ]
 
@@ -68,8 +70,7 @@ experimental_namespace_package = true
 known_first_party = ["async_anywhere"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+anyio_mode = "auto"  # Every async test runs through anyio's plugin, on the backends tests/conftest.py gives it
 addopts = [
     "-vvx",
   "--strict-markers",
@@ -86,6 +87,7 @@ filterwarnings = [
 ]
 markers = [
   "logs_asyncio_errors: the test expects asyncio to log errors, and checks caplog itself (see tests/conftest.py)",
+  "backends(*names): the anyio backends an async test runs on, rather than asyncio and uvloop (see tests/conftest.py)",
 ]
 
 [tool.black]

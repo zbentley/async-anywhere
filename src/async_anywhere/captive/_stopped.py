@@ -41,14 +41,13 @@ class WorkerStopFuture(AwaitableFuture[WorkerStopped]):
             raise error
         return copy_exception(super().result(timeout))
 
-    def as_async_future(
-        self, *args, **kwargs
-    ) -> asyncio.Future[WorkerStopped]:
+    def as_async_future(self, *args, **kwargs):
         # The loop's cached future is shared by all its waiters, and cancelling a waiting task cancels the future it awaits:
         # as this can't be cancelled, one waiter giving up would cancel it for the rest. Each gets a shield instead, which
         # is quiet as this fails only once the worker is broken (asyncio.shield() logs a shielded future's exception once a
         # waiter has given up).
-        return asyncio.shield(super().as_async_future(*args, **kwargs))
+        future = super().as_async_future(*args, **kwargs)
+        return asyncio.shield(future) if isinstance(future, asyncio.Future) else future  # Trio's waiters can't cancel it
 
     def clean_stop(self, why: Literal["expired", "stopped", "parent task returned"], calls: Collection) -> bool:
         match why:

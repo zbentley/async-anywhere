@@ -1,4 +1,5 @@
-"""Suite-wide options, and the strict teardown every test gets: see strict_teardown()."""
+"""Suite-wide options, the backends async tests run on (see pytest_generate_tests()), and the strict teardown every test
+gets: see strict_teardown()."""
 from __future__ import annotations
 
 import gc
@@ -10,6 +11,7 @@ from contextlib import suppress
 from weakref import WeakSet
 
 import pytest
+import uvloop
 from _pytest.threadexception import ThreadExceptionMeta, thread_exceptions as thread_exceptions_key
 
 from async_anywhere.captive import _fork_safety
@@ -28,8 +30,7 @@ def pytest_addoption(parser):
     parser.addoption(
         "--asyncio-debug-all",
         action="store_true",
-        help="Run every event loop, workers' included, in asyncio's debug mode (pytest-asyncio's --asyncio-debug only "
-        "covers its own)",
+        help="Run every event loop, workers' and tests' alike, in asyncio's debug mode",
     )
 
 
@@ -40,7 +41,28 @@ def pytest_configure(config):
         sys.setswitchinterval(1e-6)
     if config.getoption("asyncio_debug_all"):
         os.environ["PYTHONASYNCIODEBUG"] = "1"  # Read by each loop as it's made, as asyncio.new_event_loop() makes them
-        config.option.asyncio_debug = True  # pytest-asyncio's own loops, which it sets explicitly
+
+
+def pytest_generate_tests(metafunc):
+    # Async tests (which anyio's plugin runs) run on asyncio, with its own loop and with uvloop's, or on the backends
+    # their backends marker names: trio too, for tests written against anyio's API (or trio's) rather than asyncio's
+    if "anyio_backend" in metafunc.fixturenames:
+        debug = {"debug": True} if metafunc.config.getoption("asyncio_debug_all") else {}
+        backends = {
+            "asyncio": ("asyncio", debug),
+            "uvloop": ("asyncio", {"loop_factory": uvloop.new_event_loop, **debug}),
+            # A timeout's signal fails a test that hangs, but anyio's trio runner then waits forever for the run to end
+            "trio": pytest.param(("trio", {}), marks=pytest.mark.timeout(method="thread")),
+        }
+        marker = metafunc.definition.get_closest_marker("backends")
+        names = marker.args if marker else ("asyncio", "uvloop")
+        metafunc.parametrize("anyio_backend", [backends[name] for name in names], ids=names)
+
+
+@pytest.fixture
+def anyio_backend():
+    """Overrides anyio's, whose own params would clash with pytest_generate_tests(), which gives this its value."""
+    raise AssertionError("anyio_backend is parametrized by pytest_generate_tests()")
 
 
 @pytest.fixture

@@ -13,6 +13,7 @@ import tempfile
 import time
 import traceback
 
+import anyio
 import pytest
 
 from async_anywhere.captive import CaptiveWorker
@@ -183,8 +184,9 @@ class running[W: CaptiveWorker | Harness]:
         return self.worker
 
     async def __aexit__(self, *_):
-        await asyncio.wait_for(self.worker.stop(interrupt=True), 5)
-        await asyncio.to_thread(self.worker._thread.join, 5)
+        with anyio.fail_after(5):  # So it works on any of anyio's backends
+            await self.worker.stop(interrupt=True)
+        await anyio.to_thread.run_sync(self.worker._thread.join, 5)
         assert not self.worker._thread.is_alive()
 
 

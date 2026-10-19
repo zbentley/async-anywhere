@@ -5,7 +5,9 @@ import asyncio
 import concurrent.futures
 import threading
 
+import anyio
 import pytest
+import trio
 
 from async_anywhere.futures import AwaitableFuture
 
@@ -186,6 +188,73 @@ def test_cancelled_futures_count_as_done_for_concurrent_futures_wait_and_as_comp
     assert future in done
     assert future.cancel()  # Again, which is fine
     assert list(concurrent.futures.as_completed([future], timeout=0.1)) == [future]
+
+
+# Other async libraries: awaited through anyio's API, so on trio as well as asyncio
+
+
+@pytest.mark.backends("asyncio", "uvloop", "trio")
+async def test_awaiting_works_with_any_library():
+    done, failed = AwaitableFuture(), AwaitableFuture()
+    results = []
+
+    async def wait(future):
+        try:
+            results.append(await future)
+        except ValueError as error:
+            results.append(error)
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(wait, done)
+        group.start_soon(wait, failed)
+        while not (done._done_callbacks and failed._done_callbacks):  # noqa: ASYNC110 (Until both wait, rather than find them done)
+            await anyio.sleep(0.001)
+        threading.Thread(target=done.set_result, args=("done",)).start()  # From another thread, as a worker's would be
+        threading.Thread(target=failed.set_exception, args=(error := ValueError(),)).start()
+    assert sorted(results, key=str) == [error, "done"]  # The same exception, raised again
+
+
+@pytest.mark.backends("asyncio", "uvloop", "trio")
+async def test_cancelling_a_waiter_cancels_the_future_with_any_library():
+    future = AwaitableFuture()
+    with anyio.move_on_after(0.01):
+        await future
+    assert future.cancelled()
+
+
+@pytest.mark.backends("trio")
+async def test_trio_futures_are_one_per_run_and_cancel_the_future():
+    future = AwaitableFuture()
+    here = future.as_async_future()
+    assert future.as_async_future() is here and not isinstance(here, asyncio.Future)
+
+    async def elsewhere():
+        return future.as_async_future() is not here
+
+    assert await trio.to_thread.run_sync(trio.run, elsewhere)  # Another run, on another thread
+    assert here.cancel() and future.cancelled()
+    with pytest.raises(concurrent.futures.CancelledError):  # As result() raises, not asyncio's
+        await here
+
+
+@pytest.mark.backends("trio")
+async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_trio_waiters_alone():
+    # Unlike asyncio's waiters, which share as_async_future()'s one per loop: see the expected failure above
+    future = AwaitableFuture()
+    assert future.set_running_or_notify_cancel()  # Running, as an executor's job would be, so it can't be cancelled
+    results = []
+
+    async def wait():
+        results.append(await future)
+
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(wait)
+        with trio.move_on_after(0.01):
+            await future
+        assert not future.cancelled()
+        future.set_result("done")
+    assert results == ["done"]
+    assert await future == "done"
 
 
 def test_cancelling_from_several_threads_at_once_notifies_once(caplog, scale):

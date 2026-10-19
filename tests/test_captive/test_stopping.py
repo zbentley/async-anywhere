@@ -6,6 +6,7 @@ import concurrent.futures
 import contextlib
 import gc
 import sys
+import threading
 import time
 import traceback
 
@@ -83,7 +84,15 @@ class BlockedAtFirst(Expiring):
 
 
 @TIMING_SENSITIVE
-async def test_calls_made_before_expiry_hold_it_off_though_the_loop_is_blocked():
+async def test_calls_made_before_expiry_hold_it_off_though_the_loop_is_blocked(request, worker_loop):
+    if worker_loop == "uvloop":
+        request.applymarker(
+            pytest.mark.xfail(
+                strict=True,
+                raises=CleanStop,
+                reason="libuv runs overdue timers before callbacks queued while the loop was blocked, so expiry wins",
+            )
+        )
     async with running(BlockedAtFirst) as worker:
         await asyncio.sleep(IDLE / 2)
         assert await worker.work() == "done"  # Taken by the loop before the overdue countdown fires
@@ -782,15 +791,23 @@ class LeavesWork(Worker):
         ),
     ],
 )
-async def test_work_left_running_is_cancelled_then_abandoned(kind, left, caplog):
+async def test_work_left_running_is_cancelled_then_abandoned(kind, left, caplog, request, worker_loop, thread_exceptions):
     async with running(LeavesWork) as worker:
         await worker.leave(kind)
         started = time.monotonic()
         await worker.stop()
         assert time.monotonic() - started < 0.5
         assert worker.left == left
+    if uvloop_executor := kind == "executor" and worker_loop == "uvloop":
+        # uvloop's executor shutdown ignores its timeout, so is abandoned (as a stubborn task is) until the thread ends,
+        # when it reports to its loop, though it has closed
+        request.applymarker(pytest.mark.logs_asyncio_errors)
+        for thread in threading.enumerate():
+            if thread.name.endswith("(_do_shutdown)"):
+                thread.join(2)
+        assert [repr(error) for error in thread_exceptions()] == ["RuntimeError('Event loop is closed')"]
     gc.collect()
-    assert ("Task was destroyed but it is pending" in caplog.text) == (kind == "stubborn")
+    assert ("Task was destroyed but it is pending" in caplog.text) == (kind == "stubborn" or uvloop_executor)
 
 
 def test_submission_the_loop_never_runs_fails_instead_of_hanging(monkeypatch):

@@ -1,27 +1,11 @@
 import asyncio
 import concurrent.futures
 from threading import Thread, current_thread
-from typing import Awaitable, Iterable, Collection
+from typing import Awaitable, Iterable, Collection, Any
 
 from async_anywhere._util import LockProtected, fast_collection
-
-
-class _AsyncFuture[T](asyncio.Future[T]):
-    __slots__ = ('_source',)
-
-    def __init__(self, source: concurrent.futures.Future[T], loop: asyncio.AbstractEventLoop):
-        super().__init__(loop=loop)
-        self._source = source
-        asyncio.futures._chain_future(source, self)  # As asyncio.wrap_future() does
-
-    def cancel(self, msg=None) -> bool:
-        """Changes cancellation behavior of asyncio.Future in two ways:
-            1. Cancels the underlying concurrent.futures.Future right away, rather than in a later loop iteration.
-            2. Refuses cancellation (returns False) if the underlying concurrent.futures.Future is already done.
-        """
-        if self._source.cancel() or not self._source.done():
-            return super().cancel(msg)
-        return False
+from async_anywhere._util.trio import TrioRuntime
+from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
 
 _template = concurrent.futures.Future()
 _template.cancel()
@@ -29,7 +13,7 @@ _template.cancel()
 class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     """A concurrent.futures.Future subclass that can also be awaited. Provides the following behaviors:
 
-    - Calling "await AwaitableFuture(...)" can be done from any event loop.
+    - Calling "await AwaitableFuture(...)" can be done from any event loop, or trio task (anyio's included).
     - If an AwaitableFuture has already completed, "await"ing it is significantly cheaper than "await"ing an
       asyncio.Future or using asyncio.wrap_future.
     - Users can specify one or more event loops or threads within which blocking wait methods inherited from
@@ -63,11 +47,15 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
 
         self._prevent_blocking_wait_in_threads = self._blocking_checker(prevent_blocking_wait_in_threads, Thread)
         self._prevent_blocking_wait_in_loops = self._blocking_checker(prevent_blocking_wait_in_loops, asyncio.AbstractEventLoop)
-        self._async_future_cache = LockProtected(dict())
+        self._async_future_cache: LockProtected[dict[Any, AsyncioAwaitableFuture[T] | Awaitable[T]]] = LockProtected(dict())
 
-    def as_async_future(self, loop: asyncio.AbstractEventLoop | None = None, require_running_loop=True) -> asyncio.Future[T]:
+    def as_async_future(
+        self, loop: asyncio.AbstractEventLoop | None = None, require_running_loop=True
+    ) -> asyncio.Future[T] | Awaitable[T]:
         """
-        Returns an asyncio.Future that is linked to this AwaitableFuture on the specified event loop.
+        Returns an asyncio.Future that is linked to this AwaitableFuture on the specified event loop. Called in a trio
+        task with no loop given (anyio's on trio, or a trio guest run's on an asyncio loop, included), it returns its trio
+        counterpart for that run instead: awaitable, and cancellable, likewise, but not an asyncio.Future.
 
         Note that the returned future may not be new/unique; use wrap_future on the result of this method if a unique
         future is required.
@@ -81,13 +69,18 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         :return: an asyncio.Future linked to the invocant.
         """
 
-        if loop is None:
-            loop = asyncio.get_running_loop() if require_running_loop else asyncio.get_event_loop()
-        elif require_running_loop and loop.is_closed():
-            raise RuntimeError('Event loop is closed')
+        # Trio first, as a guest run's tasks run on an asyncio loop's thread, while it's running
+        if loop is None and TrioRuntime.in_task():
+            key, kind = TrioRuntime.current_token(), TrioRuntime.Future
+        else:
+            if loop is None:
+                loop = asyncio.get_running_loop() if require_running_loop else asyncio.get_event_loop()
+            elif require_running_loop and loop.is_closed():
+                raise RuntimeError('Event loop is closed')
+            key, kind = loop, AsyncioAwaitableFuture
         with self._async_future_cache as cache:
-            if not (cached := cache.get(loop)):
-                cached = cache[loop] = _AsyncFuture(self, loop)
+            if not (cached := cache.get(key)):
+                cached = cache[key] = kind(self, key)
             return cached
 
     def __await__(self):

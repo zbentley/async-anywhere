@@ -16,7 +16,18 @@ worker, on its thread, and must never block (by default, they do nothing). Pass 
 loop other than with asyncio.new_event_loop(), as for asyncio.Runner. It MUST return a brand-new event loop, not yet
 started, whose state isn't bound to the thread that calls it: the worker calls it on the thread constructing the worker,
 but runs the loop on the worker's own. Loops that bind themselves to the thread making them as they're made (installing
-signal handlers, say) aren't supported.
+signal handlers, say) aren't supported. uvloop.new_event_loop is fine.
+
+Callers can use any async library that awaits a call can: asyncio (on any loop), or trio, or anyio on either. The worker
+itself runs on asyncio, so bridged functions and the parent task are asyncio code, which may use anyio (whose asyncio
+backend finds itself there). A parent task written for trio can run as a guest on the worker's loop, through
+trio.lowlevel.start_guest_run(): see TrioGuest in tests/test_captive/test_runtimes.py for a recipe.
+
+Bridged functions stay asyncio code, but can hand trio code to such a guest: in TrioGuest's recipe, its run() starts the
+trio code in a nursery the guest keeps open (through the run's TrioToken, as trio code can't be started from asyncio
+directly), and waits for it. What the trio code returns or raises is what the bridged function does, and cancelling the
+job (as its caller cancels the call, or the worker interrupts it) cancels the trio code's own CancelScope, then waits for
+it to clean up. Interrupting the worker cancels the guest too, and with it whatever trio code is still running there.
 
 Lifecycle
 ---------
@@ -120,10 +131,11 @@ the worker has stopped, it raises why instead, as Executor.submit() does once sh
   could finish it.
 - But it isn't a coroutine, nor an asyncio future: create_task(), TaskGroup.create_task() and asyncio.wait() reject it, and
   inspect.iscoroutinefunction() is False for bridged functions (so frameworks may take them for synchronous). For APIs
-  that take asyncio futures, use asyncio.wrap_future(call). Awaiting one needs an asyncio loop: trio callers can wait
-  with trio.to_thread.run_sync(call.result).
+  that take asyncio futures, use asyncio.wrap_future(call). It can be awaited in a trio task too (anyio's, on trio,
+  included), whose cancellation cancels the job, as on asyncio.
 - The job runs in a task of its own on the worker's loop, with a copy of the caller's context variables as they were when
-  the call was made. Changes it makes to them don't reach the caller. Library state the copy carries, tied to
+  the call was made, bar sniffio's record of the caller's async library (which anyio.run() sets): anyio, in the job,
+  finds asyncio. Changes it makes to them don't reach the caller. Library state the copy carries, tied to
   the caller's thread, may or may not keep working on the worker's: for a synchronous caller (through asgiref's
   async_to_sync()), the job's thread-sensitive sync_to_async() calls run on the caller's thread with asgiref 3.11, but on
   another with 3.12.
@@ -164,7 +176,12 @@ Caveats
   directly. And a drain waits for calls that the parent task's own tasks have in flight, as for any other.
 - anyio's task groups cut their children's cleanup short as they're cancelled, unless it's shielded: as ever with anyio.
 - A worker may stop just as a call is made, by expiry for one: callers that should carry on can retry on CleanStop, from
-  the call or its result, with a fresh worker.
+  the call or its result, with a fresh worker. On uvloop, which runs overdue timers ahead of callbacks queued while the
+  loop was blocked, a call made while synchronous code blocks the worker's loop past its idle timeout is refused so,
+  where asyncio's loop would take the call first.
+- uvloop's executor shutdown, unlike asyncio's, ignores its timeout, so when the worker abandons executor threads (see
+  Lifecycle), it's abandoned too: asyncio logs "Task was destroyed but it is pending!" for it, and it raises
+  RuntimeError("Event loop is closed") on a thread of its own, once those threads finish.
 - Workers run on daemon threads: one not shut down before the interpreter exits stops without cleaning up (the parent
   task's cleanup never runs). Shut workers down with atexit if that matters.
 - A process forked with workers alive inherits copies of them, but not their threads, so none can be used there: see
@@ -180,8 +197,9 @@ Caveats
 """
 import asyncio
 import logging
+import sys
 from contextlib import suppress
-from contextvars import Context
+from contextvars import Context, copy_context
 from functools import cached_property, wraps
 from threading import Thread, current_thread, main_thread, Condition
 from typing import Any, Callable, Coroutine, final
@@ -282,6 +300,11 @@ class CaptiveWorker:
             in_loop = self.in_worker()
             loop = self._loop
             future = AwaitableFuture(prevent_blocking_wait_in_loops=loop)
+            context = copy_context()
+            if (sniffio := sys.modules.get("sniffio")) and context.get(sniffio.current_async_library_cvar):
+                # Which anyio.run() sets to its backend: left as it is, a caller's on trio would have anyio, in the job,
+                # take it to be on trio too. As trio's threads do, cleared, so that sniffio looks for the job's loop.
+                context.run(sniffio.current_async_library_cvar.set, None)
             with self._submitting as pending:
                 if self._stopped.done():
                     self._finished.raise_if_failed()  # Only here, as _stopped is always done once _finished has failed
@@ -289,9 +312,9 @@ class CaptiveWorker:
                 pending.add(future)
                 # Only queues a callback, so never waits for the worker's loop. It runs in a copy of the caller's context.
                 if in_loop:
-                    loop.call_soon(self._start, future, func, args, kwargs)
+                    loop.call_soon(self._start, future, func, args, kwargs, context=context)
                 else:
-                    loop.call_soon_threadsafe(self._start, future, func, args, kwargs)
+                    loop.call_soon_threadsafe(self._start, future, func, args, kwargs, context=context)
             return future
 
         return call

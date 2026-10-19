@@ -7,6 +7,7 @@ from typing import Iterable, Collection
 
 FAST_COLLECTION_SET_CUTOFF = 5
 
+
 def validate_coroutine_function(_, attribute, value):
     if not iscoroutinefunction(value):
         raise TypeError(f"{attribute.name} must be a coroutine function (an async def), not {value!r}")
