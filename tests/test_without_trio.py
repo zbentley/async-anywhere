@@ -1,4 +1,5 @@
-"""async_anywhere without trio installed, which it uses only if it is: in a subprocess, as importing can't be undone."""
+"""async_anywhere without trio or anyio installed, which it uses only if they are: in a subprocess, as importing can't
+be undone."""
 from __future__ import annotations
 
 import ast
@@ -15,7 +16,7 @@ import async_anywhere
 SCRIPT = textwrap.dedent(
     """
     import sys
-    sys.modules["trio"] = None  # So that importing it raises ModuleNotFoundError, as if it weren't installed
+    sys.modules["trio"] = sys.modules["anyio"] = None  # So that importing them raises, as if they weren't installed
     sys.path.insert(0, sys.argv[1])  # The source the tests import
     import asyncio, importlib, pkgutil, threading
     import async_anywhere
@@ -40,7 +41,7 @@ SCRIPT = textwrap.dedent(
 )
 
 
-def test_everything_imports_and_works_on_asyncio_without_trio():
+def test_everything_imports_and_works_on_asyncio_without_trio_or_anyio():
     source = str(Path(async_anywhere.__file__).parents[1])
     ran = subprocess.run(  # noqa: S603 (This interpreter, running the script above)
         [sys.executable, "-W", "error", "-c", SCRIPT, source], capture_output=True, text=True, timeout=30, check=False

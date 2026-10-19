@@ -1,6 +1,6 @@
 """A captive worker: a thread with an asyncio event loop of its own, hosting one client, whose operations any thread or
 event loop can call. It's a connection pool of size one, for upstreams that allow a single connection at a time, and for
-clients that must stay on the loop that created them. It uses the standard library alone.
+clients that must stay on the loop that created them. Besides the standard library, it needs only attrs and sniffio.
 
 Usage
 -----
@@ -197,7 +197,6 @@ Caveats
 """
 import asyncio
 import logging
-import sys
 from contextlib import suppress
 from contextvars import Context, copy_context
 from functools import cached_property, wraps
@@ -205,6 +204,7 @@ from threading import Thread, current_thread, main_thread, Condition
 from typing import Any, Callable, Coroutine, final
 from weakref import WeakSet
 
+import sniffio
 from attrs import Factory, define, field, validators
 
 from async_anywhere._util import validate_coroutine_function, LockProtected, copy_exception
@@ -301,7 +301,7 @@ class CaptiveWorker:
             loop = self._loop
             future = AwaitableFuture(prevent_blocking_wait_in_loops=loop)
             context = copy_context()
-            if (sniffio := sys.modules.get("sniffio")) and context.get(sniffio.current_async_library_cvar):
+            if context.get(sniffio.current_async_library_cvar):
                 # Which anyio.run() sets to its backend: left as it is, a caller's on trio would have anyio, in the job,
                 # take it to be on trio too. As trio's threads do, cleared, so that sniffio looks for the job's loop.
                 context.run(sniffio.current_async_library_cvar.set, None)

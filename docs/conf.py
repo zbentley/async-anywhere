@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from inspect import isabstract
-
 
 project = "async-anywhere"
 author = "Zac Bentley"
