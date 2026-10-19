@@ -35,7 +35,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     @staticmethod
     def _blocking_checker[K](vals: K | Iterable[K], kind: type[K]) -> Collection[K] | None:
         vals = fast_collection((vals,) if isinstance(vals, kind) else vals)
-        assert all(isinstance(val, kind) for val in vals)
+        # assert all(isinstance(val, kind) for val in vals) TODO library debug mode assert
         return vals or None
 
     def __init__(

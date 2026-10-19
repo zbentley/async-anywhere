@@ -376,8 +376,10 @@ class CaptiveWorker:
                     if not (self._stopped.interrupted and task.cancelling()):
                         task.cancel()
 
-                with suppress(RuntimeError):  # The loop has closed
+                try:
                     self._loop.call_soon_threadsafe(cancel)
+                except RuntimeError:  # The loop has closed
+                    pass
 
         future.add_done_callback(forward)
 
