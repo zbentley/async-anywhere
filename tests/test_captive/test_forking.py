@@ -13,9 +13,9 @@ import time
 import pytest
 
 from async_anywhere.captive import _fork_safety
-from async_anywhere.captive._exceptions import CleanStop, WorkerForked, WorkerStopped
+from async_anywhere.captive.exceptions import CleanStop, WorkerForked, WorkerStopped
 from async_anywhere.futures import AwaitableFuture
-from tests.test_captive.utils import TIMING_SENSITIVE, SlowStop, Worker, bridge, forked, running
+from tests.test_captive.utils import Worker, bridge, forked, reason, running
 
 
 pytestmark = pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
@@ -30,14 +30,15 @@ class Remembers(Worker):
             self.cleaned_up_in = os.getpid()
 
 
-@TIMING_SENSITIVE
 def test_a_forked_process_cant_use_its_copies_of_workers_nor_wait_for_them():
-    worker, other, slow, finished, draining = Remembers(), Worker(), SlowStop(), Worker(), Worker()
+    worker, other, finished, draining = Remembers(), Worker(), Worker(), Worker()
     finished.stop().result(2)
     drained = draining.work(10)
     assert type(draining.stop(wait=False).result(1)) is CleanStop  # Draining as the process forks
+    stopping = draining.stop()  # So still waiting for the drain as the process forks
     in_flight = worker.waits()  # Submitted as made, so in flight as the process forks
-    stopping = slow.stop()  # Still waiting for _run() to clean up as the process forks
+    # Bridged before the fork, so that calling them there reaches the call itself, past bridge()'s own check
+    work, other_work, draining_work = worker.work, other.work, draining.work
     holding, release = AwaitableFuture(), AwaitableFuture()
 
     def hold():
@@ -53,8 +54,8 @@ def test_a_forked_process_cant_use_its_copies_of_workers_nor_wait_for_them():
         if f.child:
             pid = os.getpid()
             with pytest.raises(WorkerForked, match=str(pid)):
-                worker.work()  # Rather than waiting for the lock, which a thread that isn't here holds
-            assert worker._stopped.result().args[0].endswith(f" forked into process {pid}")
+                work()  # Rather than waiting for the lock, which a thread that isn't here holds
+            assert reason(worker).endswith(f" forked into process {pid}")
             with pytest.raises(WorkerForked):
                 worker.stop(wait=False)
             with pytest.raises(WorkerForked):
@@ -62,15 +63,15 @@ def test_a_forked_process_cant_use_its_copies_of_workers_nor_wait_for_them():
             assert type(in_flight.exception(1)) is WorkerForked  # Rather than timing out: nothing here runs it
             assert type(stopping.exception(1)) is WorkerForked  # Likewise
             with pytest.raises(WorkerForked):
-                other.work()
+                other_work()
             with pytest.raises(WorkerForked):
                 worker.bridge(asyncio.sleep)  # Best-effort, but so here
             with pytest.raises(WorkerForked):
-                draining.work()  # Draining at the fork, so as if running...
+                draining_work()  # Draining at the fork, so as if running...
             with pytest.raises(WorkerForked):
                 draining.stop()
             assert type(drained.exception(1)) is WorkerForked
-            assert draining._stopped.result().args == ("(waiting for running jobs) manually stopped",)  # ...but not quite
+            assert reason(draining) == "(waiting for running jobs) manually stopped"  # ...but not quite
             with pytest.raises(CleanStop):
                 finished.work()  # Finished before the fork, so as in the parent
             with pytest.raises(CleanStop):
@@ -81,7 +82,7 @@ def test_a_forked_process_cant_use_its_copies_of_workers_nor_wait_for_them():
         else:
             release.set_result(None)
     holder.join()
-    assert worker.work().result(1) == "done" and not worker._stopped.done()  # The parent's carries on
+    assert worker.work().result(1) == "done"  # The parent's carries on
     worker.stop(interrupt=True).result(2)
     other.stop().result(2)
     draining.stop(interrupt=True).result(2)
@@ -109,10 +110,11 @@ class Forks(Worker):
     async def forks(self) -> forked:
         with self._submitting as pending:
             in_flight = list(pending)  # Before the fork handler fails and drops them
+        work = self.work  # Bridged before the fork, so that calling it there reaches the call itself
         with forked(wait=False) as f:  # For the test to check(), rather than blocking the worker's loop
             if f.child:  # Carrying on in this call, on its copy of the worker's loop
                 with pytest.raises(WorkerStopped, match="forked"):
-                    await self.work()  # Made and run on the worker's thread, as its forking thread is that here
+                    await work()  # Made and run on the worker's thread, as its forking thread is that here
                 assert self._stopped.done() and self.other._stopped.done()
                 assert in_flight and all(future.done() for future in in_flight)  # This call's own, for one
                 assert not self.in_worker()  # Not on the worker's thread here, though this one was it
@@ -123,16 +125,18 @@ class Forks(Worker):
 def test_a_call_that_forks_carries_on_only_in_the_parent():
     with running(Worker) as other, running(Forks, other) as worker:
         worker.forks().result(5).check()
-        assert worker.work().result(1) == "done" and not worker._stopped.done()
+        assert worker.work().result(1) == "done"
 
 
 def test_workers_stay_unusable_in_processes_forked_from_a_fork():
-    with running(Worker) as worker, forked() as f:
-        if f.child:
-            with forked() as grandchild:
-                if grandchild.child:
-                    with pytest.raises(WorkerForked):
-                        worker.work()
+    with running(Worker) as worker:
+        work = worker.work  # Bridged before the forks, so that calling it in the grandchild reaches the call itself
+        with forked() as f:
+            if f.child:
+                with forked() as grandchild:
+                    if grandchild.child:
+                        with pytest.raises(WorkerForked):
+                            work()
 
 
 def test_hooks_arent_called_in_a_forked_process():
@@ -169,7 +173,7 @@ def test_a_forked_process_never_logs_for_its_copies_of_workers():
                 if f.child:  # The fork handler logged nothing as it stopped the worker, else it would have hung here
                     worker._log(logging.ERROR, "never written")  # Nor does anything the worker logs later
                     assert not worker.logger.disabled  # Though the logger itself is still the user's to use
-                    assert worker._stopped.result().args[0].endswith(f" forked into process {os.getpid()}")
+                    assert reason(worker).endswith(f" forked into process {os.getpid()}")
         finally:
             worker.logger.removeHandler(handler)
             while blocked.is_alive():  # Draining the pipe, so the write finishes

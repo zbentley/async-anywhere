@@ -21,6 +21,6 @@ async def gather[T](*coros: Awaitable[T], return_exceptions: bool = False) -> tu
        desirable, but occasionally which makes some wrapping tools (e.g. asgiref.async_to_sync) not work, and also
        can confuse some type checkers. This is a regular async method, which helps with those situations.
     """
-    if not len(coros):
+    if len(coros) == 0:
         return ()
     return tuple(await asyncio.gather(*coros, return_exceptions=return_exceptions))

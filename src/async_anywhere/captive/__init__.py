@@ -209,7 +209,7 @@ from attrs import Factory, define, field, validators
 
 from async_anywhere._util import validate_coroutine_function, LockProtected, copy_exception
 from async_anywhere.captive import _fork_safety
-from async_anywhere.captive._exceptions import WorkerInterrupted, WorkerStopped, WorkerForked
+from async_anywhere.captive.exceptions import WorkerInterrupted, WorkerStopped, WorkerForked
 from async_anywhere.captive._stopped import WorkerStopFuture
 from async_anywhere.captive._timer import Timer
 from async_anywhere.futures import AwaitableFuture
@@ -291,6 +291,8 @@ class CaptiveWorker:
 
     def bridge[**P, T](self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
         self._finished.raise_if_failed()  # Best-effort: it's calling bridged functions that's always checked
+        # The jobs' name, which their coroutines' and tasks' reprs show (tracebacks show the code's own, _job)
+        name = f"{self._job.__qualname__}[{getattr(func, '__qualname__', None) or repr(func)}]"
 
         @wraps(func)
         def call(*args: P.args, **kwargs: P.kwargs) -> AwaitableFuture[T]:
@@ -312,9 +314,9 @@ class CaptiveWorker:
                 pending.add(future)
                 # Only queues a callback, so never waits for the worker's loop. It runs in a copy of the caller's context.
                 if in_loop:
-                    loop.call_soon(self._start, future, func, args, kwargs, context=context)
+                    loop.call_soon(self._start, future, func, args, kwargs, name, context=context)
                 else:
-                    loop.call_soon_threadsafe(self._start, future, func, args, kwargs, context=context)
+                    loop.call_soon_threadsafe(self._start, future, func, args, kwargs, name, context=context)
             return future
 
         return call
@@ -345,24 +347,23 @@ class CaptiveWorker:
             raise RuntimeError("stop(wait=True) on the worker's own thread would wait for itself")
 
         def begin():  # On the worker's loop. Not a call, so it isn't refused once the worker has stopped: it can cut a drain short.
-            if interrupt and self._calls:
+            if interrupt and len(self._calls) > 0:
                 self._stopped.unclean_stop("manually stopped", self._calls)
             else:
                 self._stopped.clean_stop("stopped", self._calls)
-            if interrupt or not self._calls:
+            if interrupt or len(self._calls) == 0:
                 self._interrupt(interrupt)  # Otherwise the last call to end does: see _job()
 
         with suppress(RuntimeError):  # The loop has closed, so the worker has already stopped
             self._loop.call_soon_threadsafe(begin)  # Queued even on the worker's thread, behind calls made before it
         return self._finished if wait else self._stopped
 
-    def _start(self, future: AwaitableFuture, func, args, kwargs):
+    def _start(self, future: AwaitableFuture, func, args, kwargs, name: str):
         # If the job was cancelled by its caller or failed by the worker e.g. forking, do nothing.
         if future.done():
             return
         job = self._job(func, args, kwargs, future)
-        # Adjust the job's name to reflect the function being called, for more legible tracebacks:
-        job.__qualname__ += f"[{func.__qualname__}]"
+        job.__qualname__ = name
         # eager_start=True ensures that the job is queued to run before anything dispatched after it. Not setting this
         # leads to confusing priority semantics between jobs started inside the worker vs. outside.
         task = self._loop.create_task(job, eager_start=True)
@@ -389,7 +390,8 @@ class CaptiveWorker:
     def _log(self, level: int, msg: str, *args, **kwargs):
         # Only on the worker's thread, as for hooks: in a forked process, a handler's stream may be locked forever
         if self.in_worker():
-            self.logger.log(level, msg, *args, stacklevel=2, **kwargs)
+            # Naming what recorded the stop: past this, WorkerStopFuture._stop(), and clean_stop() or unclean_stop()
+            self.logger.log(level, msg, *args, stacklevel=4, **kwargs)
 
     def _after_fork_in_child(self, pid: int):
         """
@@ -423,7 +425,7 @@ class CaptiveWorker:
         with self._submitting as pending:
             to_abort = list(pending)
             pending.clear()
-        while len(to_abort):
+        while len(to_abort) > 0:
             self._fail(to_abort.pop())  # Never run, or abandoned (or here, in a forked process)
 
     def _main(self):
@@ -449,7 +451,7 @@ class CaptiveWorker:
                 self._interrupt(True)
             # Let calls still in flight finish (or, if they were interrupted, clean up) before re-cancelling them and
             # aborting them.
-            if self._calls:
+            if len(self._calls) > 0:
                 loop.run_until_complete(asyncio.wait(self._calls.copy()))
         except BaseException as exc:
             # Should never happen, except for a KeyboardInterrupt or SystemExit from the parent task or a call: asyncio
@@ -507,25 +509,13 @@ class CaptiveWorker:
 
         # We're a little precious about performance in this method since it's on the hot path:
         task, stopped, calls, expiry = asyncio.current_task(), self._stopped, self._calls, self._expiry
+        if stopped.done():
+            self._fail(future)  # Refused, as the worker stopped after the call was made, but before its job started
+            return
+        calls.add(task)
+        expiry.reset(None) # Suspend the idle timeout
         try:
-            if stopped.done():
-                raise stopped.result()  # Raise if the worker is stopping or broken/shut down
-            calls.add(task)
-            expiry.reset(None) # Suspend the idle timeout
-            try:
-                result = await func(*args, **kwargs)
-            finally:
-                calls.remove(task)
-                # A drain (a stop that leaves calls in flight to finish) cancels the parent task only once the last has
-                # ended: here. Nothing else would, unless the parent task ended of its own accord, or a later stop()
-                # interrupted.
-                if len(calls) == 0:
-                    # Not a done-callback on _stopped: that fires once, as the stop is recorded (begin() covers there
-                    # being no calls then), on whichever thread records it, rather than as the last call ends.
-                    if stopped.done():
-                        self._interrupt(False)
-                    expiry.reset(self.idle_timeout)
-
+            result = await func(*args, **kwargs)
         except asyncio.CancelledError as ex:
             # Check if we got a CancelledError because the worker was interrupted with stop(interrupt=True). If so, this
             # job's waiters get an error indicating where the job was cancelled, with exception-chain-context about why
@@ -546,10 +536,23 @@ class CaptiveWorker:
             raise
         except BaseException as ex:
             # If we can't report the error to the user, or if it's a non-CancelledError BaseException, reraise:
-            if not self._fail(future, ex) or not isinstance(ex, (Exception, asyncio.CancelledError)):
+            if not self._fail(future, ex) or not isinstance(ex, Exception):
                 raise
         else:
             # Transmit a successful result to the user.
-            # NB: if the caller cancelled it before it finished here, we WANT users to see the "task exception never
-            # retrieved" error for InvalidStateError raised from the below call.
+            # NB: if the caller cancelled it, this raises concurrent.futures.InvalidStateError, which asyncio logs as
+            # never retrieved only if the job swallowed the cancellation: if the result won a race with it, the cancel()
+            # that forward() queues clears the finished task's _log_traceback.
+            # TODO think more about this: whether, and when, users should see that error
             future.set_result(result)
+        finally:  # Once the future is resolved: a drain's interrupt below may cancel the parent task awaiting this call
+            calls.remove(task)
+            # A drain (a stop that leaves calls in flight to finish) cancels the parent task only once the last has
+            # ended: here. Nothing else would, unless the parent task ended of its own accord, or a later stop()
+            # interrupted.
+            if len(calls) == 0:
+                # Not a done-callback on _stopped: that fires once, as the stop is recorded (begin() covers there
+                # being no calls then), on whichever thread records it, rather than as the last call ends.
+                if stopped.done():
+                    self._interrupt(False)
+                expiry.reset(self.idle_timeout)

@@ -1,9 +1,8 @@
-import asyncio
 import logging
 from typing import TYPE_CHECKING, Collection, Literal
 
 from async_anywhere._util import copy_exception
-from async_anywhere.captive._exceptions import WorkerStopped, CleanStop, WorkerBroken
+from async_anywhere.captive.exceptions import WorkerStopped, CleanStop, WorkerBroken
 from async_anywhere.futures import AwaitableFuture
 
 if TYPE_CHECKING:
@@ -19,12 +18,10 @@ class WorkerStopFuture(AwaitableFuture[WorkerStopped]):
     flight, for the reasons it gives."""
 
     def __init__(self, worker: CaptiveWorker):
-        super().__init__(prevent_blocking_wait_in_loops=worker._loop)
+        # Uncancellable: waiters giving up (as wrap_future() does, once its awaiter is cancelled) mustn't undo it
+        super().__init__(prevent_blocking_wait_in_loops=worker._loop, honor_cancel=False)
         self._log = worker._log
         self.interrupted = False  # Whether the worker has cancelled its parent task, calls, or what they left running
-
-    def cancel(self):
-        return False  # Waiters giving up (as wrap_future() does, once its awaiter is cancelled) mustn't undo it
 
     def set_exception(self, exception):
         if not isinstance(exception, WorkerBroken):
@@ -41,27 +38,19 @@ class WorkerStopFuture(AwaitableFuture[WorkerStopped]):
             raise error
         return copy_exception(super().result(timeout))
 
-    def as_async_future(self, *args, **kwargs):
-        # The loop's cached future is shared by all its waiters, and cancelling a waiting task cancels the future it awaits:
-        # as this can't be cancelled, one waiter giving up would cancel it for the rest. Each gets a shield instead, which
-        # is quiet as this fails only once the worker is broken (asyncio.shield() logs a shielded future's exception once a
-        # waiter has given up).
-        future = super().as_async_future(*args, **kwargs)
-        return asyncio.shield(future) if isinstance(future, asyncio.Future) else future  # Trio's waiters can't cancel it
-
     def clean_stop(self, why: Literal["expired", "stopped", "parent task returned"], calls: Collection) -> bool:
         match why:
             case "expired":
-                assert not calls, "Invariant violation: expiry with calls in flight"
+                assert len(calls) == 0, "Invariant violation: expiry with calls in flight"
                 reason = "(idle) expired"
             case "stopped":
-                reason = "(waiting for running jobs) manually stopped" if calls else "(idle) manually stopped"
+                reason = "(waiting for running jobs) manually stopped" if len(calls) > 0 else "(idle) manually stopped"
             case "parent task returned":
-                reason = f"({'interrupted' if calls else 'idle'}) parent task returned"
+                reason = f"({'interrupted' if len(calls) > 0 else 'idle'}) parent task returned"
         return self._stop(CleanStop(reason))
 
     def unclean_stop(self, reason: str, calls: Collection, cause: BaseException | None = None) -> bool:
-        return self._stop(WorkerStopped(f"({'interrupted' if calls else 'idle'}) {reason}", cause))
+        return self._stop(WorkerStopped(f"({'interrupted' if len(calls) > 0 else 'idle'}) {reason}", cause))
 
     def _stop(self, stop: WorkerStopped) -> bool:
         # Whether this was the first stop, so recorded

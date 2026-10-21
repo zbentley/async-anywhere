@@ -7,7 +7,6 @@ from typing import Iterable, Collection
 
 FAST_COLLECTION_SET_CUTOFF = 5
 
-
 def validate_coroutine_function(_, attribute, value):
     if not iscoroutinefunction(value):
         raise TypeError(f"{attribute.name} must be a coroutine function (an async def), not {value!r}")
@@ -24,24 +23,26 @@ def copy_exception[E: BaseException](error: E, *causes: BaseException) -> E:
     """
     new = copy(error).with_traceback(error.__traceback__)
     new.__context__ = error.__context__
-    if notes := getattr(error, "__notes__", ()):
+    if len(notes := getattr(error, "__notes__", ())) > 0:
         new.__notes__ = list(notes)
-    if causes:
-        new.__cause__ = copy_exception(*causes) if causes[1:] else causes[0]  # Copying all but the last, whose cause is kept
+    if len(causes) > 0:
+        new.__cause__ = copy_exception(*causes) if len(causes) > 1 else causes[0]  # Copying all but the last, whose cause is kept
     else:
         new.__cause__, new.__suppress_context__ = error.__cause__, error.__suppress_context__
     return new
 
 class LockProtected[T](AbstractContextManager[T]):
-    __slots__ = ("_lock", "_value")
+    __slots__ = ("_acquire", "_release", "_value")
 
     def __init__(self, initial: T, recursive=False):
-        self._lock = RLock() if recursive else Lock()
+        lock = RLock() if recursive else Lock()
+        self._acquire = lock.acquire
+        self._release = lock.release
         self._value = initial
 
     def __exit__(self, *_):
-        self._lock.release()
+        self._release()
 
     def __enter__(self):
-        self._lock.acquire()
+        self._acquire()
         return self._value

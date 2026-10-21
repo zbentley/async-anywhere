@@ -43,13 +43,6 @@ class bridge:
         return harness.worker.bridge(marked)
 
 
-class Mark(AwaitableFuture):
-    """What reached() returns: uncancellable, as a cancelled task awaiting one would cancel it for every other waiter."""
-
-    def cancel(self):
-        return False
-
-
 class Harness:
     """A worker, held as code using CaptiveWorker would hold one, with what tests give it: bridged methods (see bridge),
     _run() as its parent task, on_stopped() and on_shutdown(), and idle_timeout. The worker's attributes are its too.
@@ -77,7 +70,9 @@ class Harness:
         as their jobs start; _run() as it starts ("_run") and ends ("_run ended"); the worker's hooks as it calls them,
         with what they saw ("stopped" and "shutdown"); and anything else as harnesses, or tests, mark() it ("release",
         say, for what a harness awaits until the test releases it)."""
-        return self._marks.setdefault((name, times), Mark())  # setdefault(), as tests' threads call this too
+        # Uncancellable, as a cancelled task awaiting one would cancel it for every other waiter. setdefault(), as tests'
+        # threads call this too.
+        return self._marks.setdefault((name, times), AwaitableFuture(honor_cancel=False))
 
     def mark(self, name, value=None):
         times = self._counts[name] = self._counts.get(name, 0) + 1  # Each name only ever on one thread

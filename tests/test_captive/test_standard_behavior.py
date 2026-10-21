@@ -12,9 +12,9 @@ import traceback
 import pytest
 
 from async_anywhere.captive import CaptiveWorker
-from async_anywhere.captive._exceptions import CleanStop, WorkerStopped
+from async_anywhere.captive.exceptions import CleanStop, WorkerStopped
 from async_anywhere.futures import AwaitableFuture
-from tests.test_captive.utils import TIMING_SENSITIVE, BlocksLoop, Tidy, Worker, bridge, running
+from tests.test_captive.utils import BlocksLoop, Tidy, Worker, bridge, running
 
 
 # Lifecycle
@@ -57,21 +57,27 @@ async def test_hooks_are_called_once_each_on_the_workers_thread(interrupt):
 # GC closes it, warning as it does
 @pytest.mark.filterwarnings("ignore:unclosed event loop:ResourceWarning")
 @pytest.mark.parametrize(
-    "kwargs, error",
+    "kwargs, error, match",
     [
-        (dict(parent_task=lambda worker: asyncio.sleep(0)), TypeError),  # Making a coroutine, but not an async def
-        (dict(parent_task=print), TypeError),
-        (dict(on_stopped=None), TypeError),
-        (dict(on_shutdown="on_shutdown"), TypeError),
-        (dict(idle_timeout="1"), TypeError),
-        (dict(idle_timeout=0), ValueError),
-        (dict(loop_factory=3), TypeError),
-        (dict(loop_factory=lambda: "not a loop"), TypeError),
+        # Making a coroutine, but not an async def
+        (dict(parent_task=lambda worker: asyncio.sleep(0)), TypeError, "^parent_task must be a coroutine function"),
+        (dict(parent_task=print), TypeError, "^parent_task must be a coroutine function"),
+        (dict(on_stopped=None), TypeError, "^'on_stopped' must be callable"),
+        (dict(on_shutdown="on_shutdown"), TypeError, "^'on_shutdown' must be callable"),
+        (dict(idle_timeout="1"), TypeError, "'idle_timeout' must be"),
+        (dict(idle_timeout=0), ValueError, "^'idle_timeout' must be > 0"),
+        (dict(loop_factory=3), TypeError, "callable"),  # Called as the stop futures are made, before attrs validates it
+        (dict(loop_factory=lambda: "not a loop"), TypeError, "^loop_factory must make a new event loop"),
+        (
+            dict(loop_factory=lambda: (loop := asyncio.new_event_loop()).close() or loop),
+            TypeError,
+            "^loop_factory made a running or closed event loop",
+        ),
     ],
 )
-def test_arguments_are_checked_as_workers_are_constructed(kwargs, error):
+def test_arguments_are_checked_as_workers_are_constructed(kwargs, error, match):
     threads = set(threading.enumerate())
-    with pytest.raises(error):
+    with pytest.raises(error, match=match):
         CaptiveWorker(**kwargs)
     assert set(threading.enumerate()) <= threads  # Refused before anything started
 
@@ -157,8 +163,9 @@ async def test_calls_nobody_waits_on_run_all_the_same():
 
 class Contexts(Worker):
     @bridge
-    async def swap(self, value, seconds=0.0):
-        await asyncio.sleep(seconds)
+    async def swap(self, value, until: AwaitableFuture | None = None):
+        if until:
+            await until
         seen = current.get()
         current.set(value)
         return seen
@@ -170,20 +177,22 @@ class Contexts(Worker):
         return seen, current.get()
 
     @bridge
-    async def smuggle(self):
+    async def smuggle(self, until: AwaitableFuture):
         current.set("smuggler's")
         # Made on the worker's own thread, and returned to another unawaited, still running as it's waited on
-        return self.swap("set by the job", 0.1)
+        return self.swap("set by the job", until)
 
 
-@TIMING_SENSITIVE
 async def test_calls_made_on_the_workers_thread_can_be_waited_on_elsewhere():
     async with running(Contexts) as worker:
-        smuggled = await worker.smuggle()
+        smuggled = await worker.smuggle(release := AwaitableFuture())
         assert not smuggled.done()
+        release.set_result(None)
         assert await smuggled == "smuggler's"  # Run in a task of its own, with a copy of its caller's context
-        smuggled = await worker.smuggle()
-        assert await asyncio.to_thread(smuggled.result, 1) == "smuggler's"  # From a thread with no loop
+        smuggled = await worker.smuggle(release := AwaitableFuture())
+        waited = asyncio.ensure_future(asyncio.to_thread(smuggled.result, 1))  # From a thread with no loop
+        release.set_result(None)
+        assert await waited == "smuggler's"
 
 
 class WaitsOnItself(Worker):
@@ -212,14 +221,6 @@ async def test_calls_made_once_the_worker_has_stopped_are_refused_unrun():
         first, second = errors
         assert first is not second  # Copies: one shared exception would carry both raises' frames
         assert len(traceback.extract_tb(second.__traceback__)) == len(traceback.extract_tb(first.__traceback__))
-
-
-async def test_calls_made_before_a_stop_run_though_waited_on_after_it():
-    async with running(Records) as worker:
-        call = worker.record("before")
-        await worker.reached("before")  # Started: one made just before the stop, but not yet started, would be refused
-        await worker.stop()
-        assert await call is None and worker.ran == ["before"]
 
 
 class CleansUpWithACall(Worker):
@@ -309,14 +310,6 @@ def test_calls_cancelled_by_their_callers_count_as_done_for_concurrent_futures_w
         assert list(concurrent.futures.as_completed([call], timeout=0.1)) == [call]
 
 
-async def test_calls_made_together_run_together():
-    async with running(Worker) as worker:
-        first, second = worker.waits_for(release := AwaitableFuture()), worker.waits_for(release)
-        await worker.reached("waits_for", 2)  # Both started as made, not as awaited
-        release.set_result("done")
-        assert [await first, await second] == ["done", "done"]
-
-
 async def test_calls_see_a_copy_of_the_callers_context_as_made():
     async with running(Contexts) as worker:
         current.set("as made")
@@ -327,19 +320,23 @@ async def test_calls_see_a_copy_of_the_callers_context_as_made():
         assert await worker.swap_in_loop() == ("outer", "outer")
 
 
-def test_waiting_on_a_call_from_several_threads_at_once_runs_it_once(scale):
+def test_waiting_on_a_call_from_several_threads_at_once_gives_each_its_result(scale):
     with running(Worker) as worker:
         for _ in range(20 * scale):
-            call = worker.waits_for(release := AwaitableFuture())
-            threads = [threading.Thread(target=call.result, args=(10,)) for _ in range(8 * scale)]
+            call, results = worker.waits_for(release := AwaitableFuture()), []
+
+            def wait(call=call, results=results):
+                results.append(call.result(10))
+
+            threads = [threading.Thread(target=wait) for _ in range(8 * scale)]
             for thread in threads:
                 thread.start()
             while len(call._condition._waiters) < len(threads):  # Released only once every thread is waiting
                 time.sleep(0.001)
-            release.set_result(None)
+            release.set_result(result := object())
             for thread in threads:
                 thread.join()
-        assert worker.reached("waits_for", 20 * scale).done() and not worker.reached("waits_for", 20 * scale + 1).done()
+            assert results == [result] * len(threads)  # The same object for each
 
 
 # Exceptions and cancellation

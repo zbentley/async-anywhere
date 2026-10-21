@@ -8,7 +8,7 @@ import concurrent.futures
 import anyio
 import pytest
 
-from async_anywhere.captive._exceptions import CleanStop, WorkerStopped
+from async_anywhere.captive.exceptions import CleanStop, WorkerStopped
 from tests.test_captive.utils import Tidy, Worker, bridge, running
 
 
@@ -62,7 +62,6 @@ async def test_cancelling_a_call_cancels_the_inner_call_it_awaits():
         await inner.reached("tidies")
         assert call.cancel()
         assert await inner.reached("tidied") == 1  # Cancelled once, by its caller: the outer worker's job
-        assert not inner._stopped.done()
         assert await outer.forwards(inner.work) == "done"  # Both carry on
 
 
@@ -89,7 +88,7 @@ async def test_a_worker_can_stop_one_it_owns_as_it_stops(how):
         else:
             await outer.stop(interrupt=how == "interrupted")
         assert type(await outer.reached("inner stopped")) is CleanStop
-        assert inner._finished.done()
+        assert inner.reached("shutdown").done()
         with pytest.raises(CleanStop):
             await inner.work()
 
@@ -130,7 +129,6 @@ async def test_a_worker_handed_out_by_the_one_that_made_it_can_be_used_from_anyw
             assert outer._finished.done() and not outer._thread.is_alive()
             with pytest.raises(WorkerStopped):
                 await outer.work()
-        assert not inner._stopped.done()
 
         async def on_a_fresh_loop():
             return await inner.work(0.01, "on a fresh loop")

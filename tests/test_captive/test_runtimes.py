@@ -11,7 +11,7 @@ import anyio
 import pytest
 import trio
 
-from async_anywhere.captive._exceptions import CleanStop, WorkerStopped
+from async_anywhere.captive.exceptions import CleanStop, WorkerStopped
 from async_anywhere.futures import AwaitableFuture
 from tests.test_captive.utils import Tidy, bridge, running
 
@@ -109,7 +109,7 @@ async def test_giving_up_waiting_on_stop_cancels_nothing_with_any_library():
         await worker.reached("waits_for")
         with anyio.move_on_after(0.05):
             await worker.stop()  # A drain, waiting for the call
-        assert not worker._finished.done()
+        assert not worker.reached("shutdown").done()
         release.set_result("finished")
         assert await call == "finished"
         assert type(await worker.stop()) is CleanStop
@@ -307,7 +307,7 @@ async def test_bridged_functions_can_hand_trio_code_to_a_trio_guest():
         with pytest.raises(ValueError) as raised:
             await in_trio(fails, error := ValueError())
         assert raised.value is error
-        assert not worker._stopped.done()  # Its failing didn't end the guest
+        assert await in_trio(checks, "after") == (True, "after")  # Its failing didn't end the guest
 
 
 async def test_cancelling_a_call_cancels_the_trio_code_it_handed_over():
