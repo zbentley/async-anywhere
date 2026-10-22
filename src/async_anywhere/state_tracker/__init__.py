@@ -273,16 +273,17 @@ class StateTracker(ABC):
 
         self.after_state_change(old_state, target, data)
 
-    def require(self, *desired_states: State) -> Self:
-        for s in desired_states:
-            if self.state is self._check_state(s):
+    def require(self, state: State, *desired_states: State) -> Self:
+        current_state = self.state
+        for s in (state, *desired_states):
+            if current_state is self._check_state(s):
                 return self
         raise StateTrackerError(self, "Not in required state(s)", *desired_states)
 
 
 class WaitableStateTracker(StateTracker, ABC):
     type _FutureType = tuple[Self, State, State, Any]
-    _waiters: dict[State, WeakSet[AwaitableFuture[_FutureType] | asyncio.Future[_FutureType]]]
+    _waiters: dict[State, WeakSet[AwaitableFuture[_FutureType]]]
 
     __slots__ = ('_waiters',)
     def __init__(self):
@@ -299,9 +300,6 @@ class WaitableStateTracker(StateTracker, ABC):
                 self._waiters[self._check_state(state)].add(future)
         return future
 
-    def wait_for_state_from_event_loop(self, loop: asyncio.AbstractEventLoop, *states: State) -> asyncio.Future[_FutureType]:
-        return self._wait_for_state(loop.create_future, *states)
-
     def wait_for_state(
         self, *states: State, **kwargs,
     ) -> AwaitableFuture[_FutureType]:
@@ -309,7 +307,6 @@ class WaitableStateTracker(StateTracker, ABC):
         # if it is no longer in that state. If a worker transitions twice in rapid succession, or a waiter is attached
         # and then not waited on until later, after the worker has passed through *states, it'll still resolve.
         # NB: cancelling the returned future does nothing.
-        # NB: to get speed gains in async-only waiting code, pass future_class=asyncio.Future.
         # NB: if your done callbacks are slow, you'll break stuff (here and everywhere)
         return self._wait_for_state(AwaitableFuture, *states, **kwargs)
 
