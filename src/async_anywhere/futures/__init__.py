@@ -1,7 +1,6 @@
 import asyncio
 import concurrent.futures
 from concurrent.futures._base import CANCELLED, FINISHED
-from functools import lru_cache
 from operator import attrgetter
 from threading import Thread, current_thread
 from time import monotonic
@@ -17,33 +16,31 @@ type _LoopSelector = None | Literal["all"] | asyncio.AbstractEventLoop | Iterabl
 _template = concurrent.futures.Future()
 _template.cancel()
 
-@lru_cache
 def _blocking_thread_checker(vals: _ThreadSelector) -> Callable[[], bool]:
-    if vals == "all":
-        return True.__bool__
     if vals is not None:
+        if vals == "all":
+            return True.__bool__
         if isinstance(vals, Thread):
             return lambda: current_thread() is vals
-        if tup_vals := tuple(vals):
+        if len(tup_vals := tuple(vals)) > 0:
             assert all(isinstance(t, Thread) for t in tup_vals)
             if len(tup_vals) == 1:
                 return _blocking_thread_checker(tup_vals[0])
             return lambda: current_thread() in tup_vals
-    return False.__bool__
+    return bool
 
-@lru_cache
 def _blocking_loop_checker(vals: _LoopSelector) -> Callable[[], bool]:
-    if vals == "all":
-        return True.__bool__
     if vals is not None:
+        if vals == "all":
+            return True.__bool__
         if isinstance(vals, asyncio.AbstractEventLoop):
             return lambda: asyncio._get_running_loop() is vals
-        if tup_vals := tuple(vals):
+        if len(tup_vals := tuple(vals)) > 0:
             assert all(isinstance(t, asyncio.AbstractEventLoop) for t in tup_vals)
             if len(tup_vals) == 1:
                 return _blocking_loop_checker(tup_vals[0])
             return lambda: asyncio._get_running_loop() in tup_vals
-    return False.__bool__
+    return bool
 
 class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     """A concurrent.futures.Future subclass that can also be awaited. Provides the following behaviors:
@@ -68,8 +65,8 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     __slots__ = (
         *sorted(key for key in vars(_template).keys() if key != '_state'),
         '_state_value',
-        '_prevent_blocking_wait_in_threads',
-        '_prevent_blocking_wait_in_loops',
+        '_check_threads',
+        '_check_loops',
         '_async_future_cache',
         '_honor_cancel',
         '_source',  # What a shield finishes as (see shielded()), or None

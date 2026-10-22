@@ -55,13 +55,14 @@ def test_copies_are_raised_from_the_causes_given():
 @pytest.mark.parametrize("recursive", [False, True])
 def test_lock_protected_holds_its_lock_while_entered(recursive):
     protected = LockProtected(value := [], recursive=recursive)
+    lock = protected._acquire.__self__  # The lock its bound methods belong to
     with protected as entered, concurrent.futures.ThreadPoolExecutor(1) as elsewhere:
         assert entered is value
-        assert not elsewhere.submit(protected._lock.acquire, blocking=False).result()  # Other threads wait for it
-        if reentered := protected._lock.acquire(blocking=False):  # As its own does, unless it's recursive
-            protected._lock.release()
+        assert not elsewhere.submit(lock.acquire, blocking=False).result()  # Other threads wait for it
+        if reentered := lock.acquire(blocking=False):  # As its own does, unless it's recursive
+            lock.release()
         assert reentered is recursive
-    assert not protected._lock.locked()
+    assert not lock.locked()
 
 
 def test_only_coroutine_functions_are_valid():

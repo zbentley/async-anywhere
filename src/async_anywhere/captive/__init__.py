@@ -407,8 +407,8 @@ class CaptiveWorker:
         - The worker's stop bit is set with a reason indicating that fork(2) occurred, unless it had stopped already.
         - The worker is marked as shut down.
         """
-        self._submitting._lock.acquire(timeout=0)
-        self._submitting._lock.release()
+        self._submitting._acquire(timeout=0)
+        self._submitting._release()
 
         with self._submitting as pending:
             for future in (self._stopped, self._finished, self._runner, *pending):

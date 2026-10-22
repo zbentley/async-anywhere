@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import gc
 import threading
 import time
+import weakref
 
 import anyio
 import pytest
@@ -71,6 +73,27 @@ def test_waiting_synchronously_on_its_own_thread_is_an_error(method):
         getattr(AwaitableFuture(prevent_blocking_wait_in_threads=other), method)(0.01)  # Not this thread: waits
     future.set_result("done")
     assert getattr(future, method)(0) == ("done" if method == "result" else None)  # Done, so it can't block
+
+
+@pytest.mark.parametrize("collection", [list, set, iter], ids=["list", "set", "iterator"])
+async def test_loops_and_threads_to_refuse_blocking_waits_in_can_be_any_iterable(collection):
+    here, loop = threading.current_thread(), asyncio.get_running_loop()
+    for future in (
+        AwaitableFuture(prevent_blocking_wait_in_threads=collection([here])),
+        AwaitableFuture(prevent_blocking_wait_in_loops=collection([loop])),
+    ):
+        with pytest.raises(RuntimeError, match="would deadlock"):
+            future.result(0)
+
+
+def test_futures_keep_the_loops_and_threads_they_refuse_blocking_waits_in_only_while_they_live():
+    loop, thread = asyncio.new_event_loop(), threading.Thread()
+    loop.close()
+    future = AwaitableFuture(prevent_blocking_wait_in_loops=loop, prevent_blocking_wait_in_threads=thread)
+    refs = [weakref.ref(loop), weakref.ref(thread)]
+    del loop, thread, future
+    gc.collect()
+    assert all(ref() is None for ref in refs)
 
 
 def test_failure_is_what_a_done_future_failed_with():
