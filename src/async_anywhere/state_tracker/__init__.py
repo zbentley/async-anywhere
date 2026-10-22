@@ -36,6 +36,11 @@ class StateTrackerError(asyncio.InvalidStateError, concurrent.futures.InvalidSta
             return states[0].name
         return f'one of {", ".join(sorted(s.name for s in states))}'
 
+def _structural_invariant(cls: type, cond: Any, msg: str):
+    if not cond:
+        raise TypeError(f"{cls.__qualname__}: {msg}")
+    return cond
+
 def _convert_state(val: Transition | Iterable[Transition]) -> set[Transition]:
     rv = set()
     if val in (Any, Self) or isinstance(val, State):
@@ -48,6 +53,13 @@ def _convert_state(val: Transition | Iterable[Transition]) -> set[Transition]:
     return {Any} if Any in rv else rv
 
 _UNBOUND = "<unknown; State is not yet bound to a class>"
+# This lock orchestrates the extremely rare conflict risk of importing modules/declaring subclasses in parallel:
+_binding_lock = threading.Lock()
+
+def _binding(name: str, obj):
+    # Identify a binding site for a variable. We can't use __qualname__ since some class builders (e.g. dataclasses)
+    # don't reset it properly, so we use line number instead.
+    return name, obj.__module__, obj.__name__, vars(obj).get("__firstlineno__")
 
 @attr.define(frozen=True, eq=False, repr=False, str=False, hash=False)
 class State:
@@ -85,6 +97,25 @@ class State:
     )
     initial: bool = attr.field(default=False)
     _name: str = attr.field(init=False, default=_UNBOUND)
+    _owner: type | None = attr.field(init=False, default=None)
+    _targets: frozenset[State] = attr.field(init=False, default=frozenset())  # Set by StateTracker.__init_subclass__
+
+    def __set_name__(self, owner: type, name: str):
+        _structural_invariant(owner, isinstance(name, str), "State name is not a string; you are probably doing something wrong and unsupported like constructing a class with invalid parameters using type(...).")
+        with _binding_lock:
+            # Class builders that add slots (attrs, dataclasses) rebind States to a class rebuilt from a copy of its
+            # namespace. This check makes sure that they're always bound at the same place.
+            bound = self._owner
+            _structural_invariant(
+                owner,
+                bound is None or _binding(name, owner) == _binding(self._name, bound),
+                f"Cannot bind State {bound.__qualname__ if bound else ''}.{self._name} as '{name}'; a State can only be bound once"
+            )
+            # Hack around frozen-ness to update the state object. This is safe, since it happens only at compile time
+            # and only when a State object is first bound to its StateTracker. Attempts to rebind a State later fail
+            # if its "name" is already set.
+            object.__setattr__(self, "_owner", owner)
+            object.__setattr__(self, "_name", name)
 
     @property
     def name(self) -> str:
@@ -116,8 +147,15 @@ class StateTracker(ABC):
 
     When this is done, instances of MyStateTracker will start with "inst.state == MyStateTracker.InitialState".
 
-    States must be declared explicitly at the class level. Supplying them via descriptors or __class_getitem__ or other
-    metaprogramming techniques is not supported.
+    States must be declared together on one class; hey cannot be combined or layered across subclasses. States must be
+    declared in one of the following locations:
+
+    1. On a concrete StateTracker subclass, as explicit, literal class fields (not via descriptors or __class_getitem__).
+    2. On any class that is inherited by a StateTracker subclass as explicit, literal fields. This allows for common
+       state graphs to be used by multiple different StateTracker subclasses via a mixin.
+
+    All concrete StateTracker subclasses must declare States. Abstract StateTracker subclasses must be extended by a
+    concrete class which declares States.
 
     Note: if using `attrs`, `dataclass` or other class-creation factories, all State objects declared at the class level
     should be annotated with ClassVar, otherwise subclass declaration may fail.
@@ -129,11 +167,12 @@ class StateTracker(ABC):
     transition method via code like:
 
     >>> class PubliclyTransitionableStateTracker(StateTracker):
-    >>>      transition = StateTracker._transition
+    >>>      transition = StateTracker._transition  # or WaitableStateTracker._transition
     >>>      ...
     """
 
     states: ClassVar[frozenset[State]]
+    _abstract: ClassVar[bool]
 
     __slots__ = ('_state', '_condition')
 
@@ -147,25 +186,19 @@ class StateTracker(ABC):
     def state(self) -> State:
         return self._state
 
-
     @classmethod
-    def _structural_invariant(cls, cond: Any, msg: str):
-        if not cond:
-            raise TypeError(f"{cls.__qualname__}: {msg}")
-        return cond
-
-    @classmethod
-    def _check_states(cls, seen: dict, source, *states):
+    def _check_states(cls, seen: frozenset[State], source, *states):
         # TODO warn unreachable/prime DAG?
         for state in states:
             if state is not Any and state is not Self:
-                cls._structural_invariant(
+                _structural_invariant(
+                    cls,
                     state in seen,
                     f'State "{source}" has a source or destination state that is not part of this state tracker: {state}'
                 )
 
         if Any in states:
-            yield from seen.keys()
+            yield from seen
         else:
             for state in states:
                 if state is Self:
@@ -173,52 +206,48 @@ class StateTracker(ABC):
                 else:
                     yield state
 
-    def __init_subclass__(cls, abstract=False, **kwargs):
+    def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        is_abstract = abstract or inspect.isabstract(cls)
-        destinations = defaultdict(set)
+        # Class builders that add slots rerun this on a copy of the namespace, where inspect.isabstract() is wrong
+        if (is_abstract := cls.__dict__.get("_abstract")) is None:
+            is_abstract = cls._abstract = ABC in cls.__bases__ or inspect.isabstract(cls)
+        declarers = [k for k in cls.__mro__ if any(isinstance(v, State) for v in vars(k).values())]
+        if len(declarers) == 1:
+            states =  frozenset(v for v in vars(declarers[0]).values() if isinstance(v, State))
+        else:
+            _structural_invariant(
+                cls,
+                len(declarers) == 0,
+                f"States must all be declared on one class, but are declared on {', '.join(k.__qualname__ for k in declarers)}"
+            )
+            states = frozenset()
+        targets = defaultdict(set)
         initial = None
-        members: dict[str, State] = dict(
-            inspect.getmembers_static(cls, lambda i: isinstance(i, State))
-        )
-        seen_states: dict[State, str] = dict()
-        for k, v in members.items():
-            cls._structural_invariant(v not in seen_states, f"State {k} was already bound as {seen_states.get(v)}")
-            seen_states[v] = k
-
-        for name, state in members.items():
+        for state in states:
+            _structural_invariant(
+                cls,
+                inspect.getattr_static(cls, state.name, None) is state,
+                f"{cls.__qualname__}.{state.name} is not {state!r}; States can't be shadowed, or added to a class after it's declared"
+            )
             if state.initial:
-                cls._structural_invariant(initial is None, f"Multiple states with initial=True: '{state}' and '{initial}'")
+                _structural_invariant(cls, initial is None, f"Multiple states with initial=True: '{state}' and '{initial}'")
                 initial = state
 
-            destinations[state].update(
-                cls._check_states(seen_states, state, *state._destinations)
-            )
-            for source in cls._check_states(seen_states, state, *state._sources):
-                destinations[source].add(state)
-            cls._structural_invariant(
-                state.name in  (_UNBOUND, name),  # Allow rebinding at the same name for subclassing, but not at different names.
-                f"Cannot bind State {state!r}; it is already bound as '{name}'"
-            )
+            targets[state].update(cls._check_states(states, state, *state._destinations))
+            for source in cls._check_states(states, state, *state._sources):
+                targets[source].add(state)
 
-        # TODO this invariant currently fails for WaitableStateTracker, even though https://github.com/python/cpython/issues/74008 is fixed
-        # Why?!
-        cls._structural_invariant(
-            is_abstract or initial is not None,
+        _structural_invariant(
+            cls,
+            initial is not None or (is_abstract and len(states) == 0),
             "No states were declared with initial=True; one and only one initial state is required"
         )
-        for name, state in members.items():
-            cls._structural_invariant(
-                isinstance(name, str),
-                "State name is not a string; you are probably doing something wrong and unsupported like constructing a class with invalid parameters using type(...)."
-            )
-            # Hack around frozen-ness to update the state object. This is safe, since it happens only at compile time
-            # and only when a State object is first bound to its StateTracker. Attempts to rebind a State later fail
-            # if its "name" is already set.
-            object.__setattr__(state, "_name", name)
-            object.__setattr__(state, "_destinations", destinations[state])
-            # TODO wipe sources?
-        cls.states = frozenset(members.values())
+        with _binding_lock:
+            for state in states:
+                # The same for every class sharing these States, so rewriting it for each is harmless
+                object.__setattr__(state, "_targets", frozenset(targets[state]))
+                # TODO wipe sources?
+        cls.states = states
 
     def after_state_change(self, old_state: State, new_state: State, data: Any):
         """To be overridden by subclassers."""
@@ -237,7 +266,7 @@ class StateTracker(ABC):
     def _transition(self, target: State, data: Any = None):
         with self._condition:
             old_state = self._state
-            if target not in old_state._destinations:
+            if target not in old_state._targets:
                 raise StateTrackerError(self, "Could not transition to state", self._check_state(target))
             self._state = target
             self._condition.notify_all()
@@ -251,7 +280,7 @@ class StateTracker(ABC):
         raise StateTrackerError(self, "Not in required state(s)", *desired_states)
 
 
-class WaitableStateTracker(StateTracker, ABC, abstract=True):
+class WaitableStateTracker(StateTracker, ABC):
     type _FutureType = tuple[Self, State, State, Any]
     _waiters: dict[State, WeakSet[AwaitableFuture[_FutureType] | asyncio.Future[_FutureType]]]
 
@@ -289,7 +318,7 @@ class WaitableStateTracker(StateTracker, ABC, abstract=True):
 
         with self._condition:
             old_state = self._state
-            if target not in old_state._destinations:
+            if target not in old_state._targets:
                 raise StateTrackerError(self, "Could not transition to state", self._check_state(target))
             old_waiters, self._state = self._waiters[target], target
             waiters = tuple(old_waiters)  # Not copy() because we don't need to hash -- TODO right? Or is copy faster even on weakset?
