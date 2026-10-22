@@ -60,6 +60,20 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     - completed_at is the time.monotonic() time at which it finished (with a result, an exception, or cancellation), or
       None until then. Its async futures and shields that finish as it does (or that finish it, by cancelling it) share
       its time; those that finish on their own (cancelled while it can't be, say) have their own.
+
+    With honor_cancel=False, waiters giving up (as asyncio.wait_for(), asyncio.timeout(), TaskGroups, and trio's and
+    anyio's cancel scopes make them) still do so at once, leaving it pending, as asyncio.shield() would. But cancel() is
+    refused for everyone, its owner included: it returns False while neither running() nor done(), which a plain
+    concurrent.futures.Future's never does, and most code ignores what cancel() returns. So:
+
+    - Cancelling it, then waiting for it (with concurrent.futures.wait(), asyncio.wait(), or asyncio.gather(), as
+      teardown code does for tasks) waits until it's finished some other way, if ever. To abort it, set an exception
+      instead: a concurrent.futures.CancelledError reaches asyncio waiters already waiting as asyncio.CancelledError,
+      but is raised as is to those that await it once it's done.
+    - Some ways of waiting with a timeout leave a registration on it per wait, until it finishes: asyncio.wait() leaves
+      the shield behind each as_async_future() it's given (each logging "exception was never retrieved" if this one
+      fails), and asyncio.wait_for(asyncio.wrap_future(...)) a callback, as it does on a running executor job's future.
+      Awaiting it, or as_async_future(), under asyncio.wait_for() or asyncio.timeout() leaves nothing behind.
     """
 
     __slots__ = (
