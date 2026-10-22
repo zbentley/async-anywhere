@@ -11,10 +11,6 @@ def validate_coroutine_function(_, attribute, value):
     if not iscoroutinefunction(value):
         raise TypeError(f"{attribute.name} must be a coroutine function (an async def), not {value!r}")
 
-def fast_collection[T](items: Iterable[T]) -> Collection[T]:
-    items = tuple(items)
-    return frozenset(items) if len(items) > FAST_COLLECTION_SET_CUTOFF else items
-
 def copy_exception[E: BaseException](error: E, *causes: BaseException) -> E:
     """A copy of `error` to raise in its place: the interpreter changes an exception's traceback and context as it's
     raised, as add_note() does its notes, so raising one that others may be raising too would mix theirs into it. The
