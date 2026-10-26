@@ -4,43 +4,14 @@ from concurrent.futures._base import CANCELLED, FINISHED
 from operator import attrgetter
 from threading import Thread, current_thread
 from time import monotonic
-from typing import Awaitable, Iterable, Any, Literal, Callable
+from typing import Awaitable, Any
 
-from async_anywhere._util import LockProtected
+from async_anywhere._util import LockProtected, RuntimeSelector, fast_runtime_checker
 from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
 
-type _ThreadSelector = None | Literal["all"] | Thread | Iterable[Thread]
-type _LoopSelector = None | Literal["all"] | asyncio.AbstractEventLoop | Iterable[asyncio.AbstractEventLoop]
-
 _template = concurrent.futures.Future()
 _template.cancel()
-
-def _blocking_thread_checker(vals: _ThreadSelector) -> Callable[[], bool]:
-    if vals is not None:
-        if vals == "all":
-            return True.__bool__
-        if isinstance(vals, Thread):
-            return lambda: current_thread() is vals
-        if len(tup_vals := tuple(vals)) > 0:
-            assert all(isinstance(t, Thread) for t in tup_vals)
-            if len(tup_vals) == 1:
-                return _blocking_thread_checker(tup_vals[0])
-            return lambda: current_thread() in tup_vals
-    return bool
-
-def _blocking_loop_checker(vals: _LoopSelector) -> Callable[[], bool]:
-    if vals is not None:
-        if vals == "all":
-            return True.__bool__
-        if isinstance(vals, asyncio.AbstractEventLoop):
-            return lambda: asyncio._get_running_loop() is vals
-        if len(tup_vals := tuple(vals)) > 0:
-            assert all(isinstance(t, asyncio.AbstractEventLoop) for t in tup_vals)
-            if len(tup_vals) == 1:
-                return _blocking_loop_checker(tup_vals[0])
-            return lambda: asyncio._get_running_loop() in tup_vals
-    return bool
 
 class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     """A concurrent.futures.Future subclass that can also be awaited. Provides the following behaviors:
@@ -88,15 +59,15 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     )
     def __init__(
         self,
-        prevent_blocking_wait_in_loops: _LoopSelector = None,
-        prevent_blocking_wait_in_threads: _ThreadSelector = None,
+        prevent_blocking_wait_in_loops: RuntimeSelector[asyncio.AbstractEventLoop] = None,
+        prevent_blocking_wait_in_threads: RuntimeSelector[Thread] = None,
         honor_cancel: bool = True,
     ):
         self._completed_at: float | None = None
         self._source: AwaitableFuture[T] | None = None
         super().__init__()
-        self._check_threads = _blocking_thread_checker(prevent_blocking_wait_in_threads)
-        self._check_loops = _blocking_loop_checker(prevent_blocking_wait_in_loops)
+        self._check_threads = fast_runtime_checker(prevent_blocking_wait_in_threads, Thread, current_thread)
+        self._check_loops = fast_runtime_checker(prevent_blocking_wait_in_loops, asyncio.AbstractEventLoop, asyncio._get_running_loop)
         self._async_future_cache: LockProtected[dict[Any, AsyncioAwaitableFuture[T] | Awaitable[T]]] = LockProtected(dict())
         self._honor_cancel = honor_cancel
 
