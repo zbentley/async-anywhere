@@ -1,5 +1,6 @@
 import abc
 import asyncio
+import contextlib
 import copy
 import dataclasses
 import gc
@@ -26,15 +27,27 @@ def test_basic_state_tracker():
     assert inst.state is inst.Initial
     assert inst.state == inst.Initial
 
-@pytest.mark.parametrize("thread_safe", [True, False], ids=["thread_safe", "unlocked"])
-def test_transition(thread_safe):
-    inst = MyStateTracker(thread_safe=thread_safe)
-    assert (inst._condition is None) is not thread_safe
+@pytest.mark.parametrize("lock", [contextlib.nullcontext(), threading.Lock()], ids=["unlocked", "locked"])
+def test_transition(lock):
+    inst = MyStateTracker(lock=lock)
     inst._transition(MyStateTracker.Second)
     assert inst.state is MyStateTracker.Second
     with pytest.raises(StateTrackerError, match="Could not transition"):
         inst._transition(MyStateTracker.Third)
     assert inst.state is MyStateTracker.Second
+
+def test_after_state_change_runs_under_the_lock_once_transitioned():
+    seen = []
+
+    class Hooked(StateTracker):
+        Initial = State(initial=True)
+        Next = State(sources=Initial)
+
+        def after_state_change(self, old_state, new_state, data):
+            seen.append((self._condition._is_owned(), self.state, self._last_transition))
+
+    Hooked(lock=threading.RLock())._transition(Hooked.Next, "data")
+    assert seen == [(True, Hooked.Next, (Hooked.Initial, Hooked.Next, "data"))]
 
 def test_concrete_tracker_requires_states():
     with pytest.raises(TypeError, match="initial=True"):

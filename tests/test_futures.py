@@ -102,8 +102,15 @@ def test_failure_is_what_a_done_future_failed_with():
     assert pending.exception_or_none() is None and succeeded.exception_or_none() is None and failed.exception_or_none() is error
     cancelled = AwaitableFuture()
     cancelled.cancel()
-    with pytest.raises(concurrent.futures.CancelledError):  # The fourth state: neither succeeded nor failed
-        cancelled.exception_or_none()
+    assert cancelled.exception_or_none() is None  # The fourth state: neither succeeded nor failed
+    assert failed.result_or_none() is None and cancelled.result_or_none() is None  # Not raised, as result() would
+    pending.raise_if_failed()
+    succeeded.raise_if_failed()
+    with pytest.raises(ValueError) as raised:
+        failed.raise_if_failed()
+    assert raised.value is error
+    with pytest.raises(concurrent.futures.CancelledError):
+        cancelled.raise_if_failed()
 
 
 async def test_async_futures_are_on_the_given_or_running_loop():
@@ -221,17 +228,68 @@ async def test_async_futures_finish_at_once_as_the_future_does_on_their_loop():
     assert await waiting == "done"
 
 
-async def test_a_finished_future_and_its_async_futures_are_freed_by_refcounting():
+async def test_a_finished_future_lets_go_of_its_async_futures():
     future = AwaitableFuture()
     waiting = weakref.ref(future.as_async_future())
-    future.set_result("done")
-    assert waiting() is not None  # Held by its done-callback, which concurrent.futures keeps, as asyncio.wrap_future()'s is
-    gc.disable()  # So that only a cycle between them would keep it
+    gc.disable()  # So that only refcounting frees it
     try:
-        del future
-        assert waiting() is None
+        assert waiting() is not None  # Held by its done-callback while the future is pending, as asyncio.wrap_future()'s is
+        future.set_result("done")
+        assert waiting() is None  # Finished at once, on its loop, and dropped with the future's done-callbacks
     finally:
         gc.enable()
+
+
+@pytest.mark.parametrize(
+    ("method", "finish", "raises"),
+    [
+        ("result", "fail", ValueError),
+        ("result", "fail while waiting", ValueError),
+        ("result", "cancel", concurrent.futures.CancelledError),
+        ("result", None, TimeoutError),
+        ("exception", "cancel", concurrent.futures.CancelledError),
+        ("exception", None, TimeoutError),
+    ],
+)
+def test_what_it_raises_doesnt_hold_it(method, finish, raises):
+    future, holder = AwaitableFuture(), []
+    if finish == "fail":
+        future.set_exception(ValueError())
+    elif finish == "cancel":
+        future.cancel()
+    elif finish == "fail while waiting":
+        holder.append(future)  # Popped as it's failed, so the timer's thread doesn't hold it either
+        threading.Timer(0.01, lambda: holder.pop().set_exception(ValueError())).start()
+    with pytest.raises(raises) as raised:
+        getattr(future, method)(2 if finish else 0.01)
+    freed = weakref.ref(future)
+    gc.disable()  # So that only refcounting frees it, while what it raised, and so its traceback, lives on
+    try:
+        del future
+        assert freed() is None and raised.value is not None
+    finally:
+        gc.enable()
+
+
+@pytest.mark.parametrize("method", ["result", "exception"])
+def test_an_infinite_timeout_waits_as_none_does(method):
+    future = AwaitableFuture()
+    threading.Timer(0.01, future.set_result, args=("done",)).start()
+    assert getattr(future, method)(float("inf")) == ("done" if method == "result" else None)
+    assert getattr(future, method)(float("inf")) == ("done" if method == "result" else None)  # Done, so at once
+
+
+@pytest.mark.parametrize("method", ["result", "exception"])
+def test_a_negative_infinite_timeout_times_out_at_once(method):
+    with pytest.raises(TimeoutError):
+        getattr(AwaitableFuture(), method)(float("-inf"))
+
+
+def test_reprs_show_the_state_but_not_the_result():
+    future = AwaitableFuture()
+    assert "Pending" in repr(future)
+    future.set_result("a result")
+    assert "Succeeded[str]" in repr(future) and "a result" not in repr(future)
 
 
 def test_cancelled_futures_count_as_done_for_concurrent_futures_wait_and_as_completed():
@@ -243,33 +301,18 @@ def test_cancelled_futures_count_as_done_for_concurrent_futures_wait_and_as_comp
     assert list(concurrent.futures.as_completed([future], timeout=0.1)) == [future]
 
 
-def test_shields_finish_as_their_source_does():
-    done, failed, cancelled = sources = [AwaitableFuture() for _ in range(3)]
-    shields = [source.shielded() for source in sources]
-    assert not any(shield.done() for shield in shields)
-    done.set_result("done")
-    failed.set_exception(error := ValueError())
-    cancelled.cancel()
-    assert shields[0].result(0) == "done" and shields[1].exception(0) is error and shields[2].cancelled()
-    assert done.shielded().result(0) == "done"  # Already done, so at once
-
-
-async def test_cancelling_a_shield_leaves_its_source_alone():
-    source = AwaitableFuture()
-    shield = source.shielded()
-    assert shield.cancel() and not source.cancelled()
-    assert len(source._done_callbacks) == 0  # Dropped, so a long-lived source doesn't keep every shield given up on
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(source.shielded(), 0.01)  # Its awaiter giving up cancels only the shield
-    assert not source.cancelled() and len(source._done_callbacks) == 0
-    source.set_result("done")
-    assert shield.cancelled() and await source == "done"
-
-
-def test_shields_prevent_blocking_waits_where_their_source_does():
-    source = AwaitableFuture(prevent_blocking_wait_in_threads=threading.current_thread())
-    with pytest.raises(RuntimeError, match="deadlock"):
-        source.shielded().result(0.01)
+def test_executors_can_make_them(monkeypatch, caplog):
+    monkeypatch.setattr(concurrent.futures._base, "Future", AwaitableFuture)  # What ThreadPoolExecutor.submit() makes
+    release = threading.Event()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        executor.submit(release.wait)  # Holding up the rest
+        succeeding, failing, cancelled = executor.submit(int, "1"), executor.submit(int, "x"), executor.submit(int, "2")
+        assert isinstance(succeeding, AwaitableFuture) and cancelled.cancel()
+        release.set()
+        assert len(concurrent.futures.wait([succeeding, failing, cancelled], timeout=2).done) == 3
+        assert succeeding.result() == 1 and type(failing.exception()) is ValueError
+        assert list(executor.map(int, "34", timeout=2)) == [3, 4]  # So its worker skipped the cancelled one, and lived
+    assert not any(record.name == "concurrent.futures" for record in caplog.records)
 
 
 @pytest.mark.parametrize(
@@ -287,7 +330,7 @@ async def test_giving_up_waiting_on_a_future_that_doesnt_honor_cancel_leaves_oth
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(wait(), 0.05)
     assert not future.cancelled()
-    assert len(future._done_callbacks) == 1  # Only other's shield, as the one given up on was dropped
+    assert len(future._done_callbacks) == 1  # Only other's, as the one given up on was dropped
     future.set_result("done")
     assert await other == "done"
     assert await wait() == "done"
@@ -312,15 +355,6 @@ def test_completed_at_is_when_it_finished():
     assert not running.cancel() and running.completed_at is None  # Refused, so it hasn't finished
     refusing = AwaitableFuture(honor_cancel=False)
     assert not refusing.cancel() and refusing.completed_at is None
-
-
-def test_shields_share_their_sources_completion_time_unless_cancelled_on_their_own():
-    source = AwaitableFuture()
-    alone, along = source.shielded(), source.shielded()
-    alone.cancel()
-    source.set_result("done")
-    assert along.result(0) == "done" and along.completed_at == source.completed_at
-    assert alone.completed_at < source.completed_at  # Its own, as it finished before its source
 
 
 # Other async libraries: awaited through anyio's API, so on trio as well as asyncio

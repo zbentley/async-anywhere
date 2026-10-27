@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from abc import ABC
-from functools import partial
 from threading import Lock
 from typing import Any
 from weakref import WeakSet
 
-from async_anywhere._util import ThreadSelector, LoopSelector
+from async_anywhere._util import ThreadSelector, LoopSelector, blocking_wait_checker
 from async_anywhere.futures import AwaitableFuture
 from async_anywhere.state_tracker import State, StateTracker, StateTrackerError
 
@@ -16,10 +15,10 @@ class WaitableStateTracker(StateTracker, ABC):
     type _FutureType = tuple[State | None, State, Any]
     _waiters: dict[State, WeakSet[AwaitableFuture[_FutureType]]]
 
-    __slots__ = ('_waiters', '_last_transition', '_future_factory')
+    __slots__ = ('_waiters', '_runtime_checker')
     def __init__(
         self,
-        prevent_blocking_wait_in_loops:LoopSelector = None,
+        prevent_blocking_wait_in_loops: LoopSelector = None,
         prevent_blocking_wait_in_threads: ThreadSelector = None,
     ):
         """
@@ -31,17 +30,8 @@ class WaitableStateTracker(StateTracker, ABC):
         """
         super().__init__(lock=Lock())
         self._waiters = {s: WeakSet() for s in self.states}
-        self._last_transition = [None, None]
-        template = AwaitableFuture(
-            prevent_blocking_wait_in_loops=prevent_blocking_wait_in_loops,
-            prevent_blocking_wait_in_threads=prevent_blocking_wait_in_threads,
-        )
-        # Converted once: AwaitableFuture takes the checkers back as they are, and an iterator would only last one future
-        self._future_factory = partial(
-            AwaitableFuture,
-            prevent_blocking_wait_in_loops=template._check_loops,
-            prevent_blocking_wait_in_threads=template._check_threads,
-        )
+        # Made once, for all its futures, as an iterator would only last one
+        self._runtime_checker = blocking_wait_checker(prevent_blocking_wait_in_loops, prevent_blocking_wait_in_threads)
 
     def wait_for_state(self, state: State, *states: State) -> AwaitableFuture[_FutureType]:
         # NB: the future returned here will be resolved once the StateTracker has passed through the given state, even
@@ -50,28 +40,26 @@ class WaitableStateTracker(StateTracker, ABC):
         # NB: cancelling the returned future does nothing.
         # NB: if your done callbacks are slow, you'll break stuff (here and everywhere)
         states = [self._check_state(state) for state in (state, *states)]
-        future = self._future_factory()
-        with self._lock:
-            if self._state in states:
-                future.set_result((self._last_transition[0], self._state, self._last_transition[1]))
+        future = AwaitableFuture()
+        future._runtime_checker = self._runtime_checker
+        with self._condition:
+            if self.state in states:
+                future.set_result(self._last_transition)
             else:
                 for state in states:
                     self._waiters[state].add(future)
         return future
 
     def _transition(self, target: State, data: Any = None):
-        with self._lock:
-            old_state = self._state
+        with self._condition:
+            old_state = self.state
             if target not in old_state._destinations:
                 raise StateTrackerError(self, "Could not transition to state", self._check_state(target))
-            old_waiters, self._state = self._waiters[target], target
+            self._last_transition = result = (old_state, target, data)
+            old_waiters = self._waiters[target]
             waiters = tuple(old_waiters)  # Not copy() because we don't need to hash -- TODO right? Or is copy faster even on weakset?
             old_waiters.clear()
-            self._last_transition[0] = old_state
-            self._last_transition[1] = data
+            self.after_state_change(old_state, target, data)
 
-        result = (old_state, target, data)
         for future in waiters:
             future.set_result_if_not_done(result)
-
-        self.after_state_change(old_state, target, data)

@@ -1,9 +1,9 @@
-from asyncio import AbstractEventLoop
+from asyncio import AbstractEventLoop, _get_running_loop
 from contextlib import AbstractContextManager
 from copy import copy
 from inspect import iscoroutinefunction
-from threading import RLock, Lock, Thread
-from typing import Iterable, Literal, Callable
+from threading import RLock, Lock, Thread, current_thread
+from typing import Any, Iterable, Literal, Callable
 from weakref import WeakSet
 
 type RuntimeSelector[T] = None | Literal["all"] | T | Iterable[T] | Callable[[], bool]
@@ -16,21 +16,34 @@ def validate_coroutine_function(_, attribute, value):
     if not iscoroutinefunction(value):
         raise TypeError(f"{attribute.name} must be a coroutine function (an async def), not {value!r}")
 
-def fast_runtime_checker[T](vals: RuntimeSelector[T], kind: type[T], getter: Callable[[], T]) -> Callable[[], bool]:
-    # NB if you pass a callable iterable, this will break.
-    if vals is not None:
+def blocking_wait_checker(loops: LoopSelector, threads: ThreadSelector) -> Callable[[Any], None] | None:
+    """A function that raises RuntimeError, naming the future it's given, if called on one of `threads`, or in one of
+    `loops` while it runs: or None, if there are none to check. It holds the loops and threads weakly."""
+    refs, tests = WeakSet(), {AbstractEventLoop: bool, Thread: bool}  # tests: for "all", and callables given instead
+    for kind, vals in ((AbstractEventLoop, loops), (Thread, threads)):
+        # NB if you pass a callable iterable, this will break.
         if vals == "all":
-            return True.__bool__
-        elif isinstance(vals, kind):
-            vals = WeakSet((vals,))
+            tests[kind] = True.__bool__
         elif callable(vals):
-            return vals
-        else:
-            for v in (vals := WeakSet(vals)):
+            tests[kind] = vals
+        elif vals is not None:
+            for v in (vals,) if isinstance(vals, kind) else vals:
                 assert isinstance(v, kind)
-        if len(vals) > 0:
-            return lambda: getter() in vals
-    return bool
+                refs.add(v)
+    in_loop, in_thread = tests[AbstractEventLoop], tests[Thread]
+    if len(refs) == 0 and in_loop is in_thread is bool:
+        return None
+
+    def check(future):
+        # None, outside a loop, is never in refs
+        if (loop := _get_running_loop()) in refs or in_loop():
+            raise RuntimeError(
+                f"Waiting for {future!r} would deadlock: current event loop '{loop!r}' was set in 'prevent_blocking_wait_in_loops'")
+        if (thread := current_thread()) in refs or in_thread():
+            raise RuntimeError(
+                f"Waiting for {future!r} would deadlock: current thread '{thread!r}' was set in 'prevent_blocking_wait_in_threads'")
+
+    return check
 
 
 def copy_exception[E: BaseException](error: E, *causes: BaseException) -> E:

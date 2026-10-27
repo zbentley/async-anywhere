@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, Iterable, Self
+from typing import Any, Iterable, Self, Collection
 
 import attr
 
@@ -61,15 +61,16 @@ class State:
     Note that a State is only ever equal to itself. States with the same parameters from two different StateTrackers
     will not be treated as equivalent."""
     # As declared, until StateTracker.__init_subclass__ replaces it with every State this one can transition to
-    _destinations: Iterable[Transition] = attr.field(
+    _destinations: Transition | Collection[Transition] = attr.field(
         default=(),
         converter=_convert_state,
     )
-    _sources: Iterable[Transition] = attr.field(
+    _sources: Transition | Collection[Transition] = attr.field(
         default=(),
         converter=_convert_state,
     )
     initial: bool = attr.field(default=False)
+    terminal: bool = attr.field(default=False, init=False)
     _name: str = attr.field(init=False, default=_UNBOUND)
     _owner: type | None = attr.field(init=False, default=None)
 

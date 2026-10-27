@@ -693,8 +693,12 @@ def test_stop_futures_only_fail_once_the_worker_is_broken():
         assert not worker._stopped.done()
     broken = WorkerStopFuture(worker)
     broken.set_exception(why := WorkerBroken("like this"))
-    copy = broken.exception()
-    assert type(copy) is WorkerBroken and copy.args == why.args and copy is not why
+    for copy in (broken.exception(), broken.exception_or_none()):
+        assert type(copy) is WorkerBroken and copy.args == why.args and copy is not why
+    stopped = WorkerStopFuture(worker)
+    stopped.set_result(why := CleanStop("cleanly"))
+    copy = stopped.result_or_none()
+    assert type(copy) is CleanStop and copy.args == why.args and copy is not why
 
 
 # Teardown

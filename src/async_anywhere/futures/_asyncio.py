@@ -1,6 +1,5 @@
 import asyncio
 import asyncio.futures
-from concurrent.futures._base import FINISHED
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -13,8 +12,8 @@ _convert_future_exc = asyncio.futures._convert_future_exc
 class AsyncioAwaitableFuture[T](asyncio.Future[T]):
     """What AwaitableFuture.as_async_future() returns on asyncio: it finishes as its source does, at once if its source
     finishes on its loop's thread while that runs, or else in a callback queued on its loop, as asyncio.wrap_future()'s
-    does. It holds its source until it's done, and its source holds it (through its done-callback, which
-    concurrent.futures keeps) as wrap_future()'s does."""
+    does. It holds its source until it's done, and its source holds it (through its done-callback) until the source is
+    done."""
 
     __slots__ = ('_source',)
 
@@ -22,7 +21,7 @@ class AsyncioAwaitableFuture[T](asyncio.Future[T]):
         super().__init__(loop=loop)
         self._source = source
         with source._condition:  # As add_done_callback() does, without its frames
-            if not source.done():
+            if not source._last_transition[1].terminal:
                 source._done_callbacks.append(self._deliver)
                 return
         self._deliver(source)
@@ -53,7 +52,7 @@ class AsyncioAwaitableFuture[T](asyncio.Future[T]):
                 loop.call_soon_threadsafe(self._finish)
             except RuntimeError:  # Closed
                 pass
-        elif source._state == FINISHED:
+        elif not source.cancelled():
             self._finish()
         else:  # Cancelled: maybe by cancel(), which finishes this one itself (with its msg)
             loop.call_soon(self._finish)
@@ -64,7 +63,7 @@ class AsyncioAwaitableFuture[T](asyncio.Future[T]):
             return
         source, self._source = self._source, None
         # Through result() and exception(), so subclasses' overrides (WorkerStopFuture's copies, say) are respected
-        if source._state != FINISHED:
+        if source.cancelled():
             super().cancel()
         elif (error := source.exception()) is not None:
             self.set_exception(_convert_future_exc(error))

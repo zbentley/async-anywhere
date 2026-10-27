@@ -55,22 +55,26 @@ class StateTracker(ABC):
 
     states: ClassVar[frozenset[State]]
     _abstract: ClassVar[bool]
+    _initial_transition: ClassVar[tuple[None, State | None, None]]
 
-    __slots__ = ('_state', '_lock')
+    # (old state, new state, data) of the last transition, or (None, initial state, None) before any: one tuple, so that
+    # lock-free readers always see a state and its data together
+    _last_transition: tuple[State | None, State, Any]
+
+    __slots__ = ('_last_transition', '_condition')
 
     def __init__(self, lock: ContextManager = nullcontext()) -> None:
         """
-        thread_safe: if True, transitions hold a threading.Condition, notified after each one, so they're atomic across
-            threads. If False, they take no lock, so only use the StateTracker from one thread at a time.
+        lock: held by each transition, and its after_state_change(). The default takes no lock, so only use the
+            StateTracker from one thread at a time.
         """
-        self._state, = (s for s in self.states if s.initial)
-        self._lock = lock
+        self._last_transition = self._initial_transition
+        self._condition = lock
 
     # We use a property to prevent accidental manual mutation
-    # TODO property setter on transition
     @property
     def state(self) -> State:
-        return self._state
+        return self._last_transition[1]
 
     @classmethod
     def _check_states(cls, seen: frozenset[State], source, *states):
@@ -131,13 +135,17 @@ class StateTracker(ABC):
         with _binding_lock:
             for state in states:
                 # The same for every class sharing these States, so rewriting it for each is harmless
-                object.__setattr__(state, "_destinations", frozenset(destinations[state]))
+                dests = frozenset(destinations[state])
+                object.__setattr__(state, "_destinations", dests)
+                if len(dests) == 0:
+                    object.__setattr__(state, "terminal", True)
                 # TODO wipe sources?
         cls.states = states
+        cls._initial_transition = (None, initial, None)  # A tuple, not a State, so this class doesn't declare one
 
     def after_state_change(self, old_state: State, new_state: State, data: Any):
         """To be overridden by subclassers."""
-        # NB: states may not match by the time this runs
+        # NB: runs under the lock, just after the transition, so self.state is new_state; keep it brief
 
     def _check_state(self, state: State) -> State:
         if state not in self.states:
@@ -148,13 +156,12 @@ class StateTracker(ABC):
         return state
 
     def _transition(self, target: State, data: Any = None):
-        with self._lock:
-            old_state = self._state
+        with self._condition:
+            old_state = self._last_transition[1]
             if target not in old_state._destinations:
                 raise StateTrackerError(self, "Could not transition to state", self._check_state(target))
-            self._state = target
-
-        self.after_state_change(old_state, target, data)
+            self._last_transition = (old_state, target, data)
+            self.after_state_change(old_state, target, data)
 
     def require(self, state: State, *desired_states: State) -> Self:
         current_state = self.state

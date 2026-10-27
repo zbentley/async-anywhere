@@ -208,7 +208,7 @@ from weakref import WeakSet
 import sniffio
 from attrs import Factory, define, field, validators
 
-from async_anywhere._util import validate_coroutine_function, LockProtected, copy_exception, fast_runtime_checker
+from async_anywhere._util import validate_coroutine_function, LockProtected, copy_exception, blocking_wait_checker
 from async_anywhere.captive import _fork_safety
 from async_anywhere.captive.exceptions import WorkerInterrupted, WorkerStopped, WorkerForked
 from async_anywhere.captive._stopped import WorkerStopFuture
@@ -295,7 +295,7 @@ class CaptiveWorker:
         # The jobs' name, which their coroutines' and tasks' reprs show (tracebacks show the code's own, _job)
         name = f"{self._job.__qualname__}[{getattr(func, '__qualname__', None) or repr(func)}]"
         # Calls' futures refuse blocking waits on the worker's loop: checked by this, made once rather than per call
-        check_loop = fast_runtime_checker(self._loop, asyncio.AbstractEventLoop, asyncio._get_running_loop)
+        check_loop = blocking_wait_checker(self._loop, None)
 
         @wraps(func)
         def call(*args: P.args, **kwargs: P.kwargs) -> AwaitableFuture[T]:
@@ -304,7 +304,8 @@ class CaptiveWorker:
             # pending once the worker has stopped, after taking _submitting, can't miss anything.
             in_loop = self.in_worker()
             loop = self._loop
-            future = AwaitableFuture(prevent_blocking_wait_in_loops=check_loop)
+            future = AwaitableFuture()
+            future._runtime_checker = check_loop
             context = copy_context()
             if context.get(sniffio.current_async_library_cvar):
                 # Which anyio.run() sets to its backend: left as it is, a caller's on trio would have anyio, in the job,

@@ -38,6 +38,12 @@ class WorkerStopFuture(AwaitableFuture[WorkerStopped]):
             raise error
         return copy_exception(super().result(timeout))
 
+    def exception_or_none(self) -> WorkerBroken | None:
+        return (error := super().exception_or_none()) and copy_exception(error)  # A copy, as for result()
+
+    def result_or_none(self) -> WorkerStopped | None:
+        return (stop := super().result_or_none()) and copy_exception(stop)  # A copy, as for result()
+
     def clean_stop(self, why: Literal["expired", "stopped", "parent task returned"], calls: Collection) -> bool:
         match why:
             case "expired":

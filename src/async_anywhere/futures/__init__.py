@@ -1,21 +1,18 @@
 import asyncio
 import concurrent.futures
-from concurrent.futures._base import CANCELLED, CANCELLED_AND_NOTIFIED, FINISHED
-from operator import attrgetter
-from threading import Thread, current_thread
+from concurrent.futures._base import CANCELLED_AND_NOTIFIED, FINISHED, LOGGER, PENDING, RUNNING
+from math import isinf
+from threading import Condition
 from time import monotonic
-from typing import Awaitable
+from typing import Any, Awaitable, Callable, Self
 
-from async_anywhere._util import fast_runtime_checker, LoopSelector, ThreadSelector
+from async_anywhere._util import blocking_wait_checker, LoopSelector, ThreadSelector
 from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
+from async_anywhere.state_tracker import State, StateTracker, StateTrackerError
 
-_template = concurrent.futures.Future()
-_template.cancel()
-_CANCELLED = frozenset((CANCELLED, CANCELLED_AND_NOTIFIED))
-_DONE = _CANCELLED | {FINISHED}
 
-class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
+class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     """A concurrent.futures.Future subclass that can also be awaited. Provides the following behaviors:
 
     - Calling "await AwaitableFuture(...)" can be done from any event loop, or trio task (anyio's included).
@@ -31,11 +28,9 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     - Finishing it on a running event loop's thread finishes the asyncio.Futures it provided on that loop at once, rather
       than in a later loop iteration as asyncio.wrap_future()'s are.
     - With honor_cancel=False, cancel() is refused (returns False), and waiters giving up leave it, and its other
-      waiters, alone. shielded() gives a future that can be cancelled without cancelling this one.
+      waiters, alone.
     - completed_at is the time.monotonic() time at which it finished (with a result, an exception, or cancellation), or
-      None until then. Its trio futures, and shields that finish as it does (or that finish it, by cancelling it), share
-      its time; shields that finish on their own (cancelled while it can't be, say) have their own. Its asyncio.Futures
-      have none.
+      None until then. Its trio futures share its time. Its asyncio.Futures have none.
 
     With honor_cancel=False, waiters giving up (as asyncio.wait_for(), asyncio.timeout(), TaskGroups, and trio's and
     anyio's cancel scopes make them) still do so at once, leaving it pending, as asyncio.shield() would. But cancel() is
@@ -52,14 +47,25 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
       Awaiting it, or as_async_future(), under asyncio.wait_for() or asyncio.timeout() leaves nothing behind.
     """
 
+    # Running is as an executor's job is once started, which can't be cancelled. Once done, it never transitions again.
+    Pending = State(initial=True)
+    Running = State(sources=Pending)
+    Cancelled = State(sources=Pending)
+    Succeeded = State(sources=(Pending, Running))  # Its transition's data is the result
+    Failed = State(sources=(Pending, Running))  # Its transition's data is the exception
+    # See _state. Cancelling notifies concurrent.futures' waiters at once, so it's never just CANCELLED.
+    _CF_STATES = {
+        Pending: PENDING, Running: RUNNING, Cancelled: CANCELLED_AND_NOTIFIED, Succeeded: FINISHED, Failed: FINISHED
+    }
+
     __slots__ = (
-        *sorted(key for key in vars(_template).keys() if key != '_state'),
-        '_state_value',
-        '_check_threads',
-        '_check_loops',
+        '_runtime_checker',  # Refuses blocking waits where they'd deadlock (see blocking_wait_checker()), or None
         '_honor_cancel',
-        '_source',  # What a shield finishes as (see shielded()), or None
         '_completed_at',
+        # Its done callbacks, dropped once they've run, and concurrent.futures.wait()'s and as_completed()'s waiters:
+        # both changed only under _condition
+        '_done_callbacks',
+        '_waiters',
     )
     def __init__(
         self,
@@ -68,66 +74,52 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         prevent_blocking_wait_in_threads: ThreadSelector = None,
         honor_cancel: bool = True,
     ):
-        self._completed_at: float | None = None
-        self._source: AwaitableFuture[T] | None = None
-        super().__init__()
-        # Not calling fast_runtime_checker() for None (most futures) saves its call: these are made on hot paths
-        threads, loops = prevent_blocking_wait_in_threads, prevent_blocking_wait_in_loops
-        self._check_threads = bool if threads is None else fast_runtime_checker(threads, Thread, current_thread)
-        self._check_loops = bool if loops is None else fast_runtime_checker(
-            loops, asyncio.AbstractEventLoop, asyncio._get_running_loop)
+        # NB: we're deliberately not calling concurrent.future.Future's super().__init__. We replace basically all of
+        # that class's internals, and subclass it only to satisfy isinstance() checks performed by stdlib. This class's
+        # observable behavior contract (which, per the stdlib's documented warning, is NOT limited to public methods)
+        # must remain a superset of concurrent.future.Future's contract.
+        StateTracker.__init__(self, lock=Condition())
+        # Not calling blocking_wait_checker() for None (most futures) saves its call: these are made on hot paths
+        loops, threads = prevent_blocking_wait_in_loops, prevent_blocking_wait_in_threads
+        self._runtime_checker = None if loops is threads is None else blocking_wait_checker(loops, threads)
         self._honor_cancel = honor_cancel
+        self._completed_at: float | None = None
+        self._done_callbacks: list[Callable[[Self], Any]] = []
 
-    def _set_state(self, state: str):
-        """Set the completed_at timestamp when the internal future's state is updated, under concurrent.futures.Future's
-        lock. Setting it via a done callback would be racy (waiters in threads could observe the status change before
-        completed_at was set) and skewed (on_completed would be set after state change), so we override some internals
-        instead."""
-        # Every completion sets this under self._condition, before notifying waiters or running callbacks: so it's set
-        # once done() is True, for all of them
-        if state == FINISHED or state == CANCELLED:
-            # A shield finishing as its source has (see shielded()) shares its time
-            self._completed_at = monotonic() if self._source is None else (self._source.completed_at or monotonic())
-        self._state_value = state
+        # Mutated only by code in concurrent.futures.wait() and .as_completed(). Contains opaque objects installed and
+        # removed by those methods.
+        self._waiters: list = []
 
-    _state = property(attrgetter('_state_value'), _set_state)  # A C getter, as done() and the like read it often
+    def __repr__(self):
+        # Unlike concurrent.futures.Future, we don't need to take the lock for repr, since reading the field is atomic.
+        # Our repr is similar to, but not the same as, concurrent.futures.Future's repr.
+        _, state, data = self._last_transition
+        outcome = "" if data is None else f"[{type(data).__name__}]"
+        return f"<{type(self).__qualname__} at {id(self):#x} {state.name}{outcome}>"
+
+    @property
+    def _state(self) -> str:
+        # What concurrent.futures.wait() and as_completed() read, under _condition, on every future they're given
+        return self._CF_STATES[self.state]
+
+    def after_state_change(self, old_state: State, new_state: State, data: Any):
+        # Under _condition, so concurrent.futures.wait() and as_completed(), which add their waiters under it, miss nothing
+        if new_state is self.Running:
+            return
+        self._completed_at = monotonic()
+        for waiter in self._waiters:
+            if new_state is self.Succeeded:
+                waiter.add_result(self)
+            elif new_state is self.Failed:
+                waiter.add_exception(self)
+            else:
+                waiter.add_cancelled(self)
+        self._condition.notify_all()
 
     @property
     def completed_at(self) -> float | None:
-        return self._completed_at
-
-    def shielded(self) -> AwaitableFuture[T]:
-        """
-        Returns a new AwaitableFuture that finishes as this one does (with its result, exception, or cancellation), but
-        whose cancellation leaves this one alone: as asyncio.shield() does for asyncio's awaitables. It prevents blocking
-        waits in the same loops and threads as this one.
-
-        Once the returned future is done (cancelled, say), this one drops its link to it, so a long-lived future doesn't
-        keep every shield its waiters gave up on.
-        """
-        shield = AwaitableFuture()
-        shield._source = self
-        shield._check_loops = self._check_loops
-        shield._check_threads = self._check_threads
-
-        def finish(source: AwaitableFuture[T]):
-            # Through the public methods, so that subclasses' (WorkerStopFuture's copies, say) are respected
-            if source.cancelled():
-                shield.cancel()
-            elif (error := source.exception()) is not None:
-                shield.set_exception_if_not_done(error)
-            else:
-                shield.set_result_if_not_done(source.result())
-
-        def forget(_):
-            # Under the lock, as concurrent.futures iterates _done_callbacks outside it once done, so mustn't lose one then
-            with self._condition:
-                if not self.done():
-                    self._done_callbacks.remove(finish)
-
-        self.add_done_callback(finish)
-        shield.add_done_callback(forget)
-        return shield
+        with self._condition:  # Set just after it finishes, under this: so it's set for anyone who has seen it done
+            return self._completed_at
 
     def as_async_future(
         self, loop: asyncio.AbstractEventLoop | None = None, require_running_loop=True
@@ -141,9 +133,9 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         future is required.
 
         Cancelling the returned future cancels this one, unless this one has already finished, in which case cancellation
-        is "refused" (the returned asyncio.Future's cancel() method returns False). If mutual cancellation behavior is
-        not desired, use shielded().as_async_future(). If this one refuses cancellation while pending (made with
-        honor_cancel=False, or running), only the returned future is cancelled, and this one lets go of it.
+        is "refused" (the returned asyncio.Future's cancel() method returns False). If this one refuses cancellation while
+        pending (made with honor_cancel=False, or running), only the returned future is cancelled, and this one lets go of
+        it.
 
         :param loop: the event loop to which the returned future should be bound, or the current event loop if None.
         :param require_running_loop: if True, a RuntimeError will be raised if the event loop to be used is not running or is closed.
@@ -161,7 +153,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
 
     def __await__(self):
         # If we're already done, __await__ can resolve without dealing with any loop machinery at all
-        if self.done():
+        if self._last_transition[1].terminal:
             return self._await_finished()
         # Not a generator, so that what awaits it awaits the asyncio.Future's own iterator directly
         return self.as_async_future().__await__()
@@ -177,47 +169,115 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     # Lock-free reads of its state: it only ever moves forward, and a finished one's outcome never changes
 
     def done(self) -> bool:
-        return self._state in _DONE
+        return self._last_transition[1].terminal
 
     def cancelled(self) -> bool:
-        return self._state in _CANCELLED
+        return self._last_transition[1] is self.Cancelled
+
+    def running(self) -> bool:
+        return self.state is self.Running
 
     def cancel(self) -> bool:
-        if not self._honor_cancel:
-            return False
-        cancelled = super().cancel()
-        with self._condition:  # So only one of several threads cancelling it notifies
-            if self._state == CANCELLED:
-                # As an executor does on dequeuing it: until then, concurrent.futures.wait() and
-                # concurrent.futures.as_completed() neither count it as done nor wake for it, and nothing here
-                # dequeues it.
-                self.set_running_or_notify_cancel()
-        return cancelled
+        # Lock-free unless it's pending, as Executor.map() cancels every future once it has its result
+        if self._honor_cancel and self._last_transition[1] is self.Pending:
+            try:
+                self._transition(self.Cancelled)
+            except StateTrackerError:  # It started, finished, or was cancelled, meanwhile
+                pass
+            else:
+                self._invoke_callbacks()
+                return True
+        return self.cancelled()
 
     def result(self, timeout: float | None = None) -> T:
-        if self._state == FINISHED and self._exception is None:
-            return self._result
-        self._check_blocking()
-        return super().result(timeout)
+        try:
+            _, state, data = self._last_transition
+            if state is self.Succeeded:
+                return data
+            if state is self.Failed:
+                raise data
+            if state is self.Cancelled:
+                raise concurrent.futures.CancelledError
+            if not self._wait(timeout):
+                raise TimeoutError
+            # Finished now. Not self.result(), which would run a subclass's override (WorkerStopFuture's copying, say)
+            # twice.
+            return AwaitableFuture.result(self)
+        finally:
+            del self, data  # Else what this raises would hold them through its traceback (in a cycle, if it's data)
 
     def exception(self, timeout: float | None = None) -> BaseException | None:
-        if self._state == FINISHED:
-            return self._exception
-        self._check_blocking()
-        return super().exception(timeout)
+        try:
+            _, state, data = self._last_transition
+            if state is self.Succeeded:
+                return None
+            if state is self.Failed:
+                return data
+            if state is self.Cancelled:
+                raise concurrent.futures.CancelledError
+            if not self._wait(timeout):
+                raise TimeoutError
+            return AwaitableFuture.exception(self)  # As in result()
+        finally:
+            del self  # As in result()
+
+    def _wait(self, timeout: float | None) -> bool:
+        # For result() and exception(), which raise what they must themselves, so that only their frames, which don't
+        # keep it, are in the traceback: whether it finished within `timeout`
+        if self._runtime_checker is not None:
+            self._runtime_checker(self)
+        if timeout is not None and isinf(timeout) and timeout > 0:  # -inf times out at once, as any negative timeout does
+            timeout = None
+        with self._condition:
+            return self._condition.wait_for(self.done, timeout)
+
+    def add_done_callback(self, fn: Callable[[Self], Any]):
+        with self._condition:
+            if not self._last_transition[1].terminal:
+                self._done_callbacks.append(fn)
+                return
+        try:
+            fn(self)
+        except Exception:
+            LOGGER.exception("exception calling callback for %r", self)
+
+    def _invoke_callbacks(self):
+        super()._invoke_callbacks()
+        # Once it's done, nothing adds or removes callbacks: so it lets go of them, and what they hold, at once
+        self._done_callbacks.clear()
+
+    # For executors
+
+    def set_running_or_notify_cancel(self) -> bool:
+        # cancel() has notified concurrent.futures' waiters already: so this just refuses a cancelled future, each time
+        with self._condition:
+            if self.cancelled():
+                return False
+            self._transition(self.Running)  # Refused once it's running or finished
+        return True
+
+    def set_result(self, result: T):
+        self._transition(self.Succeeded, result)
+        self._invoke_callbacks()
+
+    def set_exception(self, exception: BaseException):
+        self._transition(self.Failed, exception)
+        self._invoke_callbacks()
 
     def raise_if_failed(self):
         """If this future was completed with an error, raise that error.
         If this future was cancelled, raise CancelledError."""
         if error := self.exception_or_none():
             raise error
+        if self.state is self.Cancelled:
+            raise concurrent.futures.CancelledError
 
     def set_result_if_not_done(self, result: T) -> bool:
         """Sets this future's completion state to "success", with the supplied value.
         Returns False if the future was already completed or cancelled.
         Returns True if the result was saved on the future.
         """
-        if self.done():  # Lock-free, so cheaper than the raise below
+        if self._last_transition[1].terminal:  # Lock-free, so cheaper than the raise below
             return False
         try:
             self.set_result(result)
@@ -230,7 +290,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         Returns False if the future was already completed or cancelled.
         Returns True if the error was saved on the future.
         """
-        if self.done():
+        if self._last_transition[1].terminal:
             return False
         try:
             self.set_exception(exception)
@@ -240,26 +300,17 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
 
     def result_or_none(self) -> T | None:
         """Returns the result of this future if it is done.
-        Returns None if the future is still running. If the future failed or was cancelled, raises an exception.
+        Returns None if the future is still running, failed, or was cancelled.
 
-        If your future was completed with the value None, this method is likely not useful.
+        If your future was completed with the value None, this method is likely not useful (use .result(timeout=0) and
+        handle the error instead).
         """
-        return self.result() if self.done() else None
+        _, state, data = self._last_transition
+        return data if state is self.Succeeded else None
 
     def exception_or_none(self) -> BaseException | None:
         """Returns this future's exception if it failed with an error.
-        Returns None if the future is still running, or if it completed without an exception.
-        If the future was cancelled, a CancelledError will be raised.
+        Returns None if the future is still running, was cancelled, or completed without an exception.
         """
-        return self.exception() if self.done() else None
-
-    def _check_blocking(self):
-        # This hokey control flow is intentional; it speeds up checks on happy paths.
-        if (check_loops := self._check_loops) is (check_threads := self._check_threads) is bool or self.done():
-            return
-        if check_loops():
-            raise RuntimeError(
-                f"Waiting for {self!r} would deadlock: current event loop '{asyncio._get_running_loop()!r}' was set in 'prevent_blocking_wait_in_loops'")
-        if check_threads():
-            raise RuntimeError(
-                f"Waiting for {self!r} would deadlock: current thread '{current_thread()!r}' was set in 'prevent_blocking_wait_in_threads'")
+        _, state, data = self._last_transition
+        return data if state is self.Failed else None
