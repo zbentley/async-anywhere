@@ -1,4 +1,5 @@
 import abc
+import asyncio
 import copy
 import dataclasses
 import gc
@@ -242,23 +243,26 @@ def test_wait_for_state_resolves_on_transition():
     inst._transition(MyWaitable.C)  # Its future, done, is still among C's waiters
     assert future.result(0)[1] is MyWaitable.B
 
-@pytest.mark.parametrize("strong", [False, True], ids=["weak", "strong"])
-def test_dropped_waiters(strong):
-    inst = MyWaitable(strong_waiters=strong)
+def test_dropped_waiters_are_not_resolved():
+    inst = MyWaitable()
     resolved = []
     inst.wait_for_state(MyWaitable.B).add_done_callback(resolved.append)
     gc.collect()
     inst._transition(MyWaitable.B)
-    assert len(resolved) == (1 if strong else 0)
+    assert len(resolved) == 0
 
-def test_strong_waiters_are_forgotten_once_done():
-    inst = MyWaitable(strong_waiters=True)
-    cancelled = inst.wait_for_state(MyWaitable.B, MyWaitable.C)
-    cancelled.cancel()
-    resolved = inst.wait_for_state(MyWaitable.B, MyWaitable.C)
-    inst._transition(MyWaitable.B)
-    assert resolved.done()
-    assert all(len(waiters) == 0 for waiters in inst._waiters.values())
+def test_prevent_blocking_wait_in_threads():
+    # A one-shot iterator, which must still cover every future the tracker makes
+    inst = MyWaitable(prevent_blocking_wait_in_threads=iter([threading.current_thread()]))
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="would deadlock"):
+            inst.wait_for_state(MyWaitable.B).result(0)
+    assert inst.wait_for_state(MyWaitable.A).result(0) == (None, MyWaitable.A, None)  # Done, so not checked
+
+async def test_prevent_blocking_wait_in_loops():
+    inst = MyWaitable(prevent_blocking_wait_in_loops=asyncio.get_running_loop())
+    with pytest.raises(RuntimeError, match="would deadlock"):
+        inst.wait_for_state(MyWaitable.B).result(0)
 
 @pytest.mark.backends("asyncio", "uvloop", "trio")
 async def test_wait_for_state_across_threads():

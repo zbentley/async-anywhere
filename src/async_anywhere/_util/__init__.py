@@ -6,8 +6,9 @@ from threading import RLock, Lock, Thread
 from typing import Iterable, Literal, Callable
 from weakref import WeakSet
 
-type RuntimeSelector[T: Thread | AbstractEventLoop] = None | Literal["all"] | T | Iterable[T] | Callable[[], bool]
-
+type RuntimeSelector[T] = None | Literal["all"] | T | Iterable[T] | Callable[[], bool]
+type ThreadSelector = RuntimeSelector[Thread]
+type LoopSelector = RuntimeSelector[AbstractEventLoop]
 
 FAST_COLLECTION_SET_CUTOFF = 5
 

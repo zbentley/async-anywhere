@@ -3,57 +3,61 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 from abc import ABC
+from functools import partial
 from typing import Any
 from weakref import WeakSet
 
+from async_anywhere._util import ThreadSelector, LoopSelector
 from async_anywhere.futures import AwaitableFuture
 from async_anywhere.state_tracker import State, StateTracker, StateTrackerError
-
-__all__ = ["WaitableStateTracker"]
 
 
 class WaitableStateTracker(StateTracker, ABC):
     # Old state and data are None for the initial state, which no transition entered
     type _FutureType = tuple[State | None, State, Any]
-    _waiters: dict[State, WeakSet[AwaitableFuture[_FutureType]] | set[AwaitableFuture[_FutureType]]]
+    _waiters: dict[State, WeakSet[AwaitableFuture[_FutureType]]]
 
-    __slots__ = ('_waiters', '_forget', '_last_transition')
-    def __init__(self, strong_waiters: bool = False):
+    __slots__ = ('_waiters', '_last_transition', '_future_factory')
+    def __init__(
+        self,
+        prevent_blocking_wait_in_loops:LoopSelector = None,
+        prevent_blocking_wait_in_threads: ThreadSelector = None,
+    ):
         """
-        Always thread safe, as its futures can be waited on and resolved from any thread.
+        Always thread safe, as its futures can be waited on and resolved from any thread. Futures from wait_for_state()
+        are held weakly, so ones whose callers drop them (after adding done callbacks, say) are never resolved.
 
-        strong_waiters: if True, futures from wait_for_state() are held until they're done (resolved or cancelled), so
-            ones whose callers drop them (after adding done callbacks, say) still resolve. If False, they're held weakly.
+        prevent_blocking_wait_in_loops, prevent_blocking_wait_in_threads: given to every AwaitableFuture that
+            wait_for_state() returns; see AwaitableFuture.
         """
         super().__init__()
-        self._waiters = {s: set() if strong_waiters else WeakSet() for s in self.states}
+        self._waiters = {s: WeakSet() for s in self.states}
         self._last_transition = [None, None]
-        forget = bool
-        if strong_waiters:
-            condition, waiters = self._condition, self._waiters
-            def forget(done):
-                with condition:
-                    for state_waiters in waiters.values():
-                        state_waiters.discard(done)
-        self._forget = forget
+        template = AwaitableFuture(
+            prevent_blocking_wait_in_loops=prevent_blocking_wait_in_loops,
+            prevent_blocking_wait_in_threads=prevent_blocking_wait_in_threads,
+        )
+        # Converted once: AwaitableFuture takes the checkers back as they are, and an iterator would only last one future
+        self._future_factory = partial(
+            AwaitableFuture,
+            prevent_blocking_wait_in_loops=template._check_loops,
+            prevent_blocking_wait_in_threads=template._check_threads,
+        )
 
-    def wait_for_state(
-        self, state: State, *states: State, **kwargs,
-    ) -> AwaitableFuture[_FutureType]:
+    def wait_for_state(self, state: State, *states: State) -> AwaitableFuture[_FutureType]:
         # NB: the future returned here will be resolved once the StateTracker has passed through the given state, even
         # if it is no longer in that state. If a worker transitions twice in rapid succession, or a waiter is attached
         # and then not waited on until later, after the worker has passed through *states, it'll still resolve.
         # NB: cancelling the returned future does nothing.
         # NB: if your done callbacks are slow, you'll break stuff (here and everywhere)
         states = [self._check_state(state) for state in (state, *states)]
-        future = AwaitableFuture(**kwargs)
+        future = self._future_factory()
         with self._condition:
             if self._state in states:
                 future.set_result((self._last_transition[0], self._state, self._last_transition[1]))
-                return future
-            for state in states:
-                self._waiters[state].add(future)
-        future.add_done_callback(self._forget)
+            else:
+                for state in states:
+                    self._waiters[state].add(future)
         return future
 
     def _transition(self, target: State, data: Any = None):

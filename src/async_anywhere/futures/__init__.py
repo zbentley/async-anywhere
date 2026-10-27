@@ -6,7 +6,7 @@ from threading import Thread, current_thread
 from time import monotonic
 from typing import Awaitable, Any
 
-from async_anywhere._util import LockProtected, RuntimeSelector, fast_runtime_checker
+from async_anywhere._util import LockProtected, fast_runtime_checker, LoopSelector, ThreadSelector
 from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
 
@@ -59,8 +59,9 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     )
     def __init__(
         self,
-        prevent_blocking_wait_in_loops: RuntimeSelector[asyncio.AbstractEventLoop] = None,
-        prevent_blocking_wait_in_threads: RuntimeSelector[Thread] = None,
+        *,
+        prevent_blocking_wait_in_loops: LoopSelector = None,
+        prevent_blocking_wait_in_threads: ThreadSelector = None,
         honor_cancel: bool = True,
     ):
         self._completed_at: float | None = None
