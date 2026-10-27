@@ -200,8 +200,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
                 raise concurrent.futures.CancelledError
             if not self._wait(timeout):
                 raise TimeoutError
-            # Finished now. Not self.result(), which would run a subclass's override (WorkerStopFuture's copying, say)
-            # twice.
+            # Finished now. Not self.result(), which would run a subclass's override twice.
             return AwaitableFuture.result(self)
         finally:
             del self, data  # Else what this raises would hold them through its traceback (in a cycle, if it's data)

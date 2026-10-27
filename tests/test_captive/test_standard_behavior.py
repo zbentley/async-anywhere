@@ -14,6 +14,7 @@ import pytest
 from async_anywhere.captive import CaptiveWorker
 from async_anywhere.captive.exceptions import CleanStop, WorkerStopped
 from async_anywhere.futures import AwaitableFuture
+from async_anywhere.state_tracker import StateTrackerError
 from tests.test_captive.utils import BlocksLoop, Tidy, Worker, bridge, running
 
 
@@ -47,14 +48,32 @@ async def test_hooks_are_called_once_each_on_the_workers_thread(interrupt):
     async with running(Worker) as worker:
         await worker.stop(interrupt=interrupt)
         await worker.stop(interrupt=True)  # Again, which changes nothing
-        assert await worker.reached("stopped") == (True, True, False)  # See Harness.on_stopped()
+        assert await worker.reached("stopped") == (True, worker.STOPPING)  # See Harness.on_stopped()
         # Awaited, as on_shutdown() runs just after stop()'s waiters wake
-        assert await worker.reached("shutdown") == (True, True, True)
+        assert await worker.reached("shutdown") == (True, worker.STOPPED, True)
         assert not worker.reached("stopped", 2).done() and not worker.reached("shutdown", 2).done()
 
 
-# A refused argument leaves the loop its stop futures made unclosed (attrs validates once every field is set): only the
-# GC closes it, warning as it does
+async def test_workers_state_can_be_required_and_waited_for():
+    async with running(Worker) as worker:  # A harness: worker.worker is its CaptiveWorker
+        assert worker.require(worker.RUNNING) is worker.worker
+        assert await worker.wait_for_state(worker.RUNNING) is worker.worker
+        stopping, stopped = worker.wait_for_state(worker.STOPPING), worker.wait_for_state(worker.STOPPED)
+        call = worker.waits_for(release := AwaitableFuture())
+        await worker.reached("waits_for")
+        why = await worker.stop(wait=False)  # A drain, held up by the call
+        assert worker.state is worker.STOPPING and await stopping is why and not stopped.done()
+        with pytest.raises(StateTrackerError, match="Not in required state"):
+            worker.require(worker.RUNNING)
+        release.set_result(None)
+        await call
+        assert await stopped is why and worker.require(worker.STOPPED) is worker.worker
+        with pytest.raises(StateTrackerError, match="Can never reach"):
+            await worker.wait_for_state(worker.RUNNING, worker.STOPPING)  # Never again, rather than waiting forever
+
+
+# A refused argument leaves the loop its timer made unclosed (attrs validates once every field is set): only the GC
+# closes it, warning as it does
 @pytest.mark.filterwarnings("ignore:unclosed event loop:ResourceWarning")
 @pytest.mark.parametrize(
     "kwargs, error, match",
@@ -66,7 +85,7 @@ async def test_hooks_are_called_once_each_on_the_workers_thread(interrupt):
         (dict(on_shutdown="on_shutdown"), TypeError, "^'on_shutdown' must be callable"),
         (dict(idle_timeout="1"), TypeError, "'idle_timeout' must be"),
         (dict(idle_timeout=0), ValueError, "^'idle_timeout' must be > 0"),
-        (dict(loop_factory=3), TypeError, "callable"),  # Called as the stop futures are made, before attrs validates it
+        (dict(loop_factory=3), TypeError, "callable"),  # Called as the timer is made, before attrs validates it
         (dict(loop_factory=lambda: "not a loop"), TypeError, "^loop_factory must make a new event loop"),
         (
             dict(loop_factory=lambda: (loop := asyncio.new_event_loop()).close() or loop),

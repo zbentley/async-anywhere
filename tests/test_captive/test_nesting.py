@@ -84,11 +84,11 @@ async def test_a_worker_can_stop_one_it_owns_as_it_stops(how):
         inner = await outer.reached("made")
         if how == "parent task returned":
             outer.runloop.set_result(None)
-            await outer._finished
+            await outer.wait_for_state(outer.STOPPED)
         else:
             await outer.stop(interrupt=how == "interrupted")
         assert type(await outer.reached("inner stopped")) is CleanStop
-        assert inner.reached("shutdown").done()
+        assert inner.state is inner.STOPPED
         with pytest.raises(CleanStop):
             await inner.work()
 
@@ -122,11 +122,11 @@ async def test_a_worker_handed_out_by_the_one_that_made_it_can_be_used_from_anyw
                 assert await outer.forwards(inner.work, 0.01, "from the outer worker") == "from the outer worker"
             case "parent task returned":
                 outer.runloop.set_result(None)
-                await outer._finished
+                await outer.wait_for_state(outer.STOPPED)
             case _:
                 await outer.stop(interrupt=outer_is == "interrupted")
         if outer_is != "running":
-            assert outer._finished.done() and not outer._thread.is_alive()
+            assert outer.state is outer.STOPPED and not outer._thread.is_alive()
             with pytest.raises(WorkerStopped):
                 await outer.work()
 
@@ -138,5 +138,5 @@ async def test_a_worker_handed_out_by_the_one_that_made_it_can_be_used_from_anyw
         assert await anyio.to_thread.run_sync(asyncio.run, on_a_fresh_loop()) == "on a fresh loop"
         assert await inner.nested(0.01) == "outer done"  # Its calls on its own thread
         assert type(await inner.stop()) is CleanStop
-        assert await inner.reached("stopped") == (True, True, False)  # Its hooks run on its own thread
-        assert await inner.reached("shutdown") == (True, True, True)
+        assert await inner.reached("stopped") == (True, inner.STOPPING)  # Its hooks run on its own thread
+        assert await inner.reached("shutdown") == (True, inner.STOPPED, True)

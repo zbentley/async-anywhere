@@ -96,7 +96,7 @@ def strict_teardown(request, caplog):
     yield
     problems = []
     for worker in set(_fork_safety.workers) - set(before):
-        if not worker._finished.done():
+        if worker.state is not worker.STOPPED:
             problems.append(f"{worker!r} was left running")
             with suppress(BaseException):
                 worker.stop(interrupt=True).result(2)

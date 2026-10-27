@@ -236,12 +236,15 @@ class MyWaitable(WaitableStateTracker):
 
 def test_wait_for_current_state_is_done():
     inst = MyWaitable()
-    assert inst.wait_for_state(MyWaitable.A, MyWaitable.B).result(0) == (None, MyWaitable.A, None)
+    assert inst.wait_for_state(MyWaitable.A, MyWaitable.B).result(0) is None
     waiting = inst.wait_for_state(MyWaitable.B)
     inst._transition(MyWaitable.B, "data")
-    assert inst.wait_for_state(MyWaitable.B).result(0) == waiting.result(0) == (MyWaitable.A, MyWaitable.B, "data")
-    inst._transition(MyWaitable.C)
-    assert inst.wait_for_state(MyWaitable.C, MyWaitable.A).result(0) == (MyWaitable.B, MyWaitable.C, None)
+    assert inst.wait_for_state(MyWaitable.B).result(0) == waiting.result(0) == "data"
+    inst._transition(MyWaitable.C, "more")
+    assert inst.wait_for_state(MyWaitable.C, MyWaitable.A).result(0) == "more"
+
+def test_initial_state_can_have_data():
+    assert MyWaitable(data="initial").wait_for_state(MyWaitable.A).result(0) == "initial"
 
 def test_wait_for_state_validates_states():
     with pytest.raises(StateTrackerError, match="not one of this class's states"):
@@ -252,9 +255,27 @@ def test_wait_for_state_resolves_on_transition():
     future = inst.wait_for_state(MyWaitable.B, MyWaitable.C)
     assert not future.done()
     inst._transition(MyWaitable.B, "data")
-    assert future.result(0) == (MyWaitable.A, MyWaitable.B, "data")
+    assert future.result(0) == "data"
     inst._transition(MyWaitable.C)  # Its future, done, is still among C's waiters
-    assert future.result(0)[1] is MyWaitable.B
+    assert future.result(0) == "data"
+
+def test_waiters_refuse_cancellation():
+    inst = MyWaitable()
+    future = inst.wait_for_state(MyWaitable.B)
+    assert not future.cancel() and not future.done()
+    inst._transition(MyWaitable.B, "data")
+    assert future.result(0) == "data"
+
+def test_waiting_for_states_a_terminal_state_rules_out_fails():
+    inst = MyWaitable()
+    stranded = [inst.wait_for_state(MyWaitable.B) for _ in range(2)]
+    reached = inst.wait_for_state(MyWaitable.B, MyWaitable.C)
+    inst._transition(MyWaitable.C, "data")  # Terminal, so it can never be in A or B again
+    assert reached.result(0) == "data"
+    for future in *stranded, inst.wait_for_state(MyWaitable.A, MyWaitable.B):
+        with pytest.raises(StateTrackerError, match=r"\[state=C\]: Can never reach state"):
+            future.result(0)
+    assert stranded[0].exception(0) is not stranded[1].exception(0)  # Each its own
 
 def test_dropped_waiters_are_not_resolved():
     inst = MyWaitable()
@@ -270,7 +291,7 @@ def test_prevent_blocking_wait_in_threads():
     for _ in range(2):
         with pytest.raises(RuntimeError, match="would deadlock"):
             inst.wait_for_state(MyWaitable.B).result(0)
-    assert inst.wait_for_state(MyWaitable.A).result(0) == (None, MyWaitable.A, None)  # Done, so not checked
+    assert inst.wait_for_state(MyWaitable.A).result(0) is None  # Done, so not checked
 
 async def test_prevent_blocking_wait_in_loops():
     inst = MyWaitable(prevent_blocking_wait_in_loops=asyncio.get_running_loop())
@@ -284,5 +305,5 @@ async def test_wait_for_state_across_threads():
     thread = threading.Thread(target=inst._transition, args=(MyWaitable.B, "data"))
     thread.start()
     with anyio.fail_after(5):
-        assert await future == (MyWaitable.A, MyWaitable.B, "data")
+        assert await future == "data"
     thread.join()

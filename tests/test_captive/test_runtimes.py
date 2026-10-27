@@ -109,7 +109,7 @@ async def test_giving_up_waiting_on_stop_cancels_nothing_with_any_library():
         await worker.reached("waits_for")
         with anyio.move_on_after(0.05):
             await worker.stop()  # A drain, waiting for the call
-        assert not worker.reached("shutdown").done()
+        assert worker.state is worker.STOPPING
         release.set_result("finished")
         assert await call == "finished"
         assert type(await worker.stop()) is CleanStop
@@ -274,7 +274,7 @@ async def test_a_trio_guest_ending_stops_the_worker(end, kind, text):
         end()
 
     async with running(parent_task=TrioGuest(trio_main).parent_task) as worker:
-        stopped = await worker._finished  # Of its own accord
+        stopped = await worker.wait_for_state(worker.STOPPED)  # Of its own accord
         assert type(stopped) is kind and stopped.args == (text,)
 
 

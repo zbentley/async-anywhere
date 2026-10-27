@@ -90,10 +90,10 @@ class Harness:
         await self.runloop
 
     def on_stopped(self, worker):
-        self.mark("stopped", (worker.in_worker(), worker._stopped.done(), worker._finished.done()))
+        self.mark("stopped", (worker.in_worker(), worker.state))
 
     def on_shutdown(self, worker):
-        self.mark("shutdown", (worker.in_worker(), worker._finished.done(), worker._loop.is_closed()))
+        self.mark("shutdown", (worker.in_worker(), worker.state, worker._loop.is_closed()))
 
 
 class Worker(Harness):
@@ -149,7 +149,7 @@ class SlowStop(Worker):
 
 
 def reason(worker: CaptiveWorker | Harness) -> str:
-    return worker._stopped.result().args[0]
+    return worker.wait_for_state(worker.STOPPING, worker.STOPPED).result().args[0]
 
 
 # Resolved once the worker's loop has run every callback queued before this (a stop's, or a caller's cancellation, say),

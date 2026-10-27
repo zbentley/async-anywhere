@@ -62,7 +62,7 @@ class AsyncioAwaitableFuture[T](asyncio.Future[T]):
         if self.done():
             return
         source, self._source = self._source, None
-        # Through result() and exception(), so subclasses' overrides (WorkerStopFuture's copies, say) are respected
+        # Through result() and exception(), so subclasses' overrides are respected
         if source.cancelled():
             super().cancel()
         elif (error := source.exception()) is not None:

@@ -44,6 +44,6 @@ workers: WeakSet[CaptiveWorker] = WeakSet()  # Every worker, once constructed: s
 if hasattr(os, "register_at_fork"):
     def _after_fork_in_child():
         while len(workers) > 0:
-            workers.pop()._after_fork_in_child(os.getpid())
+            workers.pop()._after_fork_in_child()
 
     os.register_at_fork(after_in_child=_after_fork_in_child)
