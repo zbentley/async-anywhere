@@ -13,7 +13,6 @@ import pytest
 import trio
 
 from async_anywhere.futures import AwaitableFuture
-from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
 
 
 @pytest.fixture
@@ -107,10 +106,10 @@ def test_failure_is_what_a_done_future_failed_with():
         cancelled.exception_or_none()
 
 
-async def test_async_futures_are_one_per_loop():
+async def test_async_futures_are_on_the_given_or_running_loop():
     future = AwaitableFuture()
     here = future.as_async_future()
-    assert future.as_async_future() is here and future.as_async_future(asyncio.get_running_loop()) is here
+    assert here.get_loop() is future.as_async_future(asyncio.get_running_loop()).get_loop() is asyncio.get_running_loop()
 
     async def elsewhere():
         there = future.as_async_future()
@@ -192,18 +191,13 @@ async def test_an_awaiter_cancelled_as_the_future_finishes_leaves_other_waiters_
     assert await other == "done"
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: one waiter giving up cancels the cached async future for all on its loop")
 @pytest.mark.parametrize(
     "awaitable", [lambda future: future, lambda future: future.as_async_future()], ids=["awaited", "as_async_future"]
 )
 async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_waiters_alone(awaitable):
-    """as_async_future() caches one asyncio.Future per loop, which all waiters there share, and cancelling a waiting task
-    cancels the asyncio.Future it awaits. That passes it on to the source, through its
+    """Cancelling a waiting task cancels the asyncio.Future it awaits, which passes it on to the source, through its
     concurrent.futures.Future.cancel(), which the source refuses if it's running: as an executor's job is, once started.
-    The shared asyncio.Future is then cancelled though its source isn't, so one waiter giving up cancels it for every
-    other waiter on that loop, now and later. Nothing in this package runs its futures (those made with
-    honor_cancel=False, which refuse cancel() too, shield their waiters instead), so this stays an expected failure, to
-    show the limit of the cache, and to flag a fix for it. Awaiting goes through as_async_future(), so shares it."""
+    Only the giving-up waiter's own asyncio.Future is then cancelled."""
     future = AwaitableFuture()
     assert future.set_running_or_notify_cancel()  # Running, as an executor's job would be, so it can't be cancelled
 
@@ -213,9 +207,31 @@ async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_waiters
     other = asyncio.ensure_future(wait())
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(wait(), 0.05)
+    assert len(future._done_callbacks) == 1  # Only other's, as the one given up on was dropped
     future.set_result("done")
     assert await other == "done"
     assert await wait() == "done"
+
+
+async def test_async_futures_finish_at_once_as_the_future_does_on_their_loop():
+    future = AwaitableFuture()
+    waiting = future.as_async_future()
+    future.set_result("done")
+    assert waiting.done()  # Not on a later loop iteration, as asyncio.wrap_future()'s would
+    assert await waiting == "done"
+
+
+async def test_a_finished_future_and_its_async_futures_are_freed_by_refcounting():
+    future = AwaitableFuture()
+    waiting = weakref.ref(future.as_async_future())
+    future.set_result("done")
+    assert waiting() is not None  # Held by its done-callback, which concurrent.futures keeps, as asyncio.wrap_future()'s is
+    gc.disable()  # So that only a cycle between them would keep it
+    try:
+        del future
+        assert waiting() is None
+    finally:
+        gc.enable()
 
 
 def test_cancelled_futures_count_as_done_for_concurrent_futures_wait_and_as_completed():
@@ -298,83 +314,13 @@ def test_completed_at_is_when_it_finished():
     assert not refusing.cancel() and refusing.completed_at is None
 
 
-async def test_async_futures_record_when_they_finished():
-    done, failed, cancelled = futures = [AwaitableFuture() for _ in range(3)]
-    waiting = [future.as_async_future() for future in futures]
-    assert all(async_future.completed_at is None for async_future in waiting)
-    done.set_result("done")
-    failed.set_exception(ValueError())
-    waiting[2].cancel()
-    await asyncio.gather(*waiting, return_exceptions=True)
-    # Its source's, whether it finished as its source did, or cancelled it
-    assert all(async_future.completed_at == future.completed_at for async_future, future in zip(waiting, futures))
-
-
-def test_async_futures_completion_time_is_set_before_they_schedule_their_callbacks():
-    """Finishing one runs Python code once it's done (the loop's call_soon()), which can see it, or raise out of it."""
-    seen, interrupt = [], False
-
-    class Probe(asyncio.SelectorEventLoop):
-        def call_soon(self, callback, *args, context=None):
-            if len(args) > 0 and isinstance(args[0], AsyncioAwaitableFuture):
-                seen.append(args[0].completed_at)
-                if interrupt:
-                    raise KeyboardInterrupt  # As a SIGINT landing here would
-            return super().call_soon(callback, *args, context=context)
-
-    async def main():
-        nonlocal interrupt
-        for finish in (lambda future: future.set_result("done"), lambda future: future.set_exception(ValueError()),
-                       lambda future: future.cancel()):
-            finish(waiting := AwaitableFuture().as_async_future())
-            waiting.cancelled() or waiting.exception()  # Retrieved, so asyncio doesn't log it as never retrieved
-        assert len(seen) == 3 and None not in seen  # One each, for the callback _chain_future() gave it
-        interrupt = True
-        interrupted = AwaitableFuture().as_async_future()
-        interrupted.add_done_callback(id)
-        with pytest.raises(KeyboardInterrupt):
-            interrupted.set_result("done")
-        interrupt = False
-        assert interrupted.done() and interrupted.completed_at is not None
-
-    loop = Probe()
-    try:
-        loop.run_until_complete(main())
-    finally:
-        loop.close()
-
-
-async def test_async_futures_completion_time_is_left_alone_by_refused_completions():
-    future = AwaitableFuture()
-    waiting = future.as_async_future()
-    with pytest.raises(TypeError):
-        waiting.set_exception("not an exception")  # Refused while pending
-    assert not waiting.done() and waiting.completed_at is None
-    future.set_result("done")
-    assert await waiting == "done" and waiting.completed_at == future.completed_at
-    with pytest.raises(asyncio.InvalidStateError):
-        waiting.set_result("again")
-    assert not waiting.cancel() and waiting.completed_at == future.completed_at
-
-
-async def test_shields_share_their_sources_completion_time_unless_cancelled_on_their_own():
+def test_shields_share_their_sources_completion_time_unless_cancelled_on_their_own():
     source = AwaitableFuture()
     alone, along = source.shielded(), source.shielded()
     alone.cancel()
-    waiting = along.as_async_future()
     source.set_result("done")
-    assert await waiting == "done"
-    assert along.completed_at == waiting.completed_at == source.completed_at  # Through the shield, to its async future
+    assert along.result(0) == "done" and along.completed_at == source.completed_at
     assert alone.completed_at < source.completed_at  # Its own, as it finished before its source
-
-
-async def test_giving_up_on_a_future_that_doesnt_honor_cancel_has_its_own_completion_time():
-    future = AwaitableFuture(honor_cancel=False)
-    given_up, waiting = future.as_async_future(), future.as_async_future()  # Each its own, of a shield
-    given_up.cancel()
-    future.set_result("done")
-    assert await waiting == "done"
-    assert waiting.completed_at == future.completed_at and given_up.completed_at < future.completed_at
 
 
 # Other async libraries: awaited through anyio's API, so on trio as well as asyncio
@@ -410,15 +356,10 @@ async def test_cancelling_a_waiter_cancels_the_future_with_any_library():
 
 
 @pytest.mark.backends("trio")
-async def test_trio_futures_are_one_per_run_and_cancel_the_future():
+async def test_trio_futures_cancel_the_future():
     future = AwaitableFuture()
     here = future.as_async_future()
-    assert future.as_async_future() is here and not isinstance(here, asyncio.Future)
-
-    async def elsewhere():
-        return future.as_async_future() is not here
-
-    assert await trio.to_thread.run_sync(trio.run, elsewhere)  # Another run, on another thread
+    assert not isinstance(here, asyncio.Future)
     assert here.cancel() and future.cancelled()
     with pytest.raises(concurrent.futures.CancelledError):  # As result() raises, not asyncio's
         await here
@@ -428,7 +369,7 @@ async def test_trio_futures_are_one_per_run_and_cancel_the_future():
 
 @pytest.mark.backends("trio")
 async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_trio_waiters_alone():
-    # Unlike asyncio's waiters, which share as_async_future()'s one per loop: see the expected failure above
+    # As asyncio's waiters do: see the asyncio test above
     future = AwaitableFuture()
     assert future.set_running_or_notify_cancel()  # Running, as an executor's job would be, so it can't be cancelled
     results = []
@@ -441,9 +382,27 @@ async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_trio_wa
         with trio.move_on_after(0.01):
             await future
         assert not future.cancelled()
+        assert len(future._done_callbacks) == 1  # Only the other waiter's, as the one given up on was dropped
         future.set_result("done")
     assert results == ["done"]
     assert await future == "done"
+
+
+@pytest.mark.backends("trio")
+async def test_giving_up_on_a_trio_future_leaves_its_other_awaits_alone():
+    future = AwaitableFuture(honor_cancel=False)
+    here, results = future.as_async_future(), []
+
+    async def wait():
+        results.append(await here)
+
+    with trio.fail_after(2):
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(wait)  # Another task awaiting the same trio future
+            with trio.move_on_after(0.01):
+                await here
+            future.set_result("done")
+        assert results == ["done"] and await here == "done"  # And awaiting it again, after giving up on it
 
 
 @pytest.mark.backends("trio")
@@ -453,6 +412,18 @@ async def test_trio_futures_completion_time_is_their_sources_before_the_run_wake
     future.set_result("done")
     assert here.completed_at is not None  # Though the run hasn't set its event yet
     assert await here == "done"
+
+
+@pytest.mark.backends("asyncio")  # Not uvloop's, whose signal wakeup fd trio's run warns it collides with
+async def test_awaiting_in_a_trio_run_inside_an_asyncio_task_waits_on_trio():
+    # There, asyncio.current_task() is still the asyncio task that called trio.run(), blocking its loop
+    future = AwaitableFuture()
+
+    async def in_trio():
+        return await future
+
+    threading.Timer(0.01, future.set_result, args=("done",)).start()
+    assert trio.run(in_trio) == "done"
 
 
 def test_cancelling_from_several_threads_at_once_notifies_once(scale):

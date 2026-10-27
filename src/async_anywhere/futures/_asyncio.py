@@ -1,51 +1,72 @@
 import asyncio
-from time import monotonic
+import asyncio.futures
+from concurrent.futures._base import FINISHED
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from async_anywhere.futures import AwaitableFuture
 
+_get_running_loop = asyncio._get_running_loop
+_convert_future_exc = asyncio.futures._convert_future_exc
+
+
 class AsyncioAwaitableFuture[T](asyncio.Future[T]):
-    __slots__ = ('_source', '_completed_at')
+    """What AwaitableFuture.as_async_future() returns on asyncio: it finishes as its source does, at once if its source
+    finishes on its loop's thread while that runs, or else in a callback queued on its loop, as asyncio.wrap_future()'s
+    does. It holds its source until it's done, and its source holds it (through its done-callback, which
+    concurrent.futures keeps) as wrap_future()'s does."""
+
+    __slots__ = ('_source',)
 
     def __init__(self, source: AwaitableFuture[T], loop: asyncio.AbstractEventLoop):
         super().__init__(loop=loop)
         self._source = source
-        self._completed_at: float | None = None
-        asyncio.futures._chain_future(source, self)  # As asyncio.wrap_future() does
-
-    @property
-    def completed_at(self) -> float | None:
-        """Its source's, if it finished as its source did (or cancelled it), or else its own time.monotonic() time, as it
-        finished on its own (cancelled while its source can't be, say); None until then.
-
-        Set before the super() call that finishes it, as that runs Python code (the loop's call_soon(), and whatever
-        else gets a turn then: signal handlers, finalizers, other threads) once done() is True, and can raise out of it
-        (KeyboardInterrupt, say) having finished it. Or-set, so that one refused as it's already done leaves it alone,
-        without the cost of checking done(): racing completions, which asyncio doesn't support off its loop's thread
-        anyway, would only differ by moments."""
-        return self._completed_at
+        with source._condition:  # As add_done_callback() does, without its frames
+            if not source.done():
+                source._done_callbacks.append(self._deliver)
+                return
+        self._deliver(source)
 
     def cancel(self, msg=None) -> bool:
         """Changes cancellation behavior of asyncio.Future in two ways:
             1. Cancels the underlying concurrent.futures.Future right away, rather than in a later loop iteration.
             2. Refuses cancellation (returns False) if the underlying concurrent.futures.Future is already done.
+        If the underlying future refuses cancellation while pending (running, or made with honor_cancel=False), this one
+        alone is cancelled, and the underlying one lets go of it.
         """
-        if self._source.cancel() or not self._source.done():
-            self._completed_at = self._completed_at or self._source.completed_at or monotonic()
-            return super().cancel(msg)
-        return False
+        if self.done():
+            return False
+        source = self._source
+        if not source.cancel():
+            with source._condition:
+                if source.done():
+                    return False
+                source._done_callbacks.remove(self._deliver)  # Equal to the one __init__() added: same self and function
+        self._source = None
+        return super().cancel(msg)
 
-    def set_result(self, result: T):
-        self._completed_at = self._completed_at or self._source.completed_at or monotonic()
-        super().set_result(result)
+    def _deliver(self, source: AwaitableFuture[T]):
+        # source's done-callback (see __init__())
+        loop = self.get_loop()
+        if _get_running_loop() is not loop:
+            try:
+                loop.call_soon_threadsafe(self._finish)
+            except RuntimeError:  # Closed
+                pass
+        elif source._state == FINISHED:
+            self._finish()
+        else:  # Cancelled: maybe by cancel(), which finishes this one itself (with its msg)
+            loop.call_soon(self._finish)
 
-    def set_exception(self, exception: BaseException):
-        self._completed_at = self._completed_at or self._source.completed_at or monotonic()
-        try:
-            super().set_exception(exception)
-        except BaseException:
-            # Unless it raised having finished: it can refuse what it's given (TypeError) while still pending
-            if not self.done():
-                self._completed_at = None
-            raise
+    def _finish(self):
+        # On its loop, which may have finished it meanwhile. Not through its own cancel(), which is for its users
+        if self.done():
+            return
+        source, self._source = self._source, None
+        # Through result() and exception(), so subclasses' overrides (WorkerStopFuture's copies, say) are respected
+        if source._state != FINISHED:
+            super().cancel()
+        elif (error := source.exception()) is not None:
+            self.set_exception(_convert_future_exc(error))
+        else:
+            self.set_result(source.result())

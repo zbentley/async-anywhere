@@ -15,23 +15,13 @@ try:
 
         @attr.define(eq=False, repr=False)  # Identity equality and hashing, as for any future
         class Future[T](Awaitable[T]):
-            """AsyncioAwaitableFuture's counterpart for trio (anyio's trio backend included): one per trio run, whose waiters wait on a
+            """AsyncioAwaitableFuture's counterpart for trio (anyio's trio backend included): a new one per as_async_future()
+            call in a trio task, each await on which waits on a
             trio.Event that the source sets, from whichever thread finishes it, through the run's token. completed_at is the
             source's, read through, as only the source can finish it: so it's set once the source has finished, before the run
             has set the event (or if it never does, as the run finished first)."""
             _source: AwaitableFuture[T] = attr.field()
             _token: _trio.lowlevel.TrioToken = attr.field()
-            _event: _trio.Event = attr.field(init=False, factory=_trio.Event)
-
-            def __attrs_post_init__(self):
-                def _complete(_):
-                    try:
-                        self._token.run_sync_soon(self._event.set)
-                    except _trio.RunFinishedError:
-                        pass
-
-                self._source.add_done_callback(_complete)
-
 
             @property
             def completed_at(self) -> float | None:
@@ -41,10 +31,23 @@ try:
                 return self._source.cancel()
 
             def __await__(self):
+                # A done-callback per await, not per future: one giving up drops its own, leaving others' (and later ones)
+                event, token = _trio.Event(), self._token
+
+                def complete(_):
+                    try:
+                        token.run_sync_soon(event.set)
+                    except _trio.RunFinishedError:
+                        pass
+
+                self._source.add_done_callback(complete)
                 try:
-                    yield from self._event.wait().__await__()
+                    yield from event.wait().__await__()
                 except _trio.Cancelled:
-                    self._source.cancel()  # As cancelling an asyncio waiter does: unless it's done, or refuses
+                    if not self._source.cancel():  # As cancelling an asyncio waiter does: unless it's done, or refuses
+                        with self._source._condition:  # Refused while pending: so it lets go of this wait
+                            if not self._source.done():
+                                self._source._done_callbacks.remove(complete)
                     raise
                 return self._source.result()
 

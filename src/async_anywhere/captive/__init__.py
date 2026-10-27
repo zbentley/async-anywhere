@@ -131,8 +131,9 @@ the worker has stopped, it raises why instead, as Executor.submit() does once sh
   could finish it.
 - But it isn't a coroutine, nor an asyncio future: create_task(), TaskGroup.create_task() and asyncio.wait() reject it, and
   inspect.iscoroutinefunction() is False for bridged functions (so frameworks may take them for synchronous). For APIs
-  that take asyncio futures, use asyncio.wrap_future(call). It can be awaited in a trio task too (anyio's, on trio,
-  included), whose cancellation cancels the job, as on asyncio.
+  that take asyncio futures, use call.as_async_future(), which (unlike asyncio.wrap_future(call)) cancels the job as
+  soon as it's cancelled. It can be awaited in a trio task too (anyio's, on trio, included), whose cancellation cancels
+  the job, as on asyncio.
 - The job runs in a task of its own on the worker's loop, with a copy of the caller's context variables as they were when
   the call was made, bar sniffio's record of the caller's async library (which anyio.run() sets): anyio, in the job,
   finds asyncio. Changes it makes to them don't reach the caller. Library state the copy carries, tied to
@@ -191,9 +192,9 @@ Caveats
 - If you perform blocking waits on this worker when completed or interrupted code inside the worker is garbage collected
   or during handling of its exception classes, you may break this class's invariant (this is generally also true for all
   other asyncio code in Python).
-- How interrupted calls reach callers that await them relies on asyncio.wrap_future() converting exactly
-  concurrent.futures.CancelledError to asyncio's, and nothing else: a private detail of asyncio
-  (asyncio.futures._convert_future_exc).
+- How interrupted calls reach callers that await them relies on asyncio.futures._convert_future_exc() (which
+  as_async_future() and asyncio.wrap_future() use) converting exactly concurrent.futures.CancelledError to asyncio's, and
+  nothing else: a private detail of asyncio.
 """
 import asyncio
 import logging
@@ -207,7 +208,7 @@ from weakref import WeakSet
 import sniffio
 from attrs import Factory, define, field, validators
 
-from async_anywhere._util import validate_coroutine_function, LockProtected, copy_exception
+from async_anywhere._util import validate_coroutine_function, LockProtected, copy_exception, fast_runtime_checker
 from async_anywhere.captive import _fork_safety
 from async_anywhere.captive.exceptions import WorkerInterrupted, WorkerStopped, WorkerForked
 from async_anywhere.captive._stopped import WorkerStopFuture
@@ -293,6 +294,8 @@ class CaptiveWorker:
         self._finished.raise_if_failed()  # Best-effort: it's calling bridged functions that's always checked
         # The jobs' name, which their coroutines' and tasks' reprs show (tracebacks show the code's own, _job)
         name = f"{self._job.__qualname__}[{getattr(func, '__qualname__', None) or repr(func)}]"
+        # Calls' futures refuse blocking waits on the worker's loop: checked by this, made once rather than per call
+        check_loop = fast_runtime_checker(self._loop, asyncio.AbstractEventLoop, asyncio._get_running_loop)
 
         @wraps(func)
         def call(*args: P.args, **kwargs: P.kwargs) -> AwaitableFuture[T]:
@@ -301,7 +304,7 @@ class CaptiveWorker:
             # pending once the worker has stopped, after taking _submitting, can't miss anything.
             in_loop = self.in_worker()
             loop = self._loop
-            future = AwaitableFuture(prevent_blocking_wait_in_loops=loop)
+            future = AwaitableFuture(prevent_blocking_wait_in_loops=check_loop)
             context = copy_context()
             if context.get(sniffio.current_async_library_cvar):
                 # Which anyio.run() sets to its backend: left as it is, a caller's on trio would have anyio, in the job,

@@ -270,8 +270,8 @@ class AwaitsAsAsyncFuture(Worker):
 async def test_calls_async_futures_work_on_any_loop_the_workers_included():
     async with running(AwaitsAsAsyncFuture) as worker:
         first, second = worker.work(0.01, "first"), worker.work(0.01, "second")
-        done, _ = await asyncio.wait([first.as_async_future(), second.as_async_future()])
-        assert done == {first.as_async_future(), second.as_async_future()}  # One per loop, so those asyncio.wait() took
+        done, _ = await asyncio.wait(waiting := [first.as_async_future(), second.as_async_future()])
+        assert done == set(waiting)
         assert [await first, await second] == ["first", "second"]
         assert await worker.via_async_future() == "inner"
 

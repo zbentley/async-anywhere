@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import nullcontext
 from threading import Condition
 from abc import ABC
 from collections import defaultdict
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Self, ContextManager
 
 from async_anywhere.state_tracker._exceptions import StateTrackerError
 from async_anywhere.state_tracker._state import State, _binding_lock, _structural_invariant
@@ -55,15 +56,15 @@ class StateTracker(ABC):
     states: ClassVar[frozenset[State]]
     _abstract: ClassVar[bool]
 
-    __slots__ = ('_state', '_condition')
+    __slots__ = ('_state', '_lock')
 
-    def __init__(self, thread_safe: bool = True):
+    def __init__(self, lock: ContextManager = nullcontext()) -> None:
         """
         thread_safe: if True, transitions hold a threading.Condition, notified after each one, so they're atomic across
             threads. If False, they take no lock, so only use the StateTracker from one thread at a time.
         """
         self._state, = (s for s in self.states if s.initial)
-        self._condition = Condition() if thread_safe else None
+        self._lock = lock
 
     # We use a property to prevent accidental manual mutation
     # TODO property setter on transition
@@ -147,18 +148,11 @@ class StateTracker(ABC):
         return state
 
     def _transition(self, target: State, data: Any = None):
-        if (condition := self._condition) is None:
+        with self._lock:
             old_state = self._state
             if target not in old_state._destinations:
                 raise StateTrackerError(self, "Could not transition to state", self._check_state(target))
             self._state = target
-        else:
-            with condition:
-                old_state = self._state
-                if target not in old_state._destinations:
-                    raise StateTrackerError(self, "Could not transition to state", self._check_state(target))
-                self._state = target
-                condition.notify_all()
 
         self.after_state_change(old_state, target, data)
 

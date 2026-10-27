@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 from abc import ABC
 from functools import partial
+from threading import Lock
 from typing import Any
 from weakref import WeakSet
 
@@ -30,7 +29,7 @@ class WaitableStateTracker(StateTracker, ABC):
         prevent_blocking_wait_in_loops, prevent_blocking_wait_in_threads: given to every AwaitableFuture that
             wait_for_state() returns; see AwaitableFuture.
         """
-        super().__init__()
+        super().__init__(lock=Lock())
         self._waiters = {s: WeakSet() for s in self.states}
         self._last_transition = [None, None]
         template = AwaitableFuture(
@@ -52,7 +51,7 @@ class WaitableStateTracker(StateTracker, ABC):
         # NB: if your done callbacks are slow, you'll break stuff (here and everywhere)
         states = [self._check_state(state) for state in (state, *states)]
         future = self._future_factory()
-        with self._condition:
+        with self._lock:
             if self._state in states:
                 future.set_result((self._last_transition[0], self._state, self._last_transition[1]))
             else:
@@ -61,7 +60,7 @@ class WaitableStateTracker(StateTracker, ABC):
         return future
 
     def _transition(self, target: State, data: Any = None):
-        with self._condition:
+        with self._lock:
             old_state = self._state
             if target not in old_state._destinations:
                 raise StateTrackerError(self, "Could not transition to state", self._check_state(target))
@@ -70,15 +69,9 @@ class WaitableStateTracker(StateTracker, ABC):
             old_waiters.clear()
             self._last_transition[0] = old_state
             self._last_transition[1] = data
-            # Only wakes other things trying to _transition; the futures' internals will handle waking up whatever
-            # routines are waiting on them.
-            self._condition.notify_all()
 
         result = (old_state, target, data)
         for future in waiters:
-            try:
-                future.set_result(result)
-            except (concurrent.futures.InvalidStateError, asyncio.InvalidStateError):
-                pass
+            future.set_result_if_not_done(result)
 
         self.after_state_change(old_state, target, data)

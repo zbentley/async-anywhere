@@ -1,17 +1,19 @@
 import asyncio
 import concurrent.futures
-from concurrent.futures._base import CANCELLED, FINISHED
+from concurrent.futures._base import CANCELLED, CANCELLED_AND_NOTIFIED, FINISHED
 from operator import attrgetter
 from threading import Thread, current_thread
 from time import monotonic
-from typing import Awaitable, Any
+from typing import Awaitable
 
-from async_anywhere._util import LockProtected, fast_runtime_checker, LoopSelector, ThreadSelector
+from async_anywhere._util import fast_runtime_checker, LoopSelector, ThreadSelector
 from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
 
 _template = concurrent.futures.Future()
 _template.cancel()
+_CANCELLED = frozenset((CANCELLED, CANCELLED_AND_NOTIFIED))
+_DONE = _CANCELLED | {FINISHED}
 
 class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     """A concurrent.futures.Future subclass that can also be awaited. Provides the following behaviors:
@@ -26,11 +28,14 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
     - Several other convenience methods to save on common future-related code.
     - Cancelling awaits on this class or asyncio.Futures provided by it immediately cancels the underlying
       concurrent.futures.Future, rather than postponing cancellation until a later event loop iteration as CPython does.
+    - Finishing it on a running event loop's thread finishes the asyncio.Futures it provided on that loop at once, rather
+      than in a later loop iteration as asyncio.wrap_future()'s are.
     - With honor_cancel=False, cancel() is refused (returns False), and waiters giving up leave it, and its other
       waiters, alone. shielded() gives a future that can be cancelled without cancelling this one.
     - completed_at is the time.monotonic() time at which it finished (with a result, an exception, or cancellation), or
-      None until then. Its async futures and shields that finish as it does (or that finish it, by cancelling it) share
-      its time; those that finish on their own (cancelled while it can't be, say) have their own.
+      None until then. Its trio futures, and shields that finish as it does (or that finish it, by cancelling it), share
+      its time; shields that finish on their own (cancelled while it can't be, say) have their own. Its asyncio.Futures
+      have none.
 
     With honor_cancel=False, waiters giving up (as asyncio.wait_for(), asyncio.timeout(), TaskGroups, and trio's and
     anyio's cancel scopes make them) still do so at once, leaving it pending, as asyncio.shield() would. But cancel() is
@@ -42,8 +47,8 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
       instead: a concurrent.futures.CancelledError reaches asyncio waiters already waiting as asyncio.CancelledError,
       but is raised as is to those that await it once it's done.
     - Some ways of waiting with a timeout leave a registration on it per wait, until it finishes: asyncio.wait() leaves
-      the shield behind each as_async_future() it's given (each logging "exception was never retrieved" if this one
-      fails), and asyncio.wait_for(asyncio.wrap_future(...)) a callback, as it does on a running executor job's future.
+      each as_async_future() it's given (each logging "exception was never retrieved" if this one fails), and
+      asyncio.wait_for(asyncio.wrap_future(...)) a callback, as it does on a running executor job's future.
       Awaiting it, or as_async_future(), under asyncio.wait_for() or asyncio.timeout() leaves nothing behind.
     """
 
@@ -52,7 +57,6 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         '_state_value',
         '_check_threads',
         '_check_loops',
-        '_async_future_cache',
         '_honor_cancel',
         '_source',  # What a shield finishes as (see shielded()), or None
         '_completed_at',
@@ -67,9 +71,11 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         self._completed_at: float | None = None
         self._source: AwaitableFuture[T] | None = None
         super().__init__()
-        self._check_threads = fast_runtime_checker(prevent_blocking_wait_in_threads, Thread, current_thread)
-        self._check_loops = fast_runtime_checker(prevent_blocking_wait_in_loops, asyncio.AbstractEventLoop, asyncio._get_running_loop)
-        self._async_future_cache: LockProtected[dict[Any, AsyncioAwaitableFuture[T] | Awaitable[T]]] = LockProtected(dict())
+        # Not calling fast_runtime_checker() for None (most futures) saves its call: these are made on hot paths
+        threads, loops = prevent_blocking_wait_in_threads, prevent_blocking_wait_in_loops
+        self._check_threads = bool if threads is None else fast_runtime_checker(threads, Thread, current_thread)
+        self._check_loops = bool if loops is None else fast_runtime_checker(
+            loops, asyncio.AbstractEventLoop, asyncio._get_running_loop)
         self._honor_cancel = honor_cancel
 
     def _set_state(self, state: str):
@@ -136,9 +142,8 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
 
         Cancelling the returned future cancels this one, unless this one has already finished, in which case cancellation
         is "refused" (the returned asyncio.Future's cancel() method returns False). If mutual cancellation behavior is
-        not desired, use shielded().as_async_future(). If this one was made with honor_cancel=False, each call on an
-        asyncio loop returns a new asyncio.Future, of a shield of this one: as the loop's one would be shared by all its
-        waiters, one giving up would otherwise cancel it for the rest.
+        not desired, use shielded().as_async_future(). If this one refuses cancellation while pending (made with
+        honor_cancel=False, or running), only the returned future is cancelled, and this one lets go of it.
 
         :param loop: the event loop to which the returned future should be bound, or the current event loop if None.
         :param require_running_loop: if True, a RuntimeError will be raised if the event loop to be used is not running or is closed.
@@ -147,30 +152,35 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
 
         # Trio first, as a guest run's tasks run on an asyncio loop's thread, while it's running
         if loop is None and TrioRuntime.in_task():
-            key, kind = TrioRuntime.current_token(), TrioRuntime.Future
-        else:
-            if loop is None:
-                loop = asyncio.get_running_loop() if require_running_loop else asyncio.get_event_loop()
-            elif require_running_loop and loop.is_closed():
-                raise RuntimeError('Event loop is closed')
-            if not self._honor_cancel:  # Trio's waiters each wait on their run's own, so can't cancel it for each other
-                return AsyncioAwaitableFuture(self.shielded(), loop)
-            key, kind = loop, AsyncioAwaitableFuture
-        with self._async_future_cache as cache:
-            if not (cached := cache.get(key)):
-                cached = cache[key] = kind(self, key)
-            return cached
+            return TrioRuntime.Future(self, TrioRuntime.current_token())
+        if loop is None:
+            loop = asyncio.get_running_loop() if require_running_loop else asyncio.get_event_loop()
+        elif require_running_loop and loop.is_closed():
+            raise RuntimeError('Event loop is closed')
+        return AsyncioAwaitableFuture(self, loop)
 
     def __await__(self):
         # If we're already done, __await__ can resolve without dealing with any loop machinery at all
         if self.done():
-            # In trio, waiters get result()'s concurrent.futures.CancelledError, as TrioRuntime.Future's do
-            if self.cancelled() and not TrioRuntime.in_task():
-                # Since result() raises concurrent.futures.CancelledError, convert to asyncio.CancelledError here
-                raise asyncio.CancelledError
-            return self.result()
-        # Using "yield from" flags this function as a generator so that the above "return" works right:
-        return (yield from self.as_async_future().__await__())
+            return self._await_finished()
+        # Not a generator, so that what awaits it awaits the asyncio.Future's own iterator directly
+        return self.as_async_future().__await__()
+
+    def _await_finished(self):
+        # In trio, waiters get result()'s concurrent.futures.CancelledError, as TrioRuntime.Future's do
+        if self.cancelled() and not TrioRuntime.in_task():
+            # Since result() raises concurrent.futures.CancelledError, convert to asyncio.CancelledError here
+            raise asyncio.CancelledError
+        return self.result()
+        yield  # A generator, for __await__ to return, that finishes at once
+
+    # Lock-free reads of its state: it only ever moves forward, and a finished one's outcome never changes
+
+    def done(self) -> bool:
+        return self._state in _DONE
+
+    def cancelled(self) -> bool:
+        return self._state in _CANCELLED
 
     def cancel(self) -> bool:
         if not self._honor_cancel:
@@ -185,10 +195,14 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         return cancelled
 
     def result(self, timeout: float | None = None) -> T:
+        if self._state == FINISHED and self._exception is None:
+            return self._result
         self._check_blocking()
         return super().result(timeout)
 
     def exception(self, timeout: float | None = None) -> BaseException | None:
+        if self._state == FINISHED:
+            return self._exception
         self._check_blocking()
         return super().exception(timeout)
 
@@ -203,6 +217,8 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         Returns False if the future was already completed or cancelled.
         Returns True if the result was saved on the future.
         """
+        if self.done():  # Lock-free, so cheaper than the raise below
+            return False
         try:
             self.set_result(result)
             return True
@@ -214,6 +230,8 @@ class AwaitableFuture[T](concurrent.futures.Future[T], Awaitable[T]):
         Returns False if the future was already completed or cancelled.
         Returns True if the error was saved on the future.
         """
+        if self.done():
+            return False
         try:
             self.set_exception(exception)
             return True
