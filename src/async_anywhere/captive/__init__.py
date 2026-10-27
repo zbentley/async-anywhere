@@ -90,8 +90,8 @@ lead to them receiving multiple cancellation events from the worker. Code which 
 
 The first stop is recorded in `_stopped`, a future that resolves to a WorkerStopped (a CleanStop for expiry, a stop() that
 interrupts nothing, or the parent task returning), logs it, and calls on_stopped. Later stops don't change that, and every
-call from then on is refused with it. Whatever reads it gets a copy, keeping its cause, so callers' tracebacks don't pile
-up on one shared exception.
+call from then on is refused with it. Whatever the worker raises it for, or chains it to, gets a copy, keeping its cause,
+so callers' tracebacks don't pile up on one shared exception.
 
 Once the parent task and every call have finished, the loop cancels any tasks left on it (work that the parent task or
 calls spawned and didn't wait for), gives them 0.05s, shuts down async generators and the default executor (abandoning, with a RuntimeWarning,
@@ -291,7 +291,9 @@ class CaptiveWorker:
         self._runner.result()  # So that, once constructed, the worker is running
 
     def bridge[**P, T](self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
-        self._finished.raise_if_failed()  # Best-effort: it's calling bridged functions that's always checked
+        # Best-effort: it's calling bridged functions that's always checked
+        if broken := self._finished.exception_or_none():
+            raise copy_exception(broken)
         # The jobs' name, which their coroutines' and tasks' reprs show (tracebacks show the code's own, _job)
         name = f"{self._job.__qualname__}[{getattr(func, '__qualname__', None) or repr(func)}]"
         # Calls' futures refuse blocking waits on the worker's loop: checked by this, made once rather than per call
@@ -313,8 +315,8 @@ class CaptiveWorker:
                 context.run(sniffio.current_async_library_cvar.set, None)
             with self._submitting as pending:
                 if self._stopped.done():
-                    self._finished.raise_if_failed()  # Only here, as _stopped is always done once _finished has failed
-                    raise self._stopped.result(timeout=0)
+                    # A copy, as for _fail(). _finished only here, as _stopped is always done once _finished has failed
+                    raise copy_exception(self._finished.exception_or_none() or self._stopped.result(timeout=0))
                 pending.add(future)
                 # Only queues a callback, so never waits for the worker's loop. It runs in a copy of the caller's context.
                 if in_loop:
@@ -344,7 +346,8 @@ class CaptiveWorker:
         worker's own thread, `wait` is an error, as it would wait for itself, and interrupting cancels the calling task
         too."""
 
-        self._finished.raise_if_failed()
+        if broken := self._finished.exception_or_none():
+            raise copy_exception(broken)
         # Eagerly, rather than leaving it to _finished's own check: that catches result(), but not a call awaiting it,
         # which would deadlock, as a drain would wait for that very call.
         if wait and self.in_worker():
@@ -389,7 +392,9 @@ class CaptiveWorker:
         future.add_done_callback(forward)
 
     def _fail(self, future: AwaitableFuture, error: BaseException | None = None) -> bool:
-        return future.set_exception_if_not_done(error or self._finished.exception_or_none() or self._stopped.result(timeout=0))
+        # Else a copy of why the worker stopped, per future: each raise adds its frames to the exception's traceback
+        why = error or copy_exception(self._finished.exception_or_none() or self._stopped.result(timeout=0))
+        return future.set_exception_if_not_done(why)
 
     def _log(self, level: int, msg: str, *args, **kwargs):
         # Only on the worker's thread, as for hooks: in a forked process, a handler's stream may be locked forever
@@ -526,7 +531,7 @@ class CaptiveWorker:
             # the worker stopped.
             if stopped.interrupted and task.cancelling():
                 # TODO is timeout=0 safe here? It should be...
-                error = WorkerInterrupted.from_cancellation(ex, stopped.result(timeout=0))
+                error = WorkerInterrupted.from_cancellation(ex, copy_exception(stopped.result(timeout=0)))
             else:
                 error = ex
             # If we can't report it to the user, crash the task so Python's logger reports the failure

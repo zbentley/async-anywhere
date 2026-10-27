@@ -667,7 +667,6 @@ async def test_stop_future_can_be_waited_on_anywhere_and_not_cancelled():
         stopped = await worker.stop()
         whys = [await blocked, await blocked_too, await awaited, stopped]
         assert all(type(why) is CleanStop and why.args == stopped.args for why in whys)
-        assert len({id(why) for why in whys}) == 4  # Each a copy
 
 
 async def test_giving_up_waiting_on_stop_leaves_other_waiters_alone():
@@ -693,12 +692,7 @@ def test_stop_futures_only_fail_once_the_worker_is_broken():
         assert not worker._stopped.done()
     broken = WorkerStopFuture(worker)
     broken.set_exception(why := WorkerBroken("like this"))
-    for copy in (broken.exception(), broken.exception_or_none()):
-        assert type(copy) is WorkerBroken and copy.args == why.args and copy is not why
-    stopped = WorkerStopFuture(worker)
-    stopped.set_result(why := CleanStop("cleanly"))
-    copy = stopped.result_or_none()
-    assert type(copy) is CleanStop and copy.args == why.args and copy is not why
+    assert broken.exception() is why
 
 
 # Teardown

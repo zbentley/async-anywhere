@@ -1,7 +1,6 @@
 import logging
 from typing import TYPE_CHECKING, Collection, Literal
 
-from async_anywhere._util import copy_exception
 from async_anywhere.captive.exceptions import WorkerStopped, CleanStop, WorkerBroken
 from async_anywhere.futures import AwaitableFuture
 
@@ -27,22 +26,6 @@ class WorkerStopFuture(AwaitableFuture[WorkerStopped]):
         if not isinstance(exception, WorkerBroken):
             raise AssertionError(f"Invariant violation: {self!r} takes why the worker stopped as its result, not {exception!r}")
         super().set_exception(exception)
-
-    def exception(self, timeout: float | None = None) -> WorkerBroken | None:
-        return (error := super().exception(timeout)) and copy_exception(error)  # A copy, as for result()
-
-    def result(self, timeout: float | None = None) -> WorkerStopped:
-        # A copy, keeping the cause, each time: every raise adds its frames to the exception's traceback, so raising one
-        # instance for every caller, on every thread, would pile theirs up on it. wrap_future() reads it through this too.
-        if error := self.exception(timeout):
-            raise error
-        return copy_exception(super().result(timeout))
-
-    def exception_or_none(self) -> WorkerBroken | None:
-        return (error := super().exception_or_none()) and copy_exception(error)  # A copy, as for result()
-
-    def result_or_none(self) -> WorkerStopped | None:
-        return (stop := super().result_or_none()) and copy_exception(stop)  # A copy, as for result()
 
     def clean_stop(self, why: Literal["expired", "stopped", "parent task returned"], calls: Collection) -> bool:
         match why:
