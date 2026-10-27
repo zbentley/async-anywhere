@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-import threading
+from threading import Condition
 from abc import ABC
 from collections import defaultdict
 from typing import Any, ClassVar, Self
@@ -63,7 +63,7 @@ class StateTracker(ABC):
             threads. If False, they take no lock, so only use the StateTracker from one thread at a time.
         """
         self._state, = (s for s in self.states if s.initial)
-        self._condition = threading.Condition() if thread_safe else None
+        self._condition = Condition() if thread_safe else None
 
     # We use a property to prevent accidental manual mutation
     # TODO property setter on transition
