@@ -1,11 +1,18 @@
 import abc
+import copy
 import dataclasses
-from typing import ClassVar
+import gc
+import pickle
+import threading
+from typing import Any, ClassVar, Self
 
+import anyio
 import attr
 import pytest
 
-from async_anywhere.state_tracker import StateTracker, State, StateTrackerError, WaitableStateTracker
+from async_anywhere._util import copy_exception
+from async_anywhere.state_tracker import StateTracker, State, StateTrackerError
+from async_anywhere.state_tracker.waitable import WaitableStateTracker
 
 
 class MyStateTracker(StateTracker):
@@ -17,6 +24,16 @@ def test_basic_state_tracker():
     inst = MyStateTracker()
     assert inst.state is inst.Initial
     assert inst.state == inst.Initial
+
+@pytest.mark.parametrize("thread_safe", [True, False], ids=["thread_safe", "unlocked"])
+def test_transition(thread_safe):
+    inst = MyStateTracker(thread_safe=thread_safe)
+    assert (inst._condition is None) is not thread_safe
+    inst._transition(MyStateTracker.Second)
+    assert inst.state is MyStateTracker.Second
+    with pytest.raises(StateTrackerError, match="Could not transition"):
+        inst._transition(MyStateTracker.Third)
+    assert inst.state is MyStateTracker.Second
 
 def test_concrete_tracker_requires_states():
     with pytest.raises(TypeError, match="initial=True"):
@@ -105,6 +122,24 @@ def test_mixin_states_are_shared():
     b._transition(Mixin.Busy)
     assert a.state is b.state is Mixin.Busy
 
+def test_any_and_self_survive_resolving_again():
+    class Mixin:
+        Idle = State(initial=True, destinations=Any)
+        Busy = State(destinations=Self)
+
+    class A(Mixin, StateTracker):
+        pass
+
+    class B(Mixin, StateTracker):  # Resolves Mixin's already resolved destinations again
+        pass
+
+    for inst in (A(), B()):
+        inst._transition(Mixin.Idle)
+        inst._transition(Mixin.Busy)
+        inst._transition(Mixin.Busy)
+        with pytest.raises(StateTrackerError):
+            inst._transition(Mixin.Idle)
+
 def test_mixin_states_cannot_be_added_to():
     class Mixin:
         Idle = State(initial=True)
@@ -151,3 +186,86 @@ def test_slotted_class_builders(builder):
     inst = Declared()
     inst._transition(Declared.End)
     assert inst.state is Declared.End
+
+@pytest.mark.parametrize(
+    "builder", [attr.define(init=False), dataclasses.dataclass(slots=True, init=False)], ids=["attrs", "dataclass"]
+)
+def test_slotted_class_builders_reject_non_classvar_states(builder):
+    with pytest.raises(TypeError, match="not part of this state tracker"):
+        @builder
+        class Declared(StateTracker):
+            Start: ClassVar[State] = State(initial=True)
+            End: State = State(sources=[Start])  # A field, so the builder drops it from the class it rebuilds
+
+def test_require():
+    inst = MyStateTracker()
+    assert inst.require(MyStateTracker.Initial) is inst
+    assert inst.require(MyStateTracker.Second, MyStateTracker.Initial) is inst
+    with pytest.raises(StateTrackerError, match="Not in required state"):
+        inst.require(MyStateTracker.Second)
+
+def test_error_is_copyable():
+    with pytest.raises(StateTrackerError) as info:
+        MyStateTracker()._transition(MyStateTracker.Initial)
+    error = info.value
+    error.add_note("a note")
+    for duplicate in (copy.copy(error), pickle.loads(pickle.dumps(error)), copy_exception(error)):
+        assert type(duplicate) is StateTrackerError
+        assert duplicate.args == error.args
+        assert duplicate.__notes__ == ["a note"]
+
+
+class MyWaitable(WaitableStateTracker):
+    A = State(initial=True)
+    B = State(sources=[A])
+    C = State(sources=[A, B])
+
+def test_wait_for_current_state_is_done():
+    inst = MyWaitable()
+    assert inst.wait_for_state(MyWaitable.A, MyWaitable.B).result(0) == (None, MyWaitable.A, None)
+    waiting = inst.wait_for_state(MyWaitable.B)
+    inst._transition(MyWaitable.B, "data")
+    assert inst.wait_for_state(MyWaitable.B).result(0) == waiting.result(0) == (MyWaitable.A, MyWaitable.B, "data")
+    inst._transition(MyWaitable.C)
+    assert inst.wait_for_state(MyWaitable.C, MyWaitable.A).result(0) == (MyWaitable.B, MyWaitable.C, None)
+
+def test_wait_for_state_validates_states():
+    with pytest.raises(StateTrackerError, match="not one of this class's states"):
+        MyWaitable().wait_for_state(MyWaitable.A, MyStateTracker.Initial)
+
+def test_wait_for_state_resolves_on_transition():
+    inst = MyWaitable()
+    future = inst.wait_for_state(MyWaitable.B, MyWaitable.C)
+    assert not future.done()
+    inst._transition(MyWaitable.B, "data")
+    assert future.result(0) == (MyWaitable.A, MyWaitable.B, "data")
+    inst._transition(MyWaitable.C)  # Its future, done, is still among C's waiters
+    assert future.result(0)[1] is MyWaitable.B
+
+@pytest.mark.parametrize("strong", [False, True], ids=["weak", "strong"])
+def test_dropped_waiters(strong):
+    inst = MyWaitable(strong_waiters=strong)
+    resolved = []
+    inst.wait_for_state(MyWaitable.B).add_done_callback(resolved.append)
+    gc.collect()
+    inst._transition(MyWaitable.B)
+    assert len(resolved) == (1 if strong else 0)
+
+def test_strong_waiters_are_forgotten_once_done():
+    inst = MyWaitable(strong_waiters=True)
+    cancelled = inst.wait_for_state(MyWaitable.B, MyWaitable.C)
+    cancelled.cancel()
+    resolved = inst.wait_for_state(MyWaitable.B, MyWaitable.C)
+    inst._transition(MyWaitable.B)
+    assert resolved.done()
+    assert all(len(waiters) == 0 for waiters in inst._waiters.values())
+
+@pytest.mark.backends("asyncio", "uvloop", "trio")
+async def test_wait_for_state_across_threads():
+    inst = MyWaitable()
+    future = inst.wait_for_state(MyWaitable.B)
+    thread = threading.Thread(target=inst._transition, args=(MyWaitable.B, "data"))
+    thread.start()
+    with anyio.fail_after(5):
+        assert await future == (MyWaitable.A, MyWaitable.B, "data")
+    thread.join()

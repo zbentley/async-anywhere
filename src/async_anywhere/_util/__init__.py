@@ -1,11 +1,12 @@
+from asyncio import AbstractEventLoop
 from contextlib import AbstractContextManager
 from copy import copy
 from inspect import iscoroutinefunction
-from threading import RLock, Lock
+from threading import RLock, Lock, Thread
 from typing import Iterable, Literal, Callable
 from weakref import WeakSet
 
-type RuntimeSelector[T] = None | Literal["all"] | T | Iterable[T]
+type RuntimeSelector[T: Thread | AbstractEventLoop] = None | Literal["all"] | T | Iterable[T] | Callable[[], bool]
 
 
 FAST_COLLECTION_SET_CUTOFF = 5
@@ -15,11 +16,14 @@ def validate_coroutine_function(_, attribute, value):
         raise TypeError(f"{attribute.name} must be a coroutine function (an async def), not {value!r}")
 
 def fast_runtime_checker[T](vals: RuntimeSelector[T], kind: type[T], getter: Callable[[], T]) -> Callable[[], bool]:
+    # NB if you pass a callable iterable, this will break.
     if vals is not None:
         if vals == "all":
             return True.__bool__
-        if isinstance(vals, kind):
+        elif isinstance(vals, kind):
             vals = WeakSet((vals,))
+        elif callable(vals):
+            return vals
         else:
             for v in (vals := WeakSet(vals)):
                 assert isinstance(v, kind)
