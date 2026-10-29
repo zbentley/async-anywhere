@@ -13,6 +13,14 @@ from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
 from async_anywhere.state_tracker import State, StateTracker
 
 
+class _DoneCallbackToken:
+    __slots__ = ()
+
+
+class _ForkAllowedDoneCallbackToken(_DoneCallbackToken):
+    __slots__ = ()
+
+
 class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     """A concurrent.futures.Future subclass that can also be awaited. Provides the following behaviors:
 
@@ -68,8 +76,9 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         '_ignore_cancel',
         '_cancel_pending_in_forked_child',
         '_completed_at',
-        # Its done callbacks (each with whether it runs in a forked process), dropped once they've run, and
-        # concurrent.futures.wait()'s and as_completed()'s waiters: both changed only under _condition
+        # Its done callbacks by token, in the order added (those with a ForkAllowedDoneCallbackToken run in a forked
+        # process), dropped once they've run, and concurrent.futures.wait()'s and as_completed()'s waiters: both changed
+        # only under _condition
         '_done_callbacks',
         '_waiters',
     )
@@ -92,7 +101,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         self._ignore_cancel = ignore_cancel
         self._cancel_pending_in_forked_child = cancel_pending_in_forked_child
         self._completed_at: float | None = None
-        self._done_callbacks: list[tuple[Callable[[Self], Any], bool]] = []
+        self._done_callbacks: dict[_DoneCallbackToken, Callable[[Self], Any]] = {}
 
         # Mutated only by code in concurrent.futures.wait() and .as_completed(). Contains opaque objects installed and
         # removed by those methods.
@@ -202,78 +211,90 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         self._invoke_callbacks()
         return True
 
-    def result(self, timeout: float | None = None) -> T:
+    def _get_result(self, expect_success: bool, timeout: float | None):
         try:
             _, state, data = self._last_transition
-            if state is self.Succeeded:
-                return data
-            if state is self.Failed:
-                raise data
-            if state is self.Cancelled:
-                raise concurrent.futures.CancelledError
-            if not self._wait(timeout):
-                raise TimeoutError
-            # Finished now. Not self.result(), which would run a subclass's override twice.
-            return AwaitableFuture.result(self)
+            match state:
+                case self.Succeeded if expect_success: return data
+                case self.Succeeded: return None
+                case self.Failed if expect_success: raise data
+                case self.Failed: return data
+                case self.Cancelled: raise concurrent.futures.CancelledError
+            if self._runtime_checker is not None:
+                self._runtime_checker(self)
+            # Convert positive infinity to None/wait-forever
+            if timeout is not None and timeout > 0 and isinf(timeout):
+                timeout = None
+            with self._condition:
+                if not self._condition.wait_for(self.done, timeout):
+                    raise TimeoutError
+            return self._get_result(expect_success, None)
         finally:
-            del self, data  # Else what this raises would hold them through its traceback (in a cycle, if it's data)
+            del self, data
+
+    def result(self, timeout: float | None = None) -> T:
+        try:
+            return self._get_result(True, timeout)
+        finally:
+            del self
 
     def exception(self, timeout: float | None = None) -> BaseException | None:
         try:
-            _, state, data = self._last_transition
-            if state is self.Succeeded:
-                return None
-            if state is self.Failed:
-                return data
-            if state is self.Cancelled:
-                raise concurrent.futures.CancelledError
-            if not self._wait(timeout):
-                raise TimeoutError
-            return AwaitableFuture.exception(self)  # As in result()
+            return self._get_result(False, timeout)
         finally:
-            del self  # As in result()
+            del self
 
-    def _wait(self, timeout: float | None) -> bool:
-        # For result() and exception(), which raise what they must themselves, so that only their frames, which don't
-        # keep it, are in the traceback: whether it finished within `timeout`
-        if self._runtime_checker is not None:
-            self._runtime_checker(self)
-        if timeout is not None and isinf(timeout) and timeout > 0:  # -inf times out at once, as any negative timeout does
-            timeout = None
-        with self._condition:
-            return self._condition.wait_for(self.done, timeout)
-
-    def add_done_callback(self, fn: Callable[[Self], Any], run_in_forked_child: bool = False):
+    def add_done_callback(
+        self, fn: Callable[[Self], Any], run_in_forked_child: bool = False, raise_if_failed_immediately=False,
+    ) -> _DoneCallbackToken:
         """As concurrent.futures.Future's, but with run_in_forked_child, fn runs in a process forked from this one too,
-        as the future finishes there: see _fork_safety."""
+        as the future finishes there: see _fork_safety. Returns a token for remove_done_callback() that removes just
+        this registration (one that, if this future has finished, has already run fn)."""
+        token = _ForkAllowedDoneCallbackToken() if run_in_forked_child else _DoneCallbackToken()
         with self._condition:
             if not self._last_transition[1].terminal:
-                self._done_callbacks.append((fn, run_in_forked_child))
-                return
+                self._done_callbacks[token] = fn
+                return token
         try:
             fn(self)
         except Exception:
+            if raise_if_failed_immediately:
+                raise
             LOGGER.exception("exception calling callback for %r", self)
+        return token
 
-    def remove_done_callback(self, fn: Callable[[Self], Any]) -> bool:
-        """Removes fn's first registration (with run_in_forked_child or not), returning whether there was one, while
-        this future hasn't finished. Once it has, its callbacks have run, or are running, so this returns False."""
+    def remove_done_callback(
+        self, fn_or_token: Callable[[Self], Any] | _DoneCallbackToken
+    ) -> int:
+        """Removes the registration add_done_callback() returned a token for, or every registration of a function, while
+        this future hasn't finished, returning how many were removed. Once it has, its callbacks have run, or are
+        running, so this returns 0."""
+        if self._last_transition[1].terminal:
+            return 0
+        keep = []
         with self._condition:
-            # Only while pending: once it's finished, _invoke_callbacks() pops them without _condition
-            if not self._last_transition[1].terminal:
-                for i, (callback, _) in enumerate(self._done_callbacks):
-                    if callback == fn:  # Not `is`: a bound method is a new object each time it's looked up
-                        del self._done_callbacks[i]
-                        return True
-        return False
+            # Only while pending: once it's finished, _invoke_callbacks() takes them without _condition
+            if self._last_transition[1].terminal:
+                return 0
+            if isinstance(fn_or_token, _DoneCallbackToken):
+                # Keep the reference alive until we leave the condition, just in case a destructor runs that'd deadlock
+                # with us (or, if it runs on this thread, corrupt state). The other path doesn't need this guard since
+                # a strong reference to the function must have been supplied.
+                keep.append(self._done_callbacks.pop(fn_or_token, None))
+                return 0 if keep[0] is None else 1
+            # `==`, not `is`: a bound method is a new object each time it's looked up
+            tokens = [token for token, fn in self._done_callbacks.items() if fn == fn_or_token]
+            for token in tokens:
+                del self._done_callbacks[token]
+            return len(tokens)
 
     def _invoke_callbacks(self):
         # Not under _condition, so that a fork never leaves the copy of a pending future's held: see _fork_safety
         _fork_safety.futures.ensure_unregistered(self)
-        self._done_callbacks.reverse()
-        while len(self._done_callbacks) > 0:
+        callbacks, self._done_callbacks = self._done_callbacks, {}
+        for fn in callbacks.values():
             try:
-                self._done_callbacks.pop()[0](self)
+                fn(self)
             except Exception:
                 LOGGER.exception("exception calling callback for %r", self)
 
@@ -281,7 +302,9 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         # See _fork_safety: the threads that held its condition, or waited in concurrent.futures.wait(), aren't here
         self._condition = Condition()
         self._waiters.clear()
-        self._done_callbacks = [entry for entry in self._done_callbacks if entry[1]]
+        callbacks = [k for k in self._done_callbacks.keys() if not isinstance(k, _ForkAllowedDoneCallbackToken)]
+        for tok in callbacks:
+            del self._done_callbacks[tok]
 
     # For executors
 

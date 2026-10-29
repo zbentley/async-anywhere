@@ -20,11 +20,8 @@ class AsyncioAwaitableFuture[T](asyncio.Future[T]):
     def __init__(self, source: AwaitableFuture[T], loop: asyncio.AbstractEventLoop):
         super().__init__(loop=loop)
         self._source = source
-        with source._condition:  # As add_done_callback() does, without its frames
-            if not source._last_transition[1].terminal:
-                source._done_callbacks.append((self._deliver, False))  # Its loop's copy in a forked process never runs
-                return
-        self._deliver(source)
+        # Its loop's copy in a forked process never runs, so it's not run_in_forked_child
+        source.add_done_callback(self._deliver, raise_if_failed_immediately=True)
 
     def cancel(self, msg=None) -> bool:
         """Changes cancellation behavior of asyncio.Future in two ways:
