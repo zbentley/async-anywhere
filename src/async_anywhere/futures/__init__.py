@@ -8,8 +8,9 @@ from typing import Any, Awaitable, Callable, Self
 
 from async_anywhere._util import blocking_wait_checker, LoopSelector, ThreadSelector
 from async_anywhere._util.trio import TrioRuntime
+from async_anywhere.futures import _fork_safety
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
-from async_anywhere.state_tracker import State, StateTracker, StateTrackerError
+from async_anywhere.state_tracker import State, StateTracker
 
 
 class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T]):
@@ -27,12 +28,16 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
       concurrent.futures.Future, rather than postponing cancellation until a later event loop iteration as CPython does.
     - Finishing it on a running event loop's thread finishes the asyncio.Futures it provided on that loop at once, rather
       than in a later loop iteration as asyncio.wrap_future()'s are.
-    - With honor_cancel=False, cancel() is refused (returns False), and waiters giving up leave it, and its other
+    - With ignore_cancel=True, cancel() is refused (returns False), and waiters giving up leave it, and its other
       waiters, alone.
     - completed_at is the time.monotonic() time at which it finished (with a result, an exception, or cancellation), or
       None until then. Its trio futures share its time. Its asyncio.Futures have none.
+    - Its done callbacks only ever run in the process that added them, as concurrent.futures.Future documents of its
+      own (but doesn't ensure across fork(2)), unless added with run_in_forked_child=True. In a forked process, one
+      that hadn't finished is left pending, as a concurrent.futures.Future would be, unless made with
+      cancel_pending_in_forked_child=True, which cancels it there: see _fork_safety.
 
-    With honor_cancel=False, waiters giving up (as asyncio.wait_for(), asyncio.timeout(), TaskGroups, and trio's and
+    With ignore_cancel=True, waiters giving up (as asyncio.wait_for(), asyncio.timeout(), TaskGroups, and trio's and
     anyio's cancel scopes make them) still do so at once, leaving it pending, as asyncio.shield() would. But cancel() is
     refused for everyone, its owner included: it returns False while neither running() nor done(), which a plain
     concurrent.futures.Future's never does, and most code ignores what cancel() returns. So:
@@ -50,7 +55,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     # Running is as an executor's job is once started, which can't be cancelled. Once done, it never transitions again.
     Pending = State(initial=True)
     Running = State(sources=Pending)
-    Cancelled = State(sources=Pending)
+    Cancelled = State(sources=(Pending, Running))  # From Running only in a forked process: see _fork_safety
     Succeeded = State(sources=(Pending, Running))  # Its transition's data is the result
     Failed = State(sources=(Pending, Running))  # Its transition's data is the exception
     # See _state. Cancelling notifies concurrent.futures' waiters at once, so it's never just CANCELLED.
@@ -60,10 +65,11 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
 
     __slots__ = (
         '_runtime_checker',  # Refuses blocking waits where they'd deadlock (see blocking_wait_checker()), or None
-        '_honor_cancel',
+        '_ignore_cancel',
+        '_cancel_pending_in_forked_child',
         '_completed_at',
-        # Its done callbacks, dropped once they've run, and concurrent.futures.wait()'s and as_completed()'s waiters:
-        # both changed only under _condition
+        # Its done callbacks (each with whether it runs in a forked process), dropped once they've run, and
+        # concurrent.futures.wait()'s and as_completed()'s waiters: both changed only under _condition
         '_done_callbacks',
         '_waiters',
     )
@@ -72,7 +78,8 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         *,
         prevent_blocking_wait_in_loops: LoopSelector = None,
         prevent_blocking_wait_in_threads: ThreadSelector = None,
-        honor_cancel: bool = True,
+        ignore_cancel: bool = False,
+        cancel_pending_in_forked_child: bool = False,
     ):
         # NB: we're deliberately not calling concurrent.future.Future's super().__init__. We replace basically all of
         # that class's internals, and subclass it only to satisfy isinstance() checks performed by stdlib. This class's
@@ -82,13 +89,15 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         # Not calling blocking_wait_checker() for None (most futures) saves its call: these are made on hot paths
         loops, threads = prevent_blocking_wait_in_loops, prevent_blocking_wait_in_threads
         self._runtime_checker = None if loops is threads is None else blocking_wait_checker(loops, threads)
-        self._honor_cancel = honor_cancel
+        self._ignore_cancel = ignore_cancel
+        self._cancel_pending_in_forked_child = cancel_pending_in_forked_child
         self._completed_at: float | None = None
-        self._done_callbacks: list[Callable[[Self], Any]] = []
+        self._done_callbacks: list[tuple[Callable[[Self], Any], bool]] = []
 
         # Mutated only by code in concurrent.futures.wait() and .as_completed(). Contains opaque objects installed and
         # removed by those methods.
         self._waiters: list = []
+        _fork_safety.futures.ensure_registered(self)  # Until it has finished
 
     def __repr__(self):
         # Unlike concurrent.futures.Future, we don't need to take the lock for repr, since reading the field is atomic.
@@ -134,7 +143,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
 
         Cancelling the returned future cancels this one, unless this one has already finished, in which case cancellation
         is "refused" (the returned asyncio.Future's cancel() method returns False). If this one refuses cancellation while
-        pending (made with honor_cancel=False, or running), only the returned future is cancelled, and this one lets go of
+        pending (made with ignore_cancel=True, or running), only the returned future is cancelled, and this one lets go of
         it.
 
         :param loop: the event loop to which the returned future should be bound, or the current event loop if None.
@@ -179,15 +188,19 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
 
     def cancel(self) -> bool:
         # Lock-free unless it's pending, as Executor.map() cancels every future once it has its result
-        if self._honor_cancel and self._last_transition[1] is self.Pending:
-            try:
-                self._transition(self.Cancelled)
-            except StateTrackerError:  # It started, finished, or was cancelled, meanwhile
-                pass
-            else:
-                self._invoke_callbacks()
-                return True
+        if not self._ignore_cancel and self.state is self.Pending and self._cancel():
+            return True
         return self.cancelled()
+
+    def _cancel(self, even_running: bool = False) -> bool:
+        # Running can become Cancelled, but only the fork handler wants that (see _fork_safety): so cancel() rechecks
+        # under _condition, reentrant, as _transition() takes it too. Callbacks run without it.
+        with self._condition:
+            # It started, finished, or was cancelled, meanwhile
+            if not (even_running or self.state is self.Pending) or not self._try_transition(self.Cancelled):
+                return False
+        self._invoke_callbacks()
+        return True
 
     def result(self, timeout: float | None = None) -> T:
         try:
@@ -230,20 +243,45 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         with self._condition:
             return self._condition.wait_for(self.done, timeout)
 
-    def add_done_callback(self, fn: Callable[[Self], Any]):
+    def add_done_callback(self, fn: Callable[[Self], Any], run_in_forked_child: bool = False):
+        """As concurrent.futures.Future's, but with run_in_forked_child, fn runs in a process forked from this one too,
+        as the future finishes there: see _fork_safety."""
         with self._condition:
             if not self._last_transition[1].terminal:
-                self._done_callbacks.append(fn)
+                self._done_callbacks.append((fn, run_in_forked_child))
                 return
         try:
             fn(self)
         except Exception:
             LOGGER.exception("exception calling callback for %r", self)
 
+    def remove_done_callback(self, fn: Callable[[Self], Any]) -> bool:
+        """Removes fn's first registration (with run_in_forked_child or not), returning whether there was one, while
+        this future hasn't finished. Once it has, its callbacks have run, or are running, so this returns False."""
+        with self._condition:
+            # Only while pending: once it's finished, _invoke_callbacks() pops them without _condition
+            if not self._last_transition[1].terminal:
+                for i, (callback, _) in enumerate(self._done_callbacks):
+                    if callback == fn:  # Not `is`: a bound method is a new object each time it's looked up
+                        del self._done_callbacks[i]
+                        return True
+        return False
+
     def _invoke_callbacks(self):
-        super()._invoke_callbacks()
-        # Once it's done, nothing adds or removes callbacks: so it lets go of them, and what they hold, at once
-        self._done_callbacks.clear()
+        # Not under _condition, so that a fork never leaves the copy of a pending future's held: see _fork_safety
+        _fork_safety.futures.ensure_unregistered(self)
+        self._done_callbacks.reverse()
+        while len(self._done_callbacks) > 0:
+            try:
+                self._done_callbacks.pop()[0](self)
+            except Exception:
+                LOGGER.exception("exception calling callback for %r", self)
+
+    def _after_fork_in_child(self):
+        # See _fork_safety: the threads that held its condition, or waited in concurrent.futures.wait(), aren't here
+        self._condition = Condition()
+        self._waiters.clear()
+        self._done_callbacks = [entry for entry in self._done_callbacks if entry[1]]
 
     # For executors
 

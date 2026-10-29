@@ -109,10 +109,10 @@ async def test_giving_up_waiting_on_stop_cancels_nothing_with_any_library():
         await worker.reached("waits_for")
         with anyio.move_on_after(0.05):
             await worker.stop()  # A drain, waiting for the call
-        assert worker.state is worker.STOPPING
+        assert worker.state is worker.Stopping
         release.set_result("finished")
         assert await call == "finished"
-        assert type(await worker.stop()) is CleanStop
+        assert type((await worker.stop())[2]) is CleanStop
 
 
 @pytest.mark.backends("trio")
@@ -156,7 +156,7 @@ async def test_parent_tasks_can_use_anyio():
     async with running(AnyioRun) as worker:
         await worker.reached("child")
         assert await worker.sees() == (asyncio.CancelledError, "unset")
-        stopped = await worker.stop(interrupt=True)
+        _, _, stopped = await worker.stop(interrupt=True)
         assert stopped.args == ("(idle) manually stopped",)
         assert worker.reached("child cleaned up").done()
 
@@ -255,7 +255,7 @@ async def test_parent_tasks_can_run_trio_as_a_guest():
 
     async with running(parent_task=TrioGuest(trio_main).parent_task) as worker:
         assert await marks["started"] == (asyncio.CancelledError, "unset")
-        stopped = await worker.stop(interrupt=True)
+        _, _, stopped = await worker.stop(interrupt=True)
         assert stopped.args == ("(idle) manually stopped",)
         assert marks["cleaned up"].result_or_none() is True
 
@@ -274,7 +274,7 @@ async def test_a_trio_guest_ending_stops_the_worker(end, kind, text):
         end()
 
     async with running(parent_task=TrioGuest(trio_main).parent_task) as worker:
-        stopped = await worker.wait_for_state(worker.STOPPED)  # Of its own accord
+        _, _, stopped = await worker.wait_for_state(worker.Stopped)  # Of its own accord
         assert type(stopped) is kind and stopped.args == (text,)
 
 
@@ -325,7 +325,7 @@ async def test_interrupting_cancels_the_trio_code_calls_handed_over():
     async with running(parent_task=guest.parent_task) as worker:
         call = worker.bridge(guest.run)(tidies, marks)
         await marks["started"]
-        stopped = await worker.stop(interrupt=True)
+        _, _, stopped = await worker.stop(interrupt=True)
         assert stopped.args == ("(interrupted) manually stopped",)
         assert marks["cleaned up"].done()  # Before the worker finished
         with pytest.raises(concurrent.futures.CancelledError) as raised:

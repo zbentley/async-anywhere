@@ -23,8 +23,9 @@ from tests.test_captive.utils import BlocksLoop, Tidy, Worker, bridge, running
 
 @pytest.mark.parametrize("interrupt", [False, True])
 async def test_idle_stop(interrupt):
-    async with running() as worker:  # With the default parent task and hooks
-        stopped = await worker.stop(interrupt=interrupt)
+    async with running() as worker:  # With the default parent task
+        old, new, stopped = await worker.stop(interrupt=interrupt)
+        assert (old, new) == (worker.Stopping, worker.Stopped)
         assert type(stopped) is CleanStop and stopped.args == ("(idle) manually stopped",)
 
 
@@ -44,32 +45,31 @@ async def test_run_doesnt_see_the_constructors_context():
 
 
 @pytest.mark.parametrize("interrupt", [False, True])
-async def test_hooks_are_called_once_each_on_the_workers_thread(interrupt):
+async def test_state_callbacks_run_on_the_workers_thread(interrupt):
     async with running(Worker) as worker:
         await worker.stop(interrupt=interrupt)
         await worker.stop(interrupt=True)  # Again, which changes nothing
-        assert await worker.reached("stopped") == (True, worker.STOPPING)  # See Harness.on_stopped()
-        # Awaited, as on_shutdown() runs just after stop()'s waiters wake
-        assert await worker.reached("shutdown") == (True, worker.STOPPED, True)
-        assert not worker.reached("stopped", 2).done() and not worker.reached("shutdown", 2).done()
+        assert await worker.reached("stopped") == (True, worker.Stopping)  # See Harness._parent()
+        assert await worker.reached("shutdown") == (True, worker.Stopped, True)  # Once its loop has closed
 
 
 async def test_workers_state_can_be_required_and_waited_for():
     async with running(Worker) as worker:  # A harness: worker.worker is its CaptiveWorker
-        assert worker.require(worker.RUNNING) is worker.worker
-        assert await worker.wait_for_state(worker.RUNNING) is worker.worker
-        stopping, stopped = worker.wait_for_state(worker.STOPPING), worker.wait_for_state(worker.STOPPED)
+        assert worker.require(worker.Running) is worker.worker
+        assert await worker.wait_for_state(worker.Running) == (None, worker.Running, None)
+        stopped = worker.wait_for_state(worker.Stopped)
         call = worker.waits_for(release := AwaitableFuture())
         await worker.reached("waits_for")
-        why = await worker.stop(wait=False)  # A drain, held up by the call
-        assert worker.state is worker.STOPPING and await stopping is why and not stopped.done()
+        old, new, why = await worker.stop(wait=False)  # A drain, held up by the call
+        assert (old, new) == (worker.Running, worker.Stopping) and type(why) is CleanStop
+        assert worker.state is worker.Stopping and not stopped.done()
         with pytest.raises(StateTrackerError, match="Not in required state"):
-            worker.require(worker.RUNNING)
+            worker.require(worker.Running)
         release.set_result(None)
         await call
-        assert await stopped is why and worker.require(worker.STOPPED) is worker.worker
-        with pytest.raises(StateTrackerError, match="Can never reach"):
-            await worker.wait_for_state(worker.RUNNING, worker.STOPPING)  # Never again, rather than waiting forever
+        assert await stopped == (worker.Stopping, worker.Stopped, why)
+        assert await worker.wait_for_state(worker.Stopping, worker.Stopped) == (worker.Stopping, worker.Stopped, why)
+        assert worker.require(worker.Running, worker.Stopped) is worker.worker
 
 
 # A refused argument leaves the loop its timer made unclosed (attrs validates once every field is set): only the GC
@@ -81,8 +81,6 @@ async def test_workers_state_can_be_required_and_waited_for():
         # Making a coroutine, but not an async def
         (dict(parent_task=lambda worker: asyncio.sleep(0)), TypeError, "^parent_task must be a coroutine function"),
         (dict(parent_task=print), TypeError, "^parent_task must be a coroutine function"),
-        (dict(on_stopped=None), TypeError, "^'on_stopped' must be callable"),
-        (dict(on_shutdown="on_shutdown"), TypeError, "^'on_shutdown' must be callable"),
         (dict(idle_timeout="1"), TypeError, "'idle_timeout' must be"),
         (dict(idle_timeout=0), ValueError, "^'idle_timeout' must be > 0"),
         (dict(loop_factory=3), TypeError, "callable"),  # Called as the timer is made, before attrs validates it

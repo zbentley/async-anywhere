@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import gc
+import os
 import threading
 import time
 import weakref
@@ -12,7 +13,8 @@ import anyio
 import pytest
 import trio
 
-from async_anywhere.futures import AwaitableFuture
+from async_anywhere.futures import AwaitableFuture, _fork_safety
+from tests.test_captive.utils import forked
 
 
 @pytest.fixture
@@ -315,12 +317,21 @@ def test_executors_can_make_them(monkeypatch, caplog):
     assert not any(record.name == "concurrent.futures" for record in caplog.records)
 
 
+def test_a_future_that_started_just_after_cancel_found_it_pending_isnt_cancelled():
+    future = AwaitableFuture()
+    assert future.set_running_or_notify_cancel()
+    assert not future._cancel()  # As cancel() calls it, having found it pending, if it started just then
+    assert future.running() and not future.cancel()
+    future.set_result("finished")  # As the executor's worker does, which mustn't find it cancelled
+    assert future.result(0) == "finished"
+
+
 @pytest.mark.parametrize(
     "awaitable", [lambda future: future, lambda future: future.as_async_future()], ids=["awaited", "as_async_future"]
 )
-async def test_giving_up_waiting_on_a_future_that_doesnt_honor_cancel_leaves_other_waiters_alone(awaitable):
+async def test_giving_up_waiting_on_a_future_that_ignores_cancel_leaves_other_waiters_alone(awaitable):
     # Unlike one that's running: see the expected failure above
-    future = AwaitableFuture(honor_cancel=False)
+    future = AwaitableFuture(ignore_cancel=True)
     assert not future.cancel() and not future.cancelled()
 
     async def wait():
@@ -353,7 +364,7 @@ def test_completed_at_is_when_it_finished():
     running = AwaitableFuture()
     assert running.set_running_or_notify_cancel()
     assert not running.cancel() and running.completed_at is None  # Refused, so it hasn't finished
-    refusing = AwaitableFuture(honor_cancel=False)
+    refusing = AwaitableFuture(ignore_cancel=True)
     assert not refusing.cancel() and refusing.completed_at is None
 
 
@@ -424,7 +435,7 @@ async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_trio_wa
 
 @pytest.mark.backends("trio")
 async def test_giving_up_on_a_trio_future_leaves_its_other_awaits_alone():
-    future = AwaitableFuture(honor_cancel=False)
+    future = AwaitableFuture(ignore_cancel=True)
     here, results = future.as_async_future(), []
 
     async def wait():
@@ -475,3 +486,103 @@ def test_cancelling_from_several_threads_at_once_notifies_once(scale):
             thread.join()
         assert outcomes == [True] * 8 * scale
         assert future in concurrent.futures.wait([future], timeout=0).done  # Notified, which it counts as done
+
+
+# Forking: see _fork_safety
+
+
+FORKS = pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
+
+
+@FORKS
+def test_a_forked_process_cancels_only_the_pending_futures_asked_to_running_only_the_callbacks_meant_for_it():
+    pending, running = (AwaitableFuture(cancel_pending_in_forked_child=True) for _ in range(2))
+    uncancellable = AwaitableFuture(ignore_cancel=True, cancel_pending_in_forked_child=True)
+    kept = AwaitableFuture()  # Left pending in a forked process, as a concurrent.futures.Future would be
+    assert running.set_running_or_notify_cancel()
+    ran = []
+    for future in pending, kept:
+        future.add_done_callback(lambda done: ran.append(("dropped", done)))
+        future.add_done_callback(lambda done: ran.append(("kept", done)), run_in_forked_child=True)
+    with forked() as f:
+        if f.child:
+            assert pending.cancelled() and running.cancelled() and uncancellable.cancelled()  # ignore_cancel or not
+            assert ran == [("kept", pending)] and not kept.done()
+            kept.set_result("finished here")
+            assert ran == [("kept", pending), ("kept", kept)]
+    assert len(ran) == 0 and not any(future.done() for future in (pending, running, uncancellable, kept))
+    for future in pending, running, uncancellable, kept:
+        future.set_result(None)
+    assert ran == [("dropped", pending), ("kept", pending), ("dropped", kept), ("kept", kept)]  # Each once, here
+    assert not any(future in _fork_safety.futures.instances for future in (pending, kept))  # Let go of, once finished
+
+
+@FORKS
+def test_a_forked_process_can_finish_futures_other_threads_were_using_as_it_forked():
+    future, holding, release = AwaitableFuture(), AwaitableFuture(), AwaitableFuture()
+    waiter = threading.Thread(target=concurrent.futures.wait, args=([future],))
+    waiter.start()
+    while len(future._waiters) == 0:  # Until concurrent.futures.wait() is waiting on it
+        time.sleep(0.001)
+
+    def hold():
+        with future._condition:  # As finishing it would, as the process forks
+            holding.set_result(None)
+            release.result(10)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    holding.result(2)
+    with forked() as f:
+        if f.child:
+            assert len(future._waiters) == 0  # concurrent.futures.wait()'s, on a thread that isn't here
+            future.set_result("finished here")  # Rather than waiting for the condition, which a thread not here holds
+            assert future.result(0) == "finished here"
+        else:
+            release.set_result(None)
+    holder.join()
+    future.set_result("finished here too")
+    waiter.join(2)
+    assert not waiter.is_alive()
+
+
+@FORKS
+def test_a_forked_process_drops_async_futures_waits_on_futures_it_doesnt_cancel(owner):
+    future = AwaitableFuture(ignore_cancel=True)
+    waiting = future.as_async_future(owner, require_running_loop=False)
+    with forked() as f:
+        if f.child:
+            assert len(future._done_callbacks) == 0  # As its loop's copy here never runs
+            assert waiting.cancel() and not future.done()  # Letting go of a wait it no longer has
+    assert len(future._done_callbacks) == 1
+    future.set_result(None)
+
+
+@FORKS
+def test_futures_left_pending_in_a_forked_process_are_readied_again_in_processes_forked_from_it():
+    future, ran = AwaitableFuture(), []
+    with forked() as f:
+        if f.child:
+            assert future in _fork_safety.futures.instances  # Still pending here, so still registered
+            future.add_done_callback(lambda _: ran.append("child's"))  # Not to run in the grandchild
+            with forked() as grandchild:
+                if grandchild.child:
+                    future.set_result("finished in the grandchild")
+                    assert len(ran) == 0
+            future.set_result("finished in the child")
+            assert ran == ["child's"]
+    future.set_result(None)
+    assert len(ran) == 0
+
+
+@FORKS
+def test_a_forked_process_lets_go_of_futures_that_had_finished_as_it_forked():
+    future = AwaitableFuture()
+    future._transition(future.Succeeded, "finished")  # As set_result() does, before it runs callbacks and unregisters it
+    assert future in _fork_safety.futures.instances
+    with forked() as f:
+        if f.child:
+            assert future not in _fork_safety.futures.instances and future.result(0) == "finished"
+    assert future in _fork_safety.futures.instances  # Here, until the thread finishing it unregisters it
+    future._invoke_callbacks()
+    assert future not in _fork_safety.futures.instances

@@ -45,20 +45,15 @@ class bridge:
 
 class Harness:
     """A worker, held as code using CaptiveWorker would hold one, with what tests give it: bridged methods (see bridge),
-    _run() as its parent task, on_stopped() and on_shutdown(), and idle_timeout. The worker's attributes are its too.
-    By default, _run() awaits runloop, which the test can resolve to end it, and which an interrupt cancels."""
+    _run() as its parent task, and idle_timeout. The worker's attributes are its too. By default, _run() awaits runloop,
+    which the test can resolve to end it, and which an interrupt cancels."""
 
     idle_timeout = float("inf")
 
     def __init__(self):
         self._marks, self._counts = {}, {}
         self.runloop = AwaitableFuture()
-        self.worker = CaptiveWorker(
-            parent_task=self._parent,
-            on_stopped=self.on_stopped,
-            on_shutdown=self.on_shutdown,
-            idle_timeout=self.idle_timeout,
-        )
+        self.worker = CaptiveWorker(parent_task=self._parent, idle_timeout=self.idle_timeout)
 
     def __getattr__(self, name):
         if name == "worker":  # Not yet set
@@ -67,12 +62,13 @@ class Harness:
 
     def reached(self, name, times=1) -> AwaitableFuture:
         """Resolved, with what mark() was given, once `name` has been marked `times` times: bridged methods are marked
-        as their jobs start; _run() as it starts ("_run") and ends ("_run ended"); the worker's hooks as it calls them,
-        with what they saw ("stopped" and "shutdown"); and anything else as harnesses, or tests, mark() it ("release",
+        as their jobs start; _run() as it starts ("_run") and ends ("_run ended"); the worker as it stops and shuts down,
+        by done callbacks on wait_for_state()'s futures (never run in forked processes), with what they saw ("stopped" and "shutdown");
+        and anything else as harnesses, or tests, mark() it ("release",
         say, for what a harness awaits until the test releases it)."""
         # Uncancellable, as a cancelled task awaiting one would cancel it for every other waiter. setdefault(), as tests'
         # threads call this too.
-        return self._marks.setdefault((name, times), AwaitableFuture(honor_cancel=False))
+        return self._marks.setdefault((name, times), AwaitableFuture(ignore_cancel=True))
 
     def mark(self, name, value=None):
         times = self._counts[name] = self._counts.get(name, 0) + 1  # Each name only ever on one thread
@@ -80,6 +76,12 @@ class Harness:
 
     async def _parent(self, worker):
         self.worker = worker  # Before the constructor returns it, as _run() may want it at once
+        # Before anything else on its loop could stop it. Kept, as the worker holds what waits for its states weakly.
+        self._stops = worker.wait_for_state(worker.Stopping, worker.Stopped), worker.wait_for_state(worker.Stopped)
+        self._stops[0].add_done_callback(lambda _: self.mark("stopped", (worker.in_worker(), worker.state)))
+        self._stops[1].add_done_callback(
+            lambda _: self.mark("shutdown", (worker.in_worker(), worker.state, worker._loop.is_closed()))
+        )
         self.mark("_run")  # Which then runs on to its first await before the worker's loop does anything else
         try:
             await self._run()
@@ -88,12 +90,6 @@ class Harness:
 
     async def _run(self):
         await self.runloop
-
-    def on_stopped(self, worker):
-        self.mark("stopped", (worker.in_worker(), worker.state))
-
-    def on_shutdown(self, worker):
-        self.mark("shutdown", (worker.in_worker(), worker.state, worker._loop.is_closed()))
 
 
 class Worker(Harness):
@@ -149,7 +145,7 @@ class SlowStop(Worker):
 
 
 def reason(worker: CaptiveWorker | Harness) -> str:
-    return worker.wait_for_state(worker.STOPPING, worker.STOPPED).result().args[0]
+    return worker.wait_for_state(worker.Stopping, worker.Stopped).result()[2].args[0]
 
 
 # Resolved once the worker's loop has run every callback queued before this (a stop's, or a caller's cancellation, say),

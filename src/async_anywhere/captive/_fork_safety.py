@@ -32,18 +32,16 @@ The only safe things you can do after forking inside a worker are 1) `exec`ing a
 `sys.exit` and `raise SystemExit` may fail.
 """
 
-import os
-from typing import TYPE_CHECKING
-from weakref import WeakSet
+# Registering its fork handler first, so that it runs first (os.register_at_fork() runs them in order): it readies the
+# workers' pending futures for this module's to finish
+import async_anywhere.futures  # noqa: F401
+from async_anywhere._util.fork_safety import ForkSafeInstanceTracker
 
-if TYPE_CHECKING:
-    from async_anywhere.captive import CaptiveWorker
 
-workers: WeakSet[CaptiveWorker] = WeakSet()  # Every worker, once constructed: see CaptiveWorker.__attrs_post_init__()
+class CaptiveWorkerForkSafety(ForkSafeInstanceTracker):
+    def after_fork_in_child(self):
+        while len(self.instances) > 0:
+            self.instances.pop()._after_fork_in_child()
 
-if hasattr(os, "register_at_fork"):
-    def _after_fork_in_child():
-        while len(workers) > 0:
-            workers.pop()._after_fork_in_child()
 
-    os.register_at_fork(after_in_child=_after_fork_in_child)
+workers = CaptiveWorkerForkSafety()  # Every worker, once constructed: see CaptiveWorker.__attrs_post_init__()

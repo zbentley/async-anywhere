@@ -10,10 +10,9 @@ function (an async def, and nothing else) to connect, and run, the client, which
 its loop is running (by default, it waits until a stop cancels it). The constructor returns only once
 it has started, so a closure might not hold the worker yet: hence the argument. Expose the client's operations with
 `worker.bridge(func)` (or as @worker.bridge), which bridges an async function, called with just its callers' arguments:
-close over the worker, if it needs it. Pass idle_timeout to stop a worker that has gone that many seconds without calls,
-and on_stopped and on_shutdown to act as the worker stops, and once it has finished: each is called once, with the
-worker, on its thread, and must never block (by default, they do nothing). Pass loop_factory to make the worker's event
-loop other than with asyncio.new_event_loop(), as for asyncio.Runner. It MUST return a brand-new event loop, not yet
+close over the worker, if it needs it. Pass idle_timeout to stop a worker that has gone that many seconds without calls
+(to act as a worker stops, see State, under Lifecycle). Pass loop_factory to make the worker's event loop other than with
+asyncio.new_event_loop(), as for asyncio.Runner. It MUST return a brand-new event loop, not yet
 started, whose state isn't bound to the thread that calls it: the worker calls it on the thread constructing the worker,
 but runs the loop on the worker's own. Loops that bind themselves to the thread making them as they're made (installing
 signal handlers, say) aren't supported. uvloop.new_event_loop is fine.
@@ -36,17 +35,25 @@ Constructing a worker starts its thread, which runs the parent task before anyth
 ## State:
 
 A worker is a WaitableStateTracker (see async_anywhere.state_tracker), whose `state` only moves forward: it's
-CaptiveWorker.RUNNING once constructed, STOPPING once stopped, and STOPPED once shut down (see below). In a process
-forked from the worker's, its copy is STOPPED. `worker.require(state, *states)` raises StateTrackerError unless the
-worker is in one of those states, and `worker.wait_for_state(state, *states)` returns an AwaitableFuture that resolves as
-the worker enters one of them, or at once if it's in one: to the worker itself, for RUNNING, and otherwise to why it
-stopped, as stop()'s futures do (they're such futures). Like those, it can be waited on from any thread, or awaited on
-any loop, and neither giving up waiting on it nor cancelling it does anything. Once the worker has shut down, waiting
-for RUNNING or STOPPING fails with StateTrackerError, as it can never be in either again.
+CaptiveWorker.Running once constructed, Stopping once stopped, and Stopped once shut down (see below), as its copy is in
+a process forked from the worker's. `worker.require(state, *states)` raises StateTrackerError unless the worker is in one
+of them, and `worker.wait_for_state(state, *states)` returns an AwaitableFuture that resolves as the worker enters one of
+them, or at once if it's in one, to (old state, new state, data): data being None for Running, and otherwise why the
+worker stopped (a WorkerStopped, which every call from then on is refused with: in a forked process, a WorkerForked). It
+never resolves for a state the worker passed before it was made, though: wait for (Stopping, Stopped) rather than just
+Stopping. stop() returns such futures too. They can be waited on from any thread, or awaited on any loop, and neither
+giving up waiting on one nor cancelling it does anything.
+
+To act as the worker stops, or once it has shut down, add a done callback to such a future, and keep the future: the
+worker holds the futures waiting for its states weakly, and never resolves dropped ones. Callbacks run on the worker's
+thread (on its loop, or outside it, as it shuts down), or at once, if added once the future has resolved. As for any
+AwaitableFuture, they never run in a process forked from the one that added them, unless added with
+run_in_forked_child=True (see async_anywhere.futures._fork_safety). They must never block, nor do anything but brief,
+constant-time work. What they raise is logged (by concurrent.futures), not raised.
 
 ## Worker stop:
 
-Once a worker is stopped (STOPPING), it will not accept new jobs. In-progress jobs and the parent task may be interrupted, or may continue running, depending on how a stop was triggered, see "Interruption" below.
+Once a worker is stopped (Stopping), it will not accept new jobs. In-progress jobs and the parent task may be interrupted, or may continue running, depending on how a stop was triggered, see "Interruption" below.
 
 After a worker has been stopped, new attempts to call any bridge methods will fail with an error.
 
@@ -58,7 +65,7 @@ Workers are stopped in these situations:
 
 ## Worker shutdown:
 
-A worker is shut down (STOPPED) once it has terminated its event loop. The internal order of shutdown is roughly:
+A worker is shut down (Stopped) once it has terminated its event loop. The internal order of shutdown is roughly:
 
 1. Ensure the worker is stopped, or stop it.
 2. Ensure the parent task and all bridge jobs in flight have completed (see "Interruption" for cancellation semantics).
@@ -99,20 +106,20 @@ lead to them receiving multiple cancellation events from the worker. Code which 
 
 **Note:** code that chooses to ignore cancellations may miss worker interrupts or expirations.
 
-The first stop moves the worker to STOPPING, with why as the transition's data: a WorkerStopped (a CleanStop for expiry, a
-stop() that interrupts nothing, or the parent task returning), which it logs, then calls on_stopped. Later stops don't
-change that, and every call from then on is refused with it. Whatever the worker raises it for, or chains it to, gets a copy, keeping its cause,
+The first stop moves the worker to Stopping, with why as the data of that transition, and of those after it: a
+WorkerStopped (a CleanStop for expiry, a stop() that interrupts nothing, or the parent task returning), which it logs.
+Later stops don't change that, and every call from then on is refused with it. Whatever the worker raises it for, or chains it to, gets a copy, keeping its cause,
 so callers' tracebacks don't pile up on one shared exception.
 
 Once the parent task and every call have finished, the loop cancels any tasks left on it (work that the parent task or
 calls spawned and didn't wait for), gives them 0.05s, shuts down async generators and the default executor (abandoning, with a RuntimeWarning,
-threads that haven't finished by then), and closes. Only then does the worker move to STOPPED, waking stop()'s waiters,
-and run on_shutdown.
+threads that haven't finished by then), and closes. Only then does the worker move to Stopped, waking stop()'s waiters.
 
 Invariants
 ----------
 - Every call resolves. One the loop drops unrun as it closes fails with why the worker stopped, which stop()'s waiters
-  get as its result: nothing waits forever on a worker that has finished.
+  get in its result: nothing waits forever on a worker that has finished (bar wait_for_state() for a state it had
+  passed before the future was made: see State).
 - Nothing outside the worker blocks on its loop. Making, waiting on and cancelling a call only queue callbacks on it, so a
   worker loop blocked by synchronous code holds callers up only as long as they wait for results.
 - Bar stop(interrupt=True), which cancels each time it's called (see Interruption), and a crash's teardown, the worker
@@ -167,10 +174,10 @@ the worker has stopped, it raises why instead, as Executor.submit() does once sh
 Calls made on the worker's own thread are no different.
 
 stop(interrupt=False, wait=True) isn't bridged. It queues the stop on the worker's loop, behind calls already made (which
-a drain lets finish), from any thread, the worker's own included. It returns an AwaitableFuture that resolves to why
-the worker stopped (a WorkerStopped, which it returns rather than raises): once the worker has finished, or with
-wait=False, once the stop has begun (wait_for_state(STOPPED)'s, or with wait=False, (STOPPING, STOPPED)'s). In a
-process forked from the worker's, why is a WorkerForked. On the worker's own thread,
+a drain lets finish), from any thread, the worker's own included. It returns wait_for_state(Stopped)'s AwaitableFuture,
+or with wait=False, (Stopping, Stopped)'s: resolving once the worker has finished, or once the stop has begun, to (old state,
+new state, why the worker stopped), why being a WorkerStopped, which it returns rather than raises (a WorkerForked, in a
+process forked from the worker's). On the worker's own thread,
 wait=True raises RuntimeError, as it would wait for itself, and interrupt=True cancels the calling task as it does any
 other. In a process forked from the worker's, it raises WorkerForked, as bridged functions do.
 
@@ -199,8 +206,8 @@ Caveats
 - Workers run on daemon threads: one not shut down before the interpreter exits stops without cleaning up (the parent
   task's cleanup never runs). Shut workers down with atexit if that matters.
 - A process forked with workers alive inherits copies of them, but not their threads, so none can be used there: see
-  _fork_safety (unless they'd shut down already, they're STOPPED there, why being a WorkerForked, which is a WorkerBroken,
-  itself a WorkerStopped: even for one that was STOPPING). That goes for a call that forked too, whose
+  _fork_safety (unless they'd shut down already, they're Stopped there, why being a WorkerForked, which is a
+  WorkerBroken, itself a WorkerStopped). That goes for a call that forked too, whose
   child runs on in a copy of the worker's loop (one asyncio no longer counts as running): the worker carries on only in
   the parent.
 - If you perform blocking waits on this worker when completed or interrupted code inside the worker is garbage collected
@@ -215,14 +222,14 @@ import logging
 from contextlib import suppress
 from contextvars import Context, copy_context
 from functools import cached_property, wraps
-from threading import Thread, current_thread, main_thread, Condition, Lock
+from threading import Thread, current_thread, main_thread, Lock
 from typing import Any, Callable, ClassVar, Coroutine, Literal, final
 from weakref import WeakSet
 
 import sniffio
 from attrs import Factory, define, field, setters, validators
 
-from async_anywhere._util import validate_coroutine_function, LockProtected, copy_exception
+from async_anywhere._util import validate_coroutine_function, copy_exception
 from async_anywhere.captive import _fork_safety
 from async_anywhere.captive.exceptions import CleanStop, WorkerBroken, WorkerInterrupted, WorkerStopped, WorkerForked
 from async_anywhere.captive._timer import Timer
@@ -249,20 +256,15 @@ def _timer_factory(worker: CaptiveWorker):
     auto_attribs=False,
 )
 class CaptiveWorker(WaitableStateTracker):
-    # See Lifecycle. Their transitions' data (_last_transition[2]) is the worker itself, then why it stopped.
-    RUNNING: ClassVar[State] = State(initial=True)
-    STOPPING: ClassVar[State] = State(sources=RUNNING)
-    STOPPED: ClassVar[State] = State(sources=STOPPING)  # Through STOPPING even after a fork: see _after_fork_in_child()
+    # See State, in Lifecycle. Every transition's data but the initial state's (_last_transition[2]) is why it stopped.
+    Running: ClassVar[State] = State(initial=True)
+    Stopping: ClassVar[State] = State(sources=Running)
+    Stopped: ClassVar[State] = State(sources=Stopping)  # Through Stopping even after a fork: see _after_fork_in_child()
 
     # Run with the worker, on its loop, as soon as that's running: until a stop cancels it, by default. See Usage.
     parent_task: Callable[[CaptiveWorker], Coroutine[Any, Any, Any]] = field(
         default=_until_cancelled, validator=validate_coroutine_function
     )
-    # Each called once, with the worker, on its thread: as it records why it has stopped, sometimes outside its loop,
-    # and once it has finished (its loop has closed), just after stop()'s waiters have been woken. They MUST NOT BLOCK,
-    # nor do anything but brief, constant-time work. What they raise is logged (by its logger), not raised.
-    on_stopped: Callable[[CaptiveWorker], Any] = field(default=id, validator=validators.is_callable())
-    on_shutdown: Callable[[CaptiveWorker], Any] = field(default=id, validator=validators.is_callable())
     idle_timeout: float = field(
         default=float("inf"), validator=[validators.instance_of((int, float)), validators.gt(0)]
     )
@@ -283,8 +285,9 @@ class CaptiveWorker(WaitableStateTracker):
     _runner: AwaitableFuture[asyncio.Task] = field(init=False, factory=AwaitableFuture)
     _expiry: Timer = field(init=False, default=Factory(_timer_factory, takes_self=True))
     # Calls' futures, which _finalize() fails if the worker won't finish them (if the loop drops them unrun as it closes,
-    # say). Weak, as a call that's done, and dropped by its caller, needs nothing more.
-    _submitting: LockProtected[WeakSet[AwaitableFuture]] = field(init=False, factory=lambda: LockProtected(WeakSet()))
+    # say). Weak, as a call that's done, and dropped by its caller, needs nothing more. Changed only under _condition,
+    # which transitions take too, so none is added once the worker has stopped.
+    _submitted: WeakSet[AwaitableFuture] = field(init=False, factory=WeakSet)
     _thread: Thread = field(
         init=False,
         default=Factory(lambda self: Thread(target=self._main, name=self.logger.name, daemon=True), takes_self=True),
@@ -303,8 +306,8 @@ class CaptiveWorker(WaitableStateTracker):
 
     def __attrs_post_init__(self):
         # Its futures (stop()'s, say) refuse blocking waits on its loop, as calls' do
-        WaitableStateTracker.__init__(self, prevent_blocking_wait_in_loops=self._loop, data=self)
-        _fork_safety.workers.add(self)  # Before the thread starts, so the fork handler knows of every worker running
+        WaitableStateTracker.__init__(self, prevent_blocking_wait_in_loops=self._loop)
+        _fork_safety.workers.ensure_registered(self)  # Before the thread starts, so the fork handler knows of every worker running
         self._thread.start()
         self._runner.result()  # So that, once constructed, the worker is running
 
@@ -319,7 +322,7 @@ class CaptiveWorker(WaitableStateTracker):
         def call(*args: P.args, **kwargs: P.kwargs) -> AwaitableFuture[T]:
             # A call's future, with its job queued for _start(). Refused (raising why it stopped) once the worker has stopped:
             # _job() would refuse it too, but without waiting for the loop is better. And so _finalize(), failing what's
-            # pending once the worker has stopped, after taking _submitting, can't miss anything.
+            # pending once the worker has stopped, after taking _condition, can't miss anything.
             in_loop = self.in_worker()
             loop = self._loop
             future = AwaitableFuture()
@@ -329,11 +332,11 @@ class CaptiveWorker(WaitableStateTracker):
                 # Which anyio.run() sets to its backend: left as it is, a caller's on trio would have anyio, in the job,
                 # take it to be on trio too. As trio's threads do, cleared, so that sniffio looks for the job's loop.
                 context.run(sniffio.current_async_library_cvar.set, None)
-            with self._submitting as pending:
+            with self._condition:
                 _, state, why = self._last_transition
-                if state is not self.RUNNING:
+                if state is not self.Running:
                     raise copy_exception(why)  # A copy, as for _fail()
-                pending.add(future)
+                self._submitted.add(future)
                 # Only queues a callback, so never waits for the worker's loop. It runs in a copy of the caller's context.
                 if in_loop:
                     loop.call_soon(self._start, future, func, args, kwargs, name, context=context)
@@ -379,7 +382,7 @@ class CaptiveWorker(WaitableStateTracker):
 
         with suppress(RuntimeError):  # The loop has closed, so the worker has already stopped
             self._loop.call_soon_threadsafe(begin)  # Queued even on the worker's thread, behind calls made before it
-        return self.wait_for_state(self.STOPPED) if wait else self.wait_for_state(self.STOPPING, self.STOPPED)
+        return self.wait_for_state(self.Stopped) if wait else self.wait_for_state(self.Stopping, self.Stopped)
 
     def _start(self, future: AwaitableFuture, func, args, kwargs, name: str):
         # If the job was cancelled by its caller or failed by the worker e.g. forking, do nothing.
@@ -412,7 +415,7 @@ class CaptiveWorker(WaitableStateTracker):
         return future.set_exception_if_not_done(error or copy_exception(self._last_transition[2]))
 
     def _log(self, level: int, msg: str, *args, **kwargs):
-        # Only on the worker's thread, as for hooks: in a forked process, a handler's stream may be locked forever
+        # Only on the worker's thread: in a forked process, a handler's stream may be locked forever
         if self.in_worker():
             # Naming what recorded the stop: past this, _stop(), and _clean_stop() or _unclean_stop()
             self.logger.log(level, msg, *args, stacklevel=4, **kwargs)
@@ -433,17 +436,12 @@ class CaptiveWorker(WaitableStateTracker):
 
     def _stop(self, why: WorkerStopped) -> bool:
         # Whether this was the first stop, so recorded: only ever on the worker's own thread
-        if self.state is not self.RUNNING:
+        if not self._try_transition(self.Stopping, why):
             return False
-        self._transition(self.STOPPING, why)
         if isinstance(why, CleanStop):
             self._log(logging.INFO, why.args[0])
         else:
             self._log(logging.ERROR, "Stopping due to error:", exc_info=why)
-        try:
-            self.on_stopped(self)
-        except Exception:
-            self.logger.exception("on_stopped raised")
         return True
 
     def _after_fork_in_child(self):
@@ -455,33 +453,26 @@ class CaptiveWorker(WaitableStateTracker):
 
         When fork occurs, this method ensures the following is true in the child process for every CaptiveWorker that
         existed when fork(2) occurred:
-        - worker._submitting is unlocked (in case a @bridge call was being dispatched at the moment of fork(2)).
-        - The worker gets a fresh lock, and its AwaitableFutures fresh conditions (in case another thread was using one).
-        - The worker is STOPPED, going through STOPPING if it hadn't stopped, with a WorkerForked as why, unless it had
-          shut down already.
+        - The worker gets a fresh lock (in case another thread was using it: dispatching a @bridge call, say, at the
+          moment of fork(2)), as its pending AwaitableFutures have fresh conditions already, from their own fork
+          handler, which runs first (see _fork_safety).
+        - The worker is Stopped, going through Stopping if it hadn't stopped, with a WorkerForked as why, unless it had
+          shut down already. Its calls' futures fail with it, and its state futures resolve: neither are cancelled by the
+          fork, but their callbacks don't run here, unless added with run_in_forked_child=True.
         """
-        self._submitting._acquire(timeout=0)
-        self._submitting._release()
         self._condition = Lock()
-
-        with self._submitting as pending:
-            for future in (self._runner, *pending, *(waiter for waiters in self._waiters.values() for waiter in waiters)):
-                future._condition = Condition()
-
         forked = WorkerForked()
-        if self.state is self.RUNNING:
-            self._transition(self.STOPPING, forked)
-        if self.state is self.STOPPING:
-            self._transition(self.STOPPED, forked)
+        self._try_transition(self.Stopping, forked)  # Unless it had stopped
+        if self._try_transition(self.Stopped, forked):  # Unless it had shut down
             self._finalize()
 
     def _finalize(self):
         # Wait for any jobs that were being submitted at the moment of shutdown to finish being submitted. Because
         # the worker has stopped already everywhere this method is called, serializing here ensures that any submits
         # after this point in time will observe that and fail.
-        with self._submitting as pending:
-            to_abort = list(pending)
-            pending.clear()
+        with self._condition:
+            to_abort = list(self._submitted)
+            self._submitted.clear()
         while len(to_abort) > 0:
             self._fail(to_abort.pop())  # Never run, or abandoned (or here, in a forked process)
 
@@ -544,12 +535,8 @@ class CaptiveWorker(WaitableStateTracker):
                 self._calls.clear()
                 if in_worker:  # Else a process forked from a call, whose fork handler has finished it
                     self._loop.close()  # Shuts the executor down without waiting, if it hasn't been already
-                    # The very last action: stop()'s waiters wait for it, and on_shutdown() follows
-                    self._transition(self.STOPPED, self._last_transition[2])
-                    try:
-                        self.on_shutdown(self)
-                    except Exception:
-                        self.logger.exception("on_shutdown raised")
+                    # The very last action: stop()'s waiters wait for it
+                    self._transition(self.Stopped, self._last_transition[2])
 
     def _interrupt(self, again: bool):
         # Once the worker has stopped: cancels the parent task and every call in flight. Each time with `again` (for
@@ -570,7 +557,7 @@ class CaptiveWorker(WaitableStateTracker):
 
         # We're a little precious about performance in this method since it's on the hot path:
         task, calls, expiry = asyncio.current_task(), self._calls, self._expiry
-        if self.state is not self.RUNNING:
+        if self.state is not self.Running:
             self._fail(future)  # Refused, as the worker stopped after the call was made, but before its job started
             return
         calls.add(task)
@@ -611,8 +598,8 @@ class CaptiveWorker(WaitableStateTracker):
             # ended: here. Nothing else would, unless the parent task ended of its own accord, or a later stop()
             # interrupted.
             if len(calls) == 0:
-                # Not a callback on wait_for_state(STOPPING): that fires once, as the stop is recorded (begin() covers
+                # Not a callback on wait_for_state(Stopping): that fires once, as the stop is recorded (begin() covers
                 # there being no calls then), on whichever thread records it, rather than as the last call ends.
-                if self.state is not self.RUNNING:
+                if self.state is not self.Running:
                     self._interrupt(False)
                 expiry.reset(self.idle_timeout)

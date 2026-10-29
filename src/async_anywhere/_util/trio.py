@@ -45,9 +45,7 @@ try:
                     yield from event.wait().__await__()
                 except _trio.Cancelled:
                     if not self._source.cancel():  # As cancelling an asyncio waiter does: unless it's done, or refuses
-                        with self._source._condition:  # Refused while pending: so it lets go of this wait
-                            if not self._source.done():
-                                self._source._done_callbacks.remove(complete)
+                        self._source.remove_done_callback(complete)  # Refused while pending: so it lets go of this wait
                     raise
                 return self._source.result()
 

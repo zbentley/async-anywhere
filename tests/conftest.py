@@ -92,11 +92,11 @@ def strict_teardown(request, caplog):
     error (unless it's marked logs_asyncio_errors). Collects garbage first, so that finalizers' warnings and asyncio's
     reports of what was never retrieved land on this test. pytest itself fails the test for exceptions threads raised
     that the test didn't drain (see thread_exceptions), and for warnings, which filterwarnings makes errors."""
-    before = WeakSet(_fork_safety.workers)
+    before = WeakSet(_fork_safety.workers.instances)
     yield
     problems = []
-    for worker in set(_fork_safety.workers) - set(before):
-        if worker.state is not worker.STOPPED:
+    for worker in set(_fork_safety.workers.instances) - set(before):
+        if worker.state is not worker.Stopped:
             problems.append(f"{worker!r} was left running")
             with suppress(BaseException):
                 worker.stop(interrupt=True).result(2)

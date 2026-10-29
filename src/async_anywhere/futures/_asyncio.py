@@ -22,7 +22,7 @@ class AsyncioAwaitableFuture[T](asyncio.Future[T]):
         self._source = source
         with source._condition:  # As add_done_callback() does, without its frames
             if not source._last_transition[1].terminal:
-                source._done_callbacks.append(self._deliver)
+                source._done_callbacks.append((self._deliver, False))  # Its loop's copy in a forked process never runs
                 return
         self._deliver(source)
 
@@ -30,17 +30,19 @@ class AsyncioAwaitableFuture[T](asyncio.Future[T]):
         """Changes cancellation behavior of asyncio.Future in two ways:
             1. Cancels the underlying concurrent.futures.Future right away, rather than in a later loop iteration.
             2. Refuses cancellation (returns False) if the underlying concurrent.futures.Future is already done.
-        If the underlying future refuses cancellation while pending (running, or made with honor_cancel=False), this one
+        If the underlying future refuses cancellation while pending (running, or made with ignore_cancel=True), this one
         alone is cancelled, and the underlying one lets go of it.
         """
         if self.done():
             return False
         source = self._source
         if not source.cancel():
-            with source._condition:
+            with source._condition:  # Reentrant, so remove_done_callback() takes it too
                 if source.done():
                     return False
-                source._done_callbacks.remove(self._deliver)  # Equal to the one __init__() added: same self and function
+                # Equal to the one __init__() added: same self and function. Gone already in a forked process, whose
+                # fork handler dropped it: see _fork_safety
+                source.remove_done_callback(self._deliver)
         self._source = None
         return super().cancel(msg)
 

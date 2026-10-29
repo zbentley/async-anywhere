@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import inspect
-from contextlib import nullcontext
-from threading import Condition
 from abc import ABC
 from collections import defaultdict
+from contextlib import nullcontext
 from typing import Any, ClassVar, Self, ContextManager
 
 from async_anywhere.state_tracker._exceptions import StateTrackerError
@@ -42,7 +41,8 @@ class StateTracker(ABC):
     Note: if using `attrs`, `dataclass` or other class-creation factories, all State objects declared at the class level
     should be annotated with ClassVar, otherwise subclass declaration may fail.
 
-    Users can call StateTracker._transition() to move a StateTracker between states.
+    Users can call StateTracker._transition() to move a StateTracker between states (or _try_transition(), which returns
+    whether the transition was allowed, rather than raising StateTrackerError if not).
 
     Note that the "_transition()" method *is* a user-callable public API. It is declared as _private for convenience,
     since many uses of StateTracker may not want the state to be externally transitionable. You can declare a public
@@ -149,10 +149,11 @@ class StateTracker(ABC):
 
     def _check_state(self, state: State) -> State:
         if state not in self.states:
-            raise StateTrackerError(
+            err = StateTrackerError(
                 self,
             f"State '{state.name}' is not one of this class's states. Valid states:",
-            *self.states,)
+            *self.states)
+            raise TypeError(err.args[0])
         return state
 
     def _transition(self, target: State, data: Any = None):
@@ -163,10 +164,20 @@ class StateTracker(ABC):
             self._last_transition = (old_state, target, data)
             self.after_state_change(old_state, target, data)
 
+    def _try_transition(self, target: State, data: Any = None) -> bool:
+        # Through _transition(), so a subclass's is used. A State not of this class still raises TypeError.
+        try:
+            self._transition(target, data)
+        except StateTrackerError:
+            return False
+        return True
+
     def require(self, state: State, *desired_states: State) -> Self:
         current_state = self.state
+        if current_state is state or current_state in desired_states:
+            return self
+        # Validate the inputs on the failure path so the happy path stays fast:
         for s in (state, *desired_states):
-            if current_state is self._check_state(s):
-                return self
+            self._check_state(s)
         raise StateTrackerError(self, "Not in required state(s)", state, *desired_states)
 
