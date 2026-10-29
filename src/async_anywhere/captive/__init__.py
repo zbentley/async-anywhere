@@ -37,12 +37,13 @@ Constructing a worker starts its thread, which runs the parent task before anyth
 A worker is a WaitableStateTracker (see async_anywhere.state_tracker), whose `state` only moves forward: it's
 CaptiveWorker.Running once constructed, Stopping once stopped, and Stopped once shut down (see below), as its copy is in
 a process forked from the worker's. `worker.require(state, *states)` raises StateTrackerError unless the worker is in one
-of them, and `worker.wait_for_state(state, *states)` returns an AwaitableFuture that resolves as the worker enters one of
-them, or at once if it's in one, to (old state, new state, data): data being None for Running, and otherwise why the
-worker stopped (a WorkerStopped, which every call from then on is refused with: in a forked process, a WorkerForked). It
-never resolves for a state the worker passed before it was made, though: wait for (Stopping, Stopped) rather than just
-Stopping. stop() returns such futures too. They can be waited on from any thread, or awaited on any loop, and neither
-giving up waiting on one nor cancelling it does anything.
+of them, and `worker.wait_for_state(state, *states, **kwargs)` returns an AwaitableFuture (made with kwargs: see
+WaitableStateTracker) that resolves as the worker enters one of them, or at once if it's in one, to (old state, new
+state, data): data being None for Running, and otherwise why the worker stopped (a WorkerStopped, which every call from
+then on is refused with: in a forked process, a WorkerForked). It never resolves for a state the worker passed before it
+was made, though: wait for (Stopping, Stopped) rather than just Stopping. stop() returns such futures too. They can be
+waited on from any thread (but never on the worker's own loop, whatever kwargs say: that raises RuntimeError, as it
+would deadlock), or awaited on any loop, and neither giving up waiting on one nor cancelling it does anything.
 
 To act as the worker stops, or once it has shut down, add a done callback to such a future, and keep the future: the
 worker holds the futures waiting for its states weakly, and never resolves dropped ones. Callbacks run on the worker's
@@ -222,14 +223,14 @@ import logging
 from contextlib import suppress
 from contextvars import Context, copy_context
 from functools import cached_property, wraps
-from threading import Thread, current_thread, main_thread, Lock
+from threading import Thread, current_thread, main_thread, RLock
 from typing import Any, Callable, ClassVar, Coroutine, Literal, final
 from weakref import WeakSet
 
 import sniffio
 from attrs import Factory, define, field, setters, validators
 
-from async_anywhere._util import validate_coroutine_function, copy_exception
+from async_anywhere._util import LoopSelector, blocking_wait_checker, validate_coroutine_function, copy_exception
 from async_anywhere.captive import _fork_safety
 from async_anywhere.captive.exceptions import CleanStop, WorkerBroken, WorkerInterrupted, WorkerStopped, WorkerForked
 from async_anywhere.captive._timer import Timer
@@ -304,9 +305,13 @@ class CaptiveWorker(WaitableStateTracker):
             raise TypeError(f"loop_factory made a running or closed event loop: {loop!r}")
         return loop
 
+    @cached_property
+    def _runtime_checker(self) -> Callable[[Any], None]:
+        # Refuses blocking waits on the worker's loop, for its calls' and state waits' futures: made once, for all
+        return blocking_wait_checker((self._loop,))
+
     def __attrs_post_init__(self):
-        # Its futures (stop()'s, say) refuse blocking waits on its loop, as calls' do
-        WaitableStateTracker.__init__(self, prevent_blocking_wait_in_loops=self._loop)
+        WaitableStateTracker.__init__(self)
         _fork_safety.workers.ensure_registered(self)  # Before the thread starts, so the fork handler knows of every worker running
         self._thread.start()
         self._runner.result()  # So that, once constructed, the worker is running
@@ -325,8 +330,7 @@ class CaptiveWorker(WaitableStateTracker):
             # pending once the worker has stopped, after taking _condition, can't miss anything.
             in_loop = self.in_worker()
             loop = self._loop
-            future = AwaitableFuture()
-            future._runtime_checker = self._runtime_checker  # Refusing blocking waits on the worker's loop, as its own do
+            future = AwaitableFuture(prevent_blocking_wait_in_loops=self._runtime_checker)
             context = copy_context()
             if context.get(sniffio.current_async_library_cvar):
                 # Which anyio.run() sets to its backend: left as it is, a caller's on trio would have anyio, in the job,
@@ -354,6 +358,16 @@ class CaptiveWorker(WaitableStateTracker):
         # The worker's thread becomes the main thread if a fork() has occurred. Since the worker's thread is a daemon,
         # it'll never become the main thread in the parent, even if the original main thread exits.
         return current_thread() is self._thread is not main_thread()
+
+    def wait_for_state(
+        self, state: State, *states: State, prevent_blocking_wait_in_loops: LoopSelector = None, **kwargs
+    ) -> AwaitableFuture[WaitableStateTracker._FutureType]:
+        # Refusing blocking waits on the worker's loop too, whatever's given: only its thread changes its state
+        if prevent_blocking_wait_in_loops is None:
+            prevent_blocking_wait_in_loops = self._runtime_checker  # Its one checker, rather than a new one per future
+        elif prevent_blocking_wait_in_loops != "all":  # Which covers the worker's loop already
+            prevent_blocking_wait_in_loops = (*prevent_blocking_wait_in_loops, self._loop)
+        return super().wait_for_state(state, *states, prevent_blocking_wait_in_loops=prevent_blocking_wait_in_loops, **kwargs)
 
     def stop(self, interrupt=False, wait=True) -> AwaitableFuture[WorkerStopped]:
         """Stop the worker, and return a future that resolves to why once the worker has finished, or with `wait=False`, once
@@ -417,9 +431,19 @@ class CaptiveWorker(WaitableStateTracker):
     def _log(self, level: int, msg: str, *args, **kwargs):
         # Only on the worker's thread: in a forked process, a handler's stream may be locked forever
         if self.in_worker():
-            # Naming what recorded the stop: past this, _stop(), and _clean_stop() or _unclean_stop()
-            self.logger.log(level, msg, *args, stacklevel=4, **kwargs)
+            # Naming what recorded the stop: past this, after_state_change(), the two transition methods, and
+            # _clean_stop() or _unclean_stop()
+            self.logger.log(level, msg, *args, stacklevel=6, **kwargs)
 
+    def after_state_change(self, old_state: State, new_state: State, data: Any):
+        # Under _condition, so only the first stop (the one that enters Stopping) logs
+        if new_state is self.Stopping:
+            if isinstance(data, CleanStop):
+                self._log(logging.INFO, data.args[0])
+            else:
+                self._log(logging.ERROR, "Stopping due to error:", exc_info=data)
+
+    # Both return whether this was the first stop, so recorded: only ever on the worker's own thread
     def _clean_stop(self, why: Literal["expired", "stopped", "parent task returned"]) -> bool:
         match why:
             case "expired":
@@ -429,20 +453,11 @@ class CaptiveWorker(WaitableStateTracker):
                 reason = "(waiting for running jobs) manually stopped" if len(self._calls) > 0 else "(idle) manually stopped"
             case "parent task returned":
                 reason = f"({'interrupted' if len(self._calls) > 0 else 'idle'}) parent task returned"
-        return self._stop(CleanStop(reason))
+        return self._try_transition(self.Stopping, CleanStop(reason))
 
     def _unclean_stop(self, reason: str, cause: BaseException | None = None) -> bool:
-        return self._stop(WorkerStopped(f"({'interrupted' if len(self._calls) > 0 else 'idle'}) {reason}", cause))
-
-    def _stop(self, why: WorkerStopped) -> bool:
-        # Whether this was the first stop, so recorded: only ever on the worker's own thread
-        if not self._try_transition(self.Stopping, why):
-            return False
-        if isinstance(why, CleanStop):
-            self._log(logging.INFO, why.args[0])
-        else:
-            self._log(logging.ERROR, "Stopping due to error:", exc_info=why)
-        return True
+        why = WorkerStopped(f"({'interrupted' if len(self._calls) > 0 else 'idle'}) {reason}", cause)
+        return self._try_transition(self.Stopping, why)
 
     def _after_fork_in_child(self):
         """
@@ -460,7 +475,7 @@ class CaptiveWorker(WaitableStateTracker):
           shut down already. Its calls' futures fail with it, and its state futures resolve: neither are cancelled by the
           fork, but their callbacks don't run here, unless added with run_in_forked_child=True.
         """
-        self._condition = Lock()
+        self._condition = RLock()
         forked = WorkerForked()
         self._try_transition(self.Stopping, forked)  # Unless it had stopped
         if self._try_transition(self.Stopped, forked):  # Unless it had shut down

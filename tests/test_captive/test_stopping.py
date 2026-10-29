@@ -5,6 +5,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import gc
+import logging
 import sys
 import threading
 import time
@@ -683,6 +684,30 @@ async def test_giving_up_waiting_on_stop_leaves_other_waiters_alone():
         await asyncio.sleep(0)  # So it's waiting
         release.set_result(None)
         assert type((await other)[2]) is CleanStop and type((await later)[2]) is CleanStop
+
+
+async def test_a_call_from_a_handler_logging_the_stop_is_refused_rather_than_deadlocking(caplog):
+    refused = []
+
+    class CallsTheWorker(logging.Handler):
+        def emit(self, record):
+            # Under the lock its transition holds: if that's not reentrant, this times out, rather than deadlocking
+            if worker._condition.acquire(timeout=1):
+                try:
+                    worker.work()
+                except CleanStop as error:
+                    refused.append(error)
+                finally:
+                    worker._condition.release()
+
+    async with running(Worker) as worker:
+        caplog.set_level(logging.INFO, logger=worker.logger.name)
+        worker.logger.addHandler(handler := CallsTheWorker())
+        try:
+            _, _, stopped = await worker.stop()
+        finally:
+            worker.logger.removeHandler(handler)
+    assert [error.args for error in refused] == [stopped.args]
 
 
 # Teardown

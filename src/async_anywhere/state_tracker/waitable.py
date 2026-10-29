@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC
-from threading import Lock
-from typing import Any
+from typing import Any, ContextManager
 from weakref import WeakSet
 
-from async_anywhere._util import ThreadSelector, LoopSelector, blocking_wait_checker
 from async_anywhere.futures import AwaitableFuture
 from async_anywhere.state_tracker import State, StateTracker, StateTrackerError
 
@@ -15,33 +13,26 @@ class WaitableStateTracker(StateTracker, ABC):
     type _FutureType = tuple[State | None, State, Any]
     _waiters: dict[State, WeakSet[AwaitableFuture[_FutureType]]]
 
-    __slots__ = ('_waiters', '_runtime_checker')
-    def __init__(
-        self,
-        prevent_blocking_wait_in_loops: LoopSelector = None,
-        prevent_blocking_wait_in_threads: ThreadSelector = None,
-    ):
+    __slots__ = ('_waiters',)
+    def __init__(self, lock: ContextManager | None = None):
         """
         Always thread safe, as its futures can be waited on and resolved from any thread. Futures from wait_for_state()
         are held weakly, so ones whose callers drop them (after adding done callbacks, say) are never resolved.
 
-        prevent_blocking_wait_in_loops, prevent_blocking_wait_in_threads: given to every AwaitableFuture that
-            wait_for_state() returns; see AwaitableFuture.
+        lock: see StateTracker. It must be a real lock, as its futures are waited on and resolved from any thread.
         """
-        super().__init__(lock=Lock())
+        super().__init__(lock=lock)
         self._waiters = {s: WeakSet() for s in self.states}
-        # Made once, for all its futures, as an iterator would only last one
-        self._runtime_checker = blocking_wait_checker(prevent_blocking_wait_in_loops, prevent_blocking_wait_in_threads)
 
-    def wait_for_state(self, state: State, *states: State) -> AwaitableFuture[_FutureType]:
+    def wait_for_state(self, state: State, *states: State, **kwargs) -> AwaitableFuture[_FutureType]:
         # NB: the future returned here will be resolved once the StateTracker has passed through the given state, even
         # if it is no longer in that state. If a worker transitions twice in rapid succession, or a waiter is attached
         # and then not waited on until later, after the worker has passed through *states, it'll still resolve.
         # NB: cancelling the returned future does nothing.
         # NB: if your done callbacks are slow, you'll break stuff (here and everywhere)
+        # NB: kwargs go to AwaitableFuture() (prevent_blocking_wait_in_loops, say), bar ignore_cancel: that's an error
         states = [self._check_state(state) for state in (state, *states)]
-        future = AwaitableFuture(ignore_cancel=True)  # Giving up on it leaves it, and other waiters, alone
-        future._runtime_checker = self._runtime_checker
+        future = AwaitableFuture(**kwargs, ignore_cancel=True)  # Giving up on it leaves it, and other waiters, alone
         with self._condition:
             if self.state in states:
                 future.set_result(self._last_transition)

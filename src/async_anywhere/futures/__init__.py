@@ -6,7 +6,7 @@ from threading import Condition
 from time import monotonic
 from typing import Any, Awaitable, Callable, Self
 
-from async_anywhere._util import blocking_wait_checker, LoopSelector, ThreadSelector
+from async_anywhere._util import blocking_wait_checker, LoopSelector
 from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.futures import _fork_safety
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
@@ -27,10 +27,10 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     - Calling "await AwaitableFuture(...)" can be done from any event loop, or trio task (anyio's included).
     - If an AwaitableFuture has already completed, "await"ing it is significantly cheaper than "await"ing an
       asyncio.Future or using asyncio.wrap_future.
-    - Users can specify one or more event loops or threads within which blocking wait methods inherited from
+    - Users can specify one or more event loops within which blocking wait methods inherited from
       concurrent.futures.Future (e.g. fut.result(timeout=10)) will fail immediately if the invoking AwaitableFuture is
       not done. This turns a common cause of deadlocks (erroneously synchronously waiting for an incomplete future on
-      the loop or thread which was intended to complete it) into an error.
+      the loop which was intended to complete it) into an error.
     - Several other convenience methods to save on common future-related code.
     - Cancelling awaits on this class or asyncio.Futures provided by it immediately cancels the underlying
       concurrent.futures.Future, rather than postponing cancellation until a later event loop iteration as CPython does.
@@ -39,7 +39,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     - With ignore_cancel=True, cancel() is refused (returns False), and waiters giving up leave it, and its other
       waiters, alone.
     - completed_at is the time.monotonic() time at which it finished (with a result, an exception, or cancellation), or
-      None until then. Its trio futures share its time. Its asyncio.Futures have none.
+      None until then. Its trio futures and asyncio.Futures have none.
     - Its done callbacks only ever run in the process that added them, as concurrent.futures.Future documents of its
       own (but doesn't ensure across fork(2)), unless added with run_in_forked_child=True. In a forked process, one
       that hadn't finished is left pending, as a concurrent.futures.Future would be, unless made with
@@ -86,7 +86,6 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         self,
         *,
         prevent_blocking_wait_in_loops: LoopSelector = None,
-        prevent_blocking_wait_in_threads: ThreadSelector = None,
         ignore_cancel: bool = False,
         cancel_pending_in_forked_child: bool = False,
     ):
@@ -96,8 +95,11 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         # must remain a superset of concurrent.future.Future's contract.
         StateTracker.__init__(self, lock=Condition())
         # Not calling blocking_wait_checker() for None (most futures) saves its call: these are made on hot paths
-        loops, threads = prevent_blocking_wait_in_loops, prevent_blocking_wait_in_threads
-        self._runtime_checker = None if loops is threads is None else blocking_wait_checker(loops, threads)
+        # Or a checker it made, passed back, as a worker does. NB if you pass a callable iterable, this will break.
+        if prevent_blocking_wait_in_loops is None or callable(prevent_blocking_wait_in_loops):
+            self._runtime_checker = prevent_blocking_wait_in_loops
+        else:
+            self._runtime_checker = blocking_wait_checker(prevent_blocking_wait_in_loops)
         self._ignore_cancel = ignore_cancel
         self._cancel_pending_in_forked_child = cancel_pending_in_forked_child
         self._completed_at: float | None = None

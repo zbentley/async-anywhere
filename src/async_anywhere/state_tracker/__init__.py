@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 from abc import ABC
 from collections import defaultdict
-from contextlib import nullcontext
+from threading import RLock
 from typing import Any, ClassVar, Self, ContextManager
 
 from async_anywhere.state_tracker._exceptions import StateTrackerError
@@ -63,13 +63,14 @@ class StateTracker(ABC):
 
     __slots__ = ('_last_transition', '_condition')
 
-    def __init__(self, lock: ContextManager = nullcontext()) -> None:
+    def __init__(self, lock: ContextManager | None = None) -> None:
         """
-        lock: held by each transition, and its after_state_change(). The default takes no lock, so only use the
-            StateTracker from one thread at a time.
+        lock: held by each transition, and its after_state_change(). The default is a fresh RLock, so
+            after_state_change() can use the StateTracker again. Pass contextlib.nullcontext() to take no lock, and only
+            use the StateTracker from one thread at a time.
         """
         self._last_transition = self._initial_transition
-        self._condition = lock
+        self._condition = RLock() if lock is None else lock
 
     # We use a property to prevent accidental manual mutation
     @property

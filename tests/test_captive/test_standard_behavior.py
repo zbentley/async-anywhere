@@ -225,6 +225,48 @@ async def test_waiting_synchronously_on_the_workers_own_loop_is_an_error(method)
             await worker.waits(method)
 
 
+class WaitsOnItsStop(Worker):
+    @bridge
+    async def stops(self):
+        return self.stop(wait=False).result(1)  # Stopping only once the loop runs the stop, after this call
+
+
+async def test_waiting_synchronously_on_a_stop_on_the_workers_own_loop_is_an_error():
+    async with running(WaitsOnItsStop) as worker:
+        with pytest.raises(RuntimeError, match="would deadlock"):
+            await worker.stops()
+
+
+class WaitsForItsState(Worker):
+    @bridge
+    async def waits(self, kwargs):
+        return self.wait_for_state(self.Stopped, **kwargs).result(1)
+
+
+@pytest.mark.parametrize("given", ["nothing", "loops", "an iterator of loops", "all loops", "something else"])
+async def test_waiting_synchronously_for_a_state_on_the_workers_own_loop_is_an_error_whatever_kwargs_say(given):
+    other = asyncio.get_running_loop()  # The test's, never the worker's
+    kwargs = {
+        "nothing": {},
+        "loops": {"prevent_blocking_wait_in_loops": (other,)},
+        "an iterator of loops": {"prevent_blocking_wait_in_loops": iter([other])},
+        "all loops": {"prevent_blocking_wait_in_loops": "all"},
+        "something else": {"cancel_pending_in_forked_child": True},
+    }[given]
+    async with running(WaitsForItsState) as worker:
+        with pytest.raises(RuntimeError, match="would deadlock"):
+            await worker.waits(kwargs)
+
+
+async def test_a_workers_state_waits_refuse_blocking_waits_in_the_loops_given_too():
+    here = (asyncio.get_running_loop(),)
+    async with running(Worker) as worker:
+        with pytest.raises(RuntimeError, match="would deadlock"):
+            worker.wait_for_state(worker.Stopped, prevent_blocking_wait_in_loops=here).result(0)
+        with pytest.raises(TimeoutError):  # Off the worker's loop, nothing else is refused by default
+            worker.wait_for_state(worker.Stopped).result(0)
+
+
 async def test_calls_made_once_the_worker_has_stopped_are_refused_unrun():
     # Refused, not forgotten: a coroutine never awaited would fail the test
     async with running(Records) as worker:

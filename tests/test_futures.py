@@ -64,37 +64,35 @@ async def test_waiting_synchronously_on_its_own_loop_is_an_error(owner, method):
     assert getattr(future, method)(0) == ("done" if method == "result" else None)  # Done, so it can't block
 
 
-@pytest.mark.parametrize("method", ["result", "exception"])
-def test_waiting_synchronously_on_its_own_thread_is_an_error(method):
-    other = threading.Thread()  # Never started
-    future = AwaitableFuture(prevent_blocking_wait_in_threads=(other, threading.current_thread()))
-    with pytest.raises(RuntimeError, match="would deadlock"):
-        getattr(future, method)(0)
-    with pytest.raises(TimeoutError):
-        getattr(AwaitableFuture(prevent_blocking_wait_in_threads=other), method)(0.01)  # Not this thread: waits
-    future.set_result("done")
-    assert getattr(future, method)(0) == ("done" if method == "result" else None)  # Done, so it can't block
-
-
 @pytest.mark.parametrize("collection", [list, set, iter], ids=["list", "set", "iterator"])
-async def test_loops_and_threads_to_refuse_blocking_waits_in_can_be_any_iterable(collection):
-    here, loop = threading.current_thread(), asyncio.get_running_loop()
-    for future in (
-        AwaitableFuture(prevent_blocking_wait_in_threads=collection([here])),
-        AwaitableFuture(prevent_blocking_wait_in_loops=collection([loop])),
-    ):
-        with pytest.raises(RuntimeError, match="would deadlock"):
-            future.result(0)
+async def test_loops_to_refuse_blocking_waits_in_can_be_any_iterable(collection):
+    future = AwaitableFuture(prevent_blocking_wait_in_loops=collection([asyncio.get_running_loop()]))
+    with pytest.raises(RuntimeError, match="would deadlock"):
+        future.result(0)
 
 
-def test_futures_keep_the_loops_and_threads_they_refuse_blocking_waits_in_only_while_they_live():
-    loop, thread = asyncio.new_event_loop(), threading.Thread()
+async def test_refusing_blocking_waits_in_all_loops_refuses_them_in_any_loop_only():
+    future = AwaitableFuture(prevent_blocking_wait_in_loops="all")
+    with pytest.raises(RuntimeError, match="would deadlock"):
+        future.result(0)
+    with pytest.raises(TimeoutError):  # Outside any loop: waits
+        await asyncio.to_thread(future.result, 0.01)
+
+
+async def test_loops_to_refuse_blocking_waits_in_are_given_as_an_iterable_of_them_or_all():
+    for given in asyncio.get_running_loop(), threading.current_thread(), "every":
+        with pytest.raises(TypeError):  # Not iterable, or of what can't be weakly referenced
+            AwaitableFuture(prevent_blocking_wait_in_loops=given)
+
+
+def test_futures_keep_the_loops_they_refuse_blocking_waits_in_only_while_they_live():
+    loop = asyncio.new_event_loop()
     loop.close()
-    future = AwaitableFuture(prevent_blocking_wait_in_loops=loop, prevent_blocking_wait_in_threads=thread)
-    refs = [weakref.ref(loop), weakref.ref(thread)]
-    del loop, thread, future
+    future = AwaitableFuture(prevent_blocking_wait_in_loops=(loop,))
+    ref = weakref.ref(loop)
+    del loop, future
     gc.collect()
-    assert all(ref() is None for ref in refs)
+    assert ref() is None
 
 
 def test_failure_is_what_a_done_future_failed_with():
@@ -448,15 +446,6 @@ async def test_giving_up_on_a_trio_future_leaves_its_other_awaits_alone():
                 await here
             future.set_result("done")
         assert results == ["done"] and await here == "done"  # And awaiting it again, after giving up on it
-
-
-@pytest.mark.backends("trio")
-async def test_trio_futures_completion_time_is_their_sources_before_the_run_wakes_their_waiters():
-    future = AwaitableFuture()
-    here = future.as_async_future()
-    future.set_result("done")
-    assert here.completed_at is not None  # Though the run hasn't set its event yet
-    assert await here == "done"
 
 
 @pytest.mark.backends("asyncio")  # Not uvloop's, whose signal wakeup fd trio's run warns it collides with
