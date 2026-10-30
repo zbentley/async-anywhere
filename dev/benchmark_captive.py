@@ -12,7 +12,7 @@ from typing import Any, NamedTuple
 
 from asgiref.sync import AsyncSingleThreadContext, SyncToAsync, async_to_sync, sync_to_async
 
-from async_anywhere.captive import CaptiveWorker
+from async_anywhere.executors import EventLoopExecutor
 
 
 DELAY = 0.01
@@ -124,19 +124,19 @@ def asgiref_sync_to_async(w):
 
 
 def captive_sync_caller(w):
-    worker = CaptiveWorker()
+    worker = EventLoopExecutor()
     try:
         return timed_result(worker.bridge(w.async_), w.args, w.n)
     finally:
-        worker.stop().result()
+        worker.shutdown()
 
 
 def captive_asyncio_caller(w):
-    worker = CaptiveWorker()
+    worker = EventLoopExecutor()
     try:
         return asyncio.run(timed_async(worker.bridge(w.async_), w.args, w.n))
     finally:
-        worker.stop().result()
+        worker.shutdown()
 
 
 CONTROLS = {
@@ -154,8 +154,8 @@ BENCHMARKS = {
     "asgiref async_to_sync, AsyncSingleThreadContext": asgiref_async_to_sync_single_thread,
     "asgiref async_to_sync, cached loop": asgiref_async_to_sync_cached_loop,
     "asgiref sync_to_async": asgiref_sync_to_async,
-    "CaptiveWorker, sync caller": captive_sync_caller,
-    "CaptiveWorker, asyncio caller": captive_asyncio_caller,
+    "EventLoopExecutor, sync caller": captive_sync_caller,
+    "EventLoopExecutor, asyncio caller": captive_asyncio_caller,
 }
 
 

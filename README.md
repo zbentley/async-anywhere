@@ -3,7 +3,7 @@ Python tools for invoking async code across different threads and event loops
 
 # TODOs
 
-captive worker todos;
+EventLoopExecutor todos;
 - decorate loop-only methods
 - add debug flag that causes decorator to assert, and runs loop in dbg
 - _run() interrupting itself isn't cancelled. If _run() calls shutdown(interrupt=True) itself, shutdown() raises WorkerStopped into it, but _run() isn't cancelled.

@@ -17,7 +17,7 @@ child, those left pending stay in it, for processes forked from that one; those 
 as another thread was finishing them as the process forked, are readied too, then dropped, as they'll never run
 callbacks again.
 
-Modules whose own fork handlers finish futures in the child (see captive._fork_safety) must import this one first, so
+Modules whose own fork handlers finish futures in the child (see executors._fork_safety) must import this one first, so
 that its handler runs first.
 """
 

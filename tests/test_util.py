@@ -1,13 +1,12 @@
 """Tests for async_anywhere._util's helpers."""
 from __future__ import annotations
 
-import concurrent.futures
 import sys
 
 import pytest
 from attrs import define, field
 
-from async_anywhere._util import LockProtected, copy_exception, validate_coroutine_function
+from async_anywhere._util import copy_exception, validate_coroutine_function
 
 
 def test_copies_keep_the_originals_state():
@@ -50,19 +49,6 @@ def test_copies_are_raised_from_the_causes_given():
     assert type(copy.__cause__) is KeyError and copy.__cause__ is not first and first.__cause__ is None  # Unchanged
     assert copy.__cause__.__cause__ is last and last.__cause__ is root  # The last kept as it is, with its own cause
     assert copy.__suppress_context__
-
-
-@pytest.mark.parametrize("recursive", [False, True])
-def test_lock_protected_holds_its_lock_while_entered(recursive):
-    protected = LockProtected(value := [], recursive=recursive)
-    lock = protected._acquire.__self__  # The lock its bound methods belong to
-    with protected as entered, concurrent.futures.ThreadPoolExecutor(1) as elsewhere:
-        assert entered is value
-        assert not elsewhere.submit(lock.acquire, blocking=False).result()  # Other threads wait for it
-        if reentered := lock.acquire(blocking=False):  # As its own does, unless it's recursive
-            lock.release()
-        assert reentered is recursive
-    assert not lock.locked()
 
 
 def test_only_coroutine_functions_are_valid():

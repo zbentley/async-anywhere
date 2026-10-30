@@ -14,10 +14,10 @@ import pytest
 import uvloop
 from _pytest.threadexception import ThreadExceptionMeta, thread_exceptions as thread_exceptions_key
 
-from async_anywhere.captive import _fork_safety
+from async_anywhere.executors import _fork_safety
 
 
-pytest.register_assert_rewrite("tests.test_captive.utils")  # Before test modules import it
+pytest.register_assert_rewrite("tests.test_executors.utils")  # Before test modules import it
 
 
 def pytest_addoption(parser):
@@ -99,7 +99,7 @@ def strict_teardown(request, caplog):
         if worker.state is not worker.Stopped:
             problems.append(f"{worker!r} was left running")
             with suppress(BaseException):
-                worker.stop(interrupt=True).result(2)
+                worker.shutdown(wait=False, cancel_futures=True).result(2)
         worker._thread.join(2)
         if worker._thread.is_alive():
             problems.append(f"{worker!r}'s thread never finished")

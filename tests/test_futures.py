@@ -14,7 +14,7 @@ import pytest
 import trio
 
 from async_anywhere.futures import AwaitableFuture, _fork_safety
-from tests.test_captive.utils import forked
+from tests.test_executors.utils import forked
 
 
 @pytest.fixture

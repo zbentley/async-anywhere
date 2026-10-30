@@ -1,7 +1,7 @@
-"""Utilities for CaptiveWorker's tests: harnesses holding workers as code using them would, which tests synchronise with
-through AwaitableFutures (awaitable on the tests' loops, waited on with result() from any thread, and not reset by a
-fork), settled() to know a worker's loop has run what was queued on it, running() to stop workers and wait for them, and
-forked() to run assertions in a forked process."""
+"""Utilities for EventLoopExecutor's tests: harnesses holding workers as code using them would, which tests synchronise
+with through AwaitableFutures (awaitable on the tests' loops, waited on with result() from any thread, and not reset by
+a fork), settled() to know a worker's loop has run what was queued on it, running() to stop workers and wait for them,
+and forked() to run assertions in a forked process."""
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +16,7 @@ import traceback
 import anyio
 import pytest
 
-from async_anywhere.captive import CaptiveWorker
+from async_anywhere.executors import EventLoopExecutor
 from async_anywhere.futures import AwaitableFuture
 
 
@@ -44,16 +44,16 @@ class bridge:
 
 
 class Harness:
-    """A worker, held as code using CaptiveWorker would hold one, with what tests give it: bridged methods (see bridge),
-    _run() as its parent task, and idle_timeout. The worker's attributes are its too. By default, _run() awaits runloop,
-    which the test can resolve to end it, and which an interrupt cancels."""
+    """A worker, held as code using EventLoopExecutor would hold one, with what tests give it: bridged methods (see
+    bridge), _run() as its parent task, and idle_timeout. The worker's attributes are its too. By default, _run() awaits
+    runloop, which the test can resolve to end it, and which an interrupt cancels."""
 
     idle_timeout = float("inf")
 
     def __init__(self):
         self._marks, self._counts = {}, {}
         self.runloop = AwaitableFuture()
-        self.worker = CaptiveWorker(parent_task=self._parent, idle_timeout=self.idle_timeout)
+        self.worker = EventLoopExecutor(parent_task=self._parent, idle_timeout=self.idle_timeout)
 
     def __getattr__(self, name):
         if name == "worker":  # Not yet set
@@ -144,30 +144,37 @@ class SlowStop(Worker):
             raise
 
 
-def reason(worker: CaptiveWorker | Harness) -> str:
+def reason(worker: EventLoopExecutor | Harness) -> str:
     return worker.wait_for_state(worker.Stopping, worker.Stopped).result()[2].args[0]
+
+
+def stop_begun(worker: EventLoopExecutor | Harness, cancel_futures=False) -> AwaitableFuture:
+    """Shuts the worker down without waiting, returning a future for the stop having begun, rather than shutdown()'s, for
+    the worker having finished."""
+    worker.shutdown(wait=False, cancel_futures=cancel_futures)
+    return worker.wait_for_state(worker.Stopping, worker.Stopped)
 
 
 # Resolved once the worker's loop has run every callback queued before this (a stop's, or a caller's cancellation, say),
 # then what those queued in turn (the wakeups of tasks they cancelled): proven, as the loop runs callbacks in order
-def settled(worker: CaptiveWorker | Harness) -> AwaitableFuture:
+def settled(worker: EventLoopExecutor | Harness) -> AwaitableFuture:
     done = AwaitableFuture()
     worker._loop.call_soon_threadsafe(worker._loop.call_soon, done.set_result, None)
     return done
 
 
-class running[W: CaptiveWorker | Harness]:
+class running[W: EventLoopExecutor | Harness]:
     """`with running(cls, *args, **kwargs) as worker:` (or `async with`) constructs a worker (or harness), and on leaving
     stops it, interrupting, and waits for it to finish, its thread included."""
 
-    def __init__(self, cls: type[W] = CaptiveWorker, /, *args, **kwargs):
+    def __init__(self, cls: type[W] = EventLoopExecutor, /, *args, **kwargs):
         self.worker = cls(*args, **kwargs)
 
     def __enter__(self) -> W:
         return self.worker
 
     def __exit__(self, *_):
-        self.worker.stop(interrupt=True).result(5)
+        self.worker.shutdown(wait=False, cancel_futures=True).result(5)
         self.worker._thread.join(5)
         assert not self.worker._thread.is_alive()
 
@@ -176,7 +183,7 @@ class running[W: CaptiveWorker | Harness]:
 
     async def __aexit__(self, *_):
         with anyio.fail_after(5):  # So it works on any of anyio's backends
-            await self.worker.stop(interrupt=True)
+            await self.worker.shutdown(wait=False, cancel_futures=True)
         await anyio.to_thread.run_sync(self.worker._thread.join, 5)
         assert not self.worker._thread.is_alive()
 

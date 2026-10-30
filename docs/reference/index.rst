@@ -10,4 +10,4 @@ Modules
 
    async_anywhere
    async_anywhere.futures
-   async_anywhere.captive
+   async_anywhere.executors

@@ -1,5 +1,5 @@
-"""CaptiveWorkers made on other workers' threads, by their parent tasks or calls: used there, as a worker's client, or
-handed out to callers, who can use them from anywhere, whether or not the worker that made them is still running."""
+"""EventLoopExecutors made on other workers' threads, by their parent tasks or calls: used there, as a worker's client,
+or handed out to callers, who can use them from anywhere, whether or not the worker that made them is still running."""
 from __future__ import annotations
 
 import asyncio
@@ -8,8 +8,8 @@ import concurrent.futures
 import anyio
 import pytest
 
-from async_anywhere.captive.exceptions import CleanStop, WorkerStopped
-from tests.test_captive.utils import Tidy, Worker, bridge, running
+from async_anywhere.executors.exceptions import CleanStop, WorkerStopped
+from tests.test_executors.utils import Tidy, Worker, bridge, running
 
 
 pytestmark = pytest.mark.backends("asyncio", "uvloop", "trio")
@@ -34,7 +34,7 @@ class Owner(Forwards):
             assert await self.inner.work(0.01, "from the parent task") == "from the parent task"
             await self.runloop
         finally:
-            self.mark("inner stopped", (await self.inner.stop())[2])
+            self.mark("inner stopped", (await self.inner.shutdown(wait=False))[2])
 
 
 async def test_a_worker_can_use_one_made_in_its_parent_task():
@@ -71,7 +71,7 @@ async def test_interrupting_a_worker_cancels_the_inner_calls_its_jobs_await():
         inner.mark("release")  # Its cleanup need only happen
         call = outer.forwards(inner.tidy)
         await inner.reached("tidies")
-        await outer.stop(interrupt=True)
+        await outer.shutdown(wait=False, cancel_futures=True)
         with pytest.raises(concurrent.futures.CancelledError):
             await call
         assert await inner.reached("tidied") == 1  # Cancelled once, by the outer job, as the inner worker wasn't interrupted
@@ -86,7 +86,7 @@ async def test_a_worker_can_stop_one_it_owns_as_it_stops(how):
             outer.runloop.set_result(None)
             await outer.wait_for_state(outer.Stopped)
         else:
-            await outer.stop(interrupt=how == "interrupted")
+            await outer.shutdown(wait=False, cancel_futures=how == "interrupted")
         assert type(await outer.reached("inner stopped")) is CleanStop
         assert inner.state is inner.Stopped
         with pytest.raises(CleanStop):
@@ -124,7 +124,7 @@ async def test_a_worker_handed_out_by_the_one_that_made_it_can_be_used_from_anyw
                 outer.runloop.set_result(None)
                 await outer.wait_for_state(outer.Stopped)
             case _:
-                await outer.stop(interrupt=outer_is == "interrupted")
+                await outer.shutdown(wait=False, cancel_futures=outer_is == "interrupted")
         if outer_is != "running":
             assert outer.state is outer.Stopped and not outer._thread.is_alive()
             with pytest.raises(WorkerStopped):
@@ -137,7 +137,7 @@ async def test_a_worker_handed_out_by_the_one_that_made_it_can_be_used_from_anyw
         assert await anyio.to_thread.run_sync(lambda: inner.work(0.01, "a thread").result(1)) == "a thread"
         assert await anyio.to_thread.run_sync(asyncio.run, on_a_fresh_loop()) == "on a fresh loop"
         assert await inner.nested(0.01) == "outer done"  # Its calls on its own thread
-        assert type((await inner.stop())[2]) is CleanStop
+        assert type((await inner.shutdown(wait=False))[2]) is CleanStop
         # Its states' futures' callbacks run on its own thread
         assert await inner.reached("stopped") == (True, inner.Stopping)
         assert await inner.reached("shutdown") == (True, inner.Stopped, True)

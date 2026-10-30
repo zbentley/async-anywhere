@@ -1,16 +1,18 @@
-"""A captive worker: a thread with an asyncio event loop of its own, hosting one client, whose operations any thread or
-event loop can call. It's a connection pool of size one, for upstreams that allow a single connection at a time, and for
-clients that must stay on the loop that created them. Besides the standard library, it needs only attrs and sniffio.
+"""An EventLoopExecutor: a thread with an asyncio event loop of its own, hosting one client, whose operations any thread
+or event loop can call. It's a connection pool of size one, for upstreams that allow a single connection at a time, and
+for clients that must stay on the loop that created them. Besides the standard library, it needs only attrs and sniffio.
 
 Usage
 -----
-Construct a CaptiveWorker with what it needs, as keyword arguments: it's final, so code that uses it holds one, rather
-than subclassing it. Its arguments are checked as it's constructed, and frozen. Pass parent_task, a coroutine
+Construct an EventLoopExecutor with what it needs, as keyword arguments: it's final, so code that uses it holds one,
+rather than subclassing it. Its arguments are checked as it's constructed, and frozen. Pass parent_task, a coroutine
 function (an async def, and nothing else) to connect, and run, the client, which the worker calls with itself as soon as
 its loop is running (by default, it waits until a stop cancels it). The constructor returns only once
-it has started, so a closure might not hold the worker yet: hence the argument. Expose the client's operations with
-`worker.bridge(func)` (or as @worker.bridge), which bridges an async function, called with just its callers' arguments:
-close over the worker, if it needs it. Pass idle_timeout to stop a worker that has gone that many seconds without calls
+it has started, so a closure might not hold the worker yet: hence the argument. It's a concurrent.futures.Executor whose
+jobs are async functions: `worker.submit(fn, *args, **kwargs)` runs `await fn(*args, **kwargs)` on the worker's loop (see
+Submitting a job, below), and map(), shutdown() and `with worker:` work as for any executor. To expose the client's
+operations, `worker.bridge(func)` (or @worker.bridge) wraps an async function so that calling it submits it, with just
+its callers' arguments: close over the worker, if it needs it. Pass idle_timeout to stop a worker that has gone that many seconds without calls
 (to act as a worker stops, see State, under Lifecycle). Pass loop_factory to make the worker's event loop other than with
 asyncio.new_event_loop(), as for asyncio.Runner. It MUST return a brand-new event loop, not yet
 started, whose state isn't bound to the thread that calls it: the worker calls it on the thread constructing the worker,
@@ -20,7 +22,7 @@ signal handlers, say) aren't supported. uvloop.new_event_loop is fine.
 Callers can use any async library that awaits a call can: asyncio (on any loop), or trio, or anyio on either. The worker
 itself runs on asyncio, so bridged functions and the parent task are asyncio code, which may use anyio (whose asyncio
 backend finds itself there). A parent task written for trio can run as a guest on the worker's loop, through
-trio.lowlevel.start_guest_run(): see TrioGuest in tests/test_captive/test_runtimes.py for a recipe.
+trio.lowlevel.start_guest_run(): see TrioGuest in tests/test_executors/test_runtimes.py for a recipe.
 
 Bridged functions stay asyncio code, but can hand trio code to such a guest: in TrioGuest's recipe, its run() starts the
 trio code in a nursery the guest keeps open (through the run's TrioToken, as trio code can't be started from asyncio
@@ -35,13 +37,13 @@ Constructing a worker starts its thread, which runs the parent task before anyth
 ## State:
 
 A worker is a WaitableStateTracker (see async_anywhere.state_tracker), whose `state` only moves forward: it's
-CaptiveWorker.Running once constructed, Stopping once stopped, and Stopped once shut down (see below), as its copy is in
-a process forked from the worker's. `worker.require(state, *states)` raises StateTrackerError unless the worker is in one
-of them, and `worker.wait_for_state(state, *states, **kwargs)` returns an AwaitableFuture (made with kwargs: see
+EventLoopExecutor.Running once constructed, Stopping once stopped, and Stopped once shut down (see below), as its copy
+is in a process forked from the worker's. `worker.require(state, *states)` raises StateTrackerError unless the worker is
+in one of them, and `worker.wait_for_state(state, *states, **kwargs)` returns an AwaitableFuture (made with kwargs: see
 WaitableStateTracker) that resolves as the worker enters one of them, or at once if it's in one, to (old state, new
 state, data): data being None for Running, and otherwise why the worker stopped (a WorkerStopped, which every call from
 then on is refused with: in a forked process, a WorkerForked). It never resolves for a state the worker passed before it
-was made, though: wait for (Stopping, Stopped) rather than just Stopping. stop() returns such futures too. They can be
+was made, though: wait for (Stopping, Stopped) rather than just Stopping. shutdown() returns Stopped's. They can be
 waited on from any thread (but never on the worker's own loop, whatever kwargs say: that raises RuntimeError, as it
 would deadlock), or awaited on any loop, and neither giving up waiting on one nor cancelling it does anything.
 
@@ -56,11 +58,11 @@ constant-time work. What they raise is logged (by concurrent.futures), not raise
 
 Once a worker is stopped (Stopping), it will not accept new jobs. In-progress jobs and the parent task may be interrupted, or may continue running, depending on how a stop was triggered, see "Interruption" below.
 
-After a worker has been stopped, new attempts to call any bridge methods will fail with an error.
+After a worker has been stopped, new attempts to submit jobs (or call bridged functions) will fail with an error.
 
 Workers are stopped in these situations:
 
-- A call to `stop()` is made.
+- `shutdown()` is called (as `with worker:` exits, say).
 - The parent task finishes.
 - After a fork, workers inherited by a child process register as being stopped in that process.
 
@@ -88,13 +90,13 @@ User code is interrupted (sent a cancellation) in these situations:
 
 The parent task:
     - The idle timeout expires.
-    - `stop(interrupt=True)` is called.
-    - `stop(interrupt=False)` is called, once no in-progress bridge jobs are running. This interruption will only be sent to the parent task once, and will only be sent if it has not been interrupted for any other reason.
+    - `shutdown(cancel_futures=True)` is called.
+    - `shutdown(cancel_futures=False)` is called, once no in-progress bridge jobs are running. This interruption will only be sent to the parent task once, and will only be sent if it has not been interrupted for any other reason.
 
 Bridge jobs:
-    - `stop(interrupt=True)` is called.
-    - The parent task completes unexpectedly (returns or raises an exception without `stop()` having been called or expiration having
-      occurred). This has the same effect as calling `stop(interrupt=True)`.
+    - `shutdown(cancel_futures=True)` is called.
+    - The parent task completes unexpectedly (returns or raises an exception without `shutdown()` having been called or expiration having
+      occurred). This has the same effect as calling `shutdown(cancel_futures=True)`.
     - A bridge job's caller cancels it (e.g. via `worker.bridge_call().cancel()` or by triggering cancellation during
       `await worker.bridge_call(...)`).
 
@@ -102,32 +104,32 @@ Other tasks created inside the worker (e.g. via worker code using `asyncio.shiel
     - User code triggers an ordinary cancellation.
     - The worker finishes shutting down.
 
-**Note:** a cancellation is sent to the parent task and running bridge jobs *each* time `stop(interrupt=True)` is called. This can
+**Note:** a cancellation is sent to the parent task and running bridge jobs *each* time `shutdown(cancel_futures=True)` is called. This can
 lead to them receiving multiple cancellation events from the worker. Code which swallows or deduplicates cancellations (e.g. `TaskGroup`) may behave unexpectedly when this occurs.
 
 **Note:** code that chooses to ignore cancellations may miss worker interrupts or expirations.
 
 The first stop moves the worker to Stopping, with why as the data of that transition, and of those after it: a
-WorkerStopped (a CleanStop for expiry, a stop() that interrupts nothing, or the parent task returning), which it logs.
+WorkerStopped (a CleanStop for expiry, a shutdown() that interrupts nothing, or the parent task returning), which it logs.
 Later stops don't change that, and every call from then on is refused with it. Whatever the worker raises it for, or chains it to, gets a copy, keeping its cause,
 so callers' tracebacks don't pile up on one shared exception.
 
 Once the parent task and every call have finished, the loop cancels any tasks left on it (work that the parent task or
 calls spawned and didn't wait for), gives them 0.05s, shuts down async generators and the default executor (abandoning, with a RuntimeWarning,
-threads that haven't finished by then), and closes. Only then does the worker move to Stopped, waking stop()'s waiters.
+threads that haven't finished by then), and closes. Only then does the worker move to Stopped, waking shutdown()'s waiters.
 
 Invariants
 ----------
-- Every call resolves. One the loop drops unrun as it closes fails with why the worker stopped, which stop()'s waiters
+- Every call resolves. One the loop drops unrun as it closes fails with why the worker stopped, which shutdown()'s waiters
   get in its result: nothing waits forever on a worker that has finished (bar wait_for_state() for a state it had
   passed before the future was made: see State).
 - Nothing outside the worker blocks on its loop. Making, waiting on and cancelling a call only queue callbacks on it, so a
   worker loop blocked by synchronous code holds callers up only as long as they wait for results.
-- Bar stop(interrupt=True), which cancels each time it's called (see Interruption), and a crash's teardown, the worker
+- Bar shutdown(cancel_futures=True), which cancels each time it's called (see Interruption), and a crash's teardown, the worker
   cancels each task at most once, so cleanup can await without being cut short.
 - A caller cancelling its call cancels the job, but a job's ending never cancels its caller.
 - Why the worker stopped (a WorkerStopped) is kept apart from what calls raise.
-- Giving up waiting on stop() never cancels the stop, nor a drain.
+- Giving up waiting on shutdown() never cancels the stop, nor a drain.
 - Idle expiry never fires while a call is in flight. (Once the worker has stopped, it may, but then does nothing.)
 
 One invariant is the user's to uphold: never run another event loop on a worker's thread. While the worker's loop runs,
@@ -135,14 +137,15 @@ asyncio refuses to anyway; this is about code that thread runs outside it, such 
 stops. The worker takes any code on its thread to be in its loop (see in_worker), so a bridged function called from another
 loop there would run the client on that loop.
 
-Calling a bridged function, compared with awaiting a coroutine
---------------------------------------------------------------
-Calling a bridged function is like create_task() with an eager task factory: the job starts as soon as the worker's loop
+Submitting a job, compared with awaiting a coroutine
+----------------------------------------------------
+Submitting a job (a call: with submit(), or by calling a bridged function) is like create_task() with an eager task factory: the job starts as soon as the worker's loop
 takes the call, ahead of anything queued after it, and runs in the background, whatever the caller's await points (calls
 made together run concurrently).
 
 From any thread, it returns an AwaitableFuture: a concurrent.futures.Future, which can also be awaited on any loop. Once
-the worker has stopped, it raises why instead, as Executor.submit() does once shut down.
+the worker has stopped, it raises why instead, as other executors' submit() does once shut down (but with a
+WorkerStopped, not RuntimeError).
 - It can be waited on repeatedly, and from several threads at once. One nobody waits on runs all the same, but what it
   raises goes unreported (where asyncio would log a task's as never retrieved).
 - Giving up a result() or exception() (as it times out, say) leaves the call running, as for any concurrent future.
@@ -174,13 +177,18 @@ the worker has stopped, it raises why instead, as Executor.submit() does once sh
 
 Calls made on the worker's own thread are no different.
 
-stop(interrupt=False, wait=True) isn't bridged. It queues the stop on the worker's loop, behind calls already made (which
-a drain lets finish), from any thread, the worker's own included. It returns wait_for_state(Stopped)'s AwaitableFuture,
-or with wait=False, (Stopping, Stopped)'s: resolving once the worker has finished, or once the stop has begun, to (old state,
-new state, why the worker stopped), why being a WorkerStopped, which it returns rather than raises (a WorkerForked, in a
-process forked from the worker's). On the worker's own thread,
-wait=True raises RuntimeError, as it would wait for itself, and interrupt=True cancels the calling task as it does any
-other. In a process forked from the worker's, it raises WorkerForked, as bridged functions do.
+shutdown(wait=True, *, cancel_futures=False) isn't a call. It queues the stop on the worker's loop, behind calls already
+made (which a drain lets finish), from any thread, the worker's own included. It returns wait_for_state(Stopped)'s
+AwaitableFuture, resolving once the worker has finished to (old state, new state, why the worker stopped), why being a
+WorkerStopped, which it returns rather than raises (a WorkerForked, in a process forked from the worker's). With wait=True
+(as `with worker:` exits, too) it first waits for that future, blocking the calling thread, and any event loop running
+on it: async code should await shutdown(wait=False) instead. On the worker's own thread, wait=True raises RuntimeError, as
+it would wait for itself. cancel_futures=True interrupts (see Interruption), rather than cancelling calls not yet
+started, as ThreadPoolExecutor's does: calls made before it start before the stop begins, then are cut short, failing
+with WorkerInterrupted (a concurrent.futures.CancelledError, though the future isn't cancelled()), and those made after it
+are refused. Either way, the parent task is cancelled: at once with cancel_futures=True, or else once the drain ends. On
+the worker's own thread, cancel_futures=True cancels the calling task as it does any other. In a process forked from the
+worker's, shutdown() raises WorkerForked, as submit() does.
 
 Caveats
 -------
@@ -214,15 +222,22 @@ Caveats
 - If you perform blocking waits on this worker when completed or interrupted code inside the worker is garbage collected
   or during handling of its exception classes, you may break this class's invariant (this is generally also true for all
   other asyncio code in Python).
+- Code that takes any concurrent.futures.Executor may notice how this one differs. A call's future can be cancelled
+  while its job runs (cancelling the job), and never reports running(): so Executor.map() abandoning its results (on its
+  timeout, an exception, or the caller no longer iterating) cancels calls in flight, not just those yet to start. Once
+  the worker has stopped (perhaps of its own accord: by expiry, or the parent task ending), submit() and map() raise a
+  WorkerStopped, not RuntimeError. And code that submits synchronous functions, as most code taking an executor does,
+  has them run on the worker's loop, blocking it, then fail with TypeError, as what they return can't be awaited.
 - How interrupted calls reach callers that await them relies on asyncio.futures._convert_future_exc() (which
   as_async_future() and asyncio.wrap_future() use) converting exactly concurrent.futures.CancelledError to asyncio's, and
   nothing else: a private detail of asyncio.
 """
 import asyncio
+import concurrent.futures
 import logging
 from contextlib import suppress
 from contextvars import Context, copy_context
-from functools import cached_property, wraps
+from functools import cached_property, partial, update_wrapper
 from threading import Thread, current_thread, main_thread, RLock
 from typing import Any, Callable, ClassVar, Coroutine, Literal, final
 from weakref import WeakSet
@@ -231,9 +246,9 @@ import sniffio
 from attrs import Factory, define, field, setters, validators
 
 from async_anywhere._util import LoopSelector, blocking_wait_checker, validate_coroutine_function, copy_exception
-from async_anywhere.captive import _fork_safety
-from async_anywhere.captive.exceptions import CleanStop, WorkerBroken, WorkerInterrupted, WorkerStopped, WorkerForked
-from async_anywhere.captive._timer import Timer
+from async_anywhere.executors import _fork_safety
+from async_anywhere.executors.exceptions import CleanStop, WorkerBroken, WorkerInterrupted, WorkerStopped, WorkerForked
+from async_anywhere.executors._timer import Timer
 from async_anywhere.futures import AwaitableFuture
 from async_anywhere.state_tracker import State
 from async_anywhere.state_tracker.waitable import WaitableStateTracker
@@ -242,7 +257,7 @@ from async_anywhere.state_tracker.waitable import WaitableStateTracker
 async def _until_cancelled(_):
     await asyncio.Future()
 
-def _timer_factory(worker: CaptiveWorker):
+def _timer_factory(worker: EventLoopExecutor):
     return Timer(
         loop=worker._loop,
         callback=lambda: worker._clean_stop("expired") and worker._interrupt(True),
@@ -256,14 +271,14 @@ def _timer_factory(worker: CaptiveWorker):
     repr=False, # Repr gets extremely verbose and not useful.
     auto_attribs=False,
 )
-class CaptiveWorker(WaitableStateTracker):
+class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     # See State, in Lifecycle. Every transition's data but the initial state's (_last_transition[2]) is why it stopped.
     Running: ClassVar[State] = State(initial=True)
     Stopping: ClassVar[State] = State(sources=Running)
     Stopped: ClassVar[State] = State(sources=Stopping)  # Through Stopping even after a fork: see _after_fork_in_child()
 
     # Run with the worker, on its loop, as soon as that's running: until a stop cancels it, by default. See Usage.
-    parent_task: Callable[[CaptiveWorker], Coroutine[Any, Any, Any]] = field(
+    parent_task: Callable[[EventLoopExecutor], Coroutine[Any, Any, Any]] = field(
         default=_until_cancelled, validator=validate_coroutine_function
     )
     idle_timeout: float = field(
@@ -275,7 +290,7 @@ class CaptiveWorker(WaitableStateTracker):
     )
     logger: logging.Logger = field(
         init=False,
-        factory=lambda: logging.getLogger(CaptiveWorker.__qualname__),
+        factory=lambda: logging.getLogger(EventLoopExecutor.__qualname__),
     )
 
     # Bridged calls in flight: their jobs' tasks. They hold off idle expiry, and drains wait for them; see _interrupt().
@@ -316,39 +331,44 @@ class CaptiveWorker(WaitableStateTracker):
         self._thread.start()
         self._runner.result()  # So that, once constructed, the worker is running
 
+    def submit[**P, T](
+        self, fn: Callable[P, Coroutine[Any, Any, T]], /, *args: P.args, **kwargs: P.kwargs
+    ) -> AwaitableFuture[T]:
+        """Run `await fn(*args, **kwargs)` as a job on the worker's loop, returning its AwaitableFuture: see Submitting a
+        job, in the module docstring. Once the worker has stopped, this raises why instead."""
+        # A call's future, with its job queued for _start(). Refused (raising why it stopped) once the worker has stopped:
+        # _job() would refuse it too, but without waiting for the loop is better. And so _finalize(), failing what's
+        # pending once the worker has stopped, after taking _condition, can't miss anything.
+        in_loop = self.in_worker()
+        loop = self._loop
+        future = AwaitableFuture(prevent_blocking_wait_in_loops=self._runtime_checker)
+        # The jobs' name, which their coroutines' and tasks' reprs show (tracebacks show the code's own, _job). Not
+        # repr(fn), per call: for a partial, that's the repr of all its arguments.
+        name = f"{self._job.__qualname__}[{getattr(fn, '__qualname__', None) or type(fn).__qualname__}]"
+        context = copy_context()
+        if context.get(sniffio.current_async_library_cvar):
+            # Which anyio.run() sets to its backend: left as it is, a caller's on trio would have anyio, in the job,
+            # take it to be on trio too. As trio's threads do, cleared, so that sniffio looks for the job's loop.
+            context.run(sniffio.current_async_library_cvar.set, None)
+        with self._condition:
+            _, state, why = self._last_transition
+            if state is not self.Running:
+                raise copy_exception(why)  # A copy, as for _fail()
+            self._submitted.add(future)
+            # Only queues a callback, so never waits for the worker's loop. It runs in a copy of the caller's context.
+            if in_loop:
+                loop.call_soon(self._start, future, fn, args, kwargs, name, context=context)
+            else:
+                loop.call_soon_threadsafe(self._start, future, fn, args, kwargs, name, context=context)
+        return future
+
     def bridge[**P, T](self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
         # Best-effort: it's calling bridged functions that's always checked
         if isinstance(broken := self._last_transition[2], WorkerBroken):
             raise copy_exception(broken)
-        # The jobs' name, which their coroutines' and tasks' reprs show (tracebacks show the code's own, _job)
-        name = f"{self._job.__qualname__}[{getattr(func, '__qualname__', None) or repr(func)}]"
-
-        @wraps(func)
-        def call(*args: P.args, **kwargs: P.kwargs) -> AwaitableFuture[T]:
-            # A call's future, with its job queued for _start(). Refused (raising why it stopped) once the worker has stopped:
-            # _job() would refuse it too, but without waiting for the loop is better. And so _finalize(), failing what's
-            # pending once the worker has stopped, after taking _condition, can't miss anything.
-            in_loop = self.in_worker()
-            loop = self._loop
-            future = AwaitableFuture(prevent_blocking_wait_in_loops=self._runtime_checker)
-            context = copy_context()
-            if context.get(sniffio.current_async_library_cvar):
-                # Which anyio.run() sets to its backend: left as it is, a caller's on trio would have anyio, in the job,
-                # take it to be on trio too. As trio's threads do, cleared, so that sniffio looks for the job's loop.
-                context.run(sniffio.current_async_library_cvar.set, None)
-            with self._condition:
-                _, state, why = self._last_transition
-                if state is not self.Running:
-                    raise copy_exception(why)  # A copy, as for _fail()
-                self._submitted.add(future)
-                # Only queues a callback, so never waits for the worker's loop. It runs in a copy of the caller's context.
-                if in_loop:
-                    loop.call_soon(self._start, future, func, args, kwargs, name, context=context)
-                else:
-                    loop.call_soon_threadsafe(self._start, future, func, args, kwargs, name, context=context)
-            return future
-
-        return call
+        # A partial rather than a closure, sparing each call a Python frame. Like a function, it binds as a method. No
+        # keywords bound: they'd cost it its fast path, more than naming the job once, here, would save.
+        return update_wrapper(partial(self.submit, func), func)
 
     def in_worker(self) -> bool:
         """
@@ -369,34 +389,35 @@ class CaptiveWorker(WaitableStateTracker):
             prevent_blocking_wait_in_loops = (*prevent_blocking_wait_in_loops, self._loop)
         return super().wait_for_state(state, *states, prevent_blocking_wait_in_loops=prevent_blocking_wait_in_loops, **kwargs)
 
-    def stop(self, interrupt=False, wait=True) -> AwaitableFuture[WorkerStopped]:
-        """Stop the worker, and return a future that resolves to why once the worker has finished, or with `wait=False`, once
-        the stop has begun.
+    def shutdown(self, wait=True, *, cancel_futures=False) -> AwaitableFuture[WaitableStateTracker._FutureType]:
+        """Stop the worker, and return a future that resolves to (old state, new state, why it stopped) once the worker
+        has finished: with `wait`, only once it has.
 
         Calls are refused from then on. Those in flight are cancelled, along with the parent task, each time this is
-        called with `interrupt`, or left to finish before the parent task is (a drain, which a later interrupting stop()
-        can cut short). On the
-        worker's own thread, `wait` is an error, as it would wait for itself, and interrupting cancels the calling task
-        too."""
+        called with `cancel_futures`, or left to finish before the parent task is (a drain, which a later shutdown() with
+        `cancel_futures` can cut short). On the worker's own thread, `wait` is an error, as it would wait for itself,
+        and `cancel_futures` cancels the calling task too."""
 
         if isinstance(broken := self._last_transition[2], WorkerBroken):
             raise copy_exception(broken)
-        # Eagerly, rather than leaving it to its future's own check: that catches result(), but not a call awaiting it,
-        # which would deadlock, as a drain would wait for that very call.
+        # Eagerly, before the stop is queued, so that refusing to wait stops nothing
         if wait and self.in_worker():
-            raise RuntimeError("stop(wait=True) on the worker's own thread would wait for itself")
+            raise RuntimeError("shutdown(wait=True) on the worker's own thread would wait for itself")
 
         def begin():  # On the worker's loop. Not a call, so it isn't refused once the worker has stopped: it can cut a drain short.
-            if interrupt and len(self._calls) > 0:
+            if cancel_futures and len(self._calls) > 0:
                 self._unclean_stop("manually stopped")
             else:
                 self._clean_stop("stopped")
-            if interrupt or len(self._calls) == 0:
-                self._interrupt(interrupt)  # Otherwise the last call to end does: see _job()
+            if cancel_futures or len(self._calls) == 0:
+                self._interrupt(cancel_futures)  # Otherwise the last call to end does: see _job()
 
         with suppress(RuntimeError):  # The loop has closed, so the worker has already stopped
             self._loop.call_soon_threadsafe(begin)  # Queued even on the worker's thread, behind calls made before it
-        return self.wait_for_state(self.Stopped) if wait else self.wait_for_state(self.Stopping, self.Stopped)
+        stopped = self.wait_for_state(self.Stopped)
+        if wait:
+            stopped.result()
+        return stopped
 
     def _start(self, future: AwaitableFuture, func, args, kwargs, name: str):
         # If the job was cancelled by its caller or failed by the worker e.g. forking, do nothing.
@@ -461,13 +482,13 @@ class CaptiveWorker(WaitableStateTracker):
 
     def _after_fork_in_child(self):
         """
-        In the child process of a fork, CaptiveWorker instances are invalidated. This is true even if code running on a
-        CaptiveWorker's thread did the fork; asyncio's at-fork semantics are cloudy enough that it's not worth trying to
-        preserve running workers' states after fork--and that's without getting into what happens when the parent and
-        child both try to interact with a worker!
+        In the child process of a fork, EventLoopExecutor instances are invalidated. This is true even if code running
+        on an EventLoopExecutor's thread did the fork; asyncio's at-fork semantics are cloudy enough that it's not worth
+        trying to preserve running workers' states after fork--and that's without getting into what happens when the
+        parent and child both try to interact with a worker!
 
-        When fork occurs, this method ensures the following is true in the child process for every CaptiveWorker that
-        existed when fork(2) occurred:
+        When fork occurs, this method ensures the following is true in the child process for every EventLoopExecutor
+        that existed when fork(2) occurred:
         - The worker gets a fresh lock (in case another thread was using it: dispatching a @bridge call, say, at the
           moment of fork(2)), as its pending AwaitableFutures have fresh conditions already, from their own fork
           handler, which runs first (see _fork_safety).
@@ -510,7 +531,7 @@ class CaptiveWorker(WaitableStateTracker):
             else:
                 stopping = self._clean_stop("parent task returned")
             if stopping:
-                # The parent task ending was the stop, so it interrupts calls, as stop(interrupt=True) would
+                # The parent task ending was the stop, so it interrupts calls, as shutdown(cancel_futures=True) would
                 self._interrupt(True)
             # Let calls still in flight finish (or, if they were interrupted, clean up) before re-cancelling them and
             # aborting them.
@@ -550,12 +571,12 @@ class CaptiveWorker(WaitableStateTracker):
                 self._calls.clear()
                 if in_worker:  # Else a process forked from a call, whose fork handler has finished it
                     self._loop.close()  # Shuts the executor down without waiting, if it hasn't been already
-                    # The very last action: stop()'s waiters wait for it
+                    # The very last action: shutdown()'s waiters wait for it
                     self._transition(self.Stopped, self._last_transition[2])
 
     def _interrupt(self, again: bool):
         # Once the worker has stopped: cancels the parent task and every call in flight. Each time with `again` (for
-        # stop(interrupt=True), expiry, and the parent task ending of its own accord); otherwise (for a stop that
+        # shutdown(cancel_futures=True), expiry, and the parent task ending of its own accord); otherwise (for a stop that
         # doesn't interrupt, once no calls are left in flight) only if the worker hasn't interrupted anything yet.
         if again or not self._interrupted:
             for task in {self._runner.result(timeout=0), *self._calls}:
@@ -580,9 +601,9 @@ class CaptiveWorker(WaitableStateTracker):
         try:
             result = await func(*args, **kwargs)
         except asyncio.CancelledError as ex:
-            # Check if we got a CancelledError because the worker was interrupted with stop(interrupt=True). If so, this
-            # job's waiters get an error indicating where the job was cancelled, with exception-chain-context about why
-            # the worker stopped.
+            # Check if we got a CancelledError because the worker was interrupted with shutdown(cancel_futures=True). If
+            # so, this job's waiters get an error indicating where the job was cancelled, with exception-chain-context
+            # about why the worker stopped.
             if self._interrupted and task.cancelling():
                 error = WorkerInterrupted.from_cancellation(ex, copy_exception(self._last_transition[2]))
             else:
@@ -610,7 +631,7 @@ class CaptiveWorker(WaitableStateTracker):
         finally:  # Once the future is resolved: a drain's interrupt below may cancel the parent task awaiting this call
             calls.remove(task)
             # A drain (a stop that leaves calls in flight to finish) cancels the parent task only once the last has
-            # ended: here. Nothing else would, unless the parent task ended of its own accord, or a later stop()
+            # ended: here. Nothing else would, unless the parent task ended of its own accord, or a later shutdown()
             # interrupted.
             if len(calls) == 0:
                 # Not a callback on wait_for_state(Stopping): that fires once, as the stop is recorded (begin() covers

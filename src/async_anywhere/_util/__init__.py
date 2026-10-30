@@ -1,14 +1,10 @@
-from asyncio import AbstractEventLoop, _get_running_loop
-from contextlib import AbstractContextManager
+import asyncio
 from copy import copy
 from inspect import iscoroutinefunction
-from threading import RLock, Lock
 from typing import Any, Iterable, Literal, Callable
 from weakref import WeakSet
 
-type LoopSelector = None | Literal["all"] | Iterable[AbstractEventLoop]
-
-FAST_COLLECTION_SET_CUTOFF = 5
+type LoopSelector = None | Literal["all"] | Iterable[asyncio.AbstractEventLoop]
 
 def validate_coroutine_function(_, attribute, value):
     if not iscoroutinefunction(value):
@@ -20,13 +16,13 @@ def blocking_wait_checker(loops: LoopSelector) -> Callable[[Any], None] | None:
     if loops == "all":
         refuse = lambda loop: loop is not None  # None is outside any loop
     elif len(refs := WeakSet(loops)) > 0:
-        assert all(isinstance(loop, AbstractEventLoop) for loop in refs)
+        assert all(isinstance(loop, asyncio.AbstractEventLoop) for loop in refs)
         refuse = refs.__contains__  # None, outside a loop, is never in refs
     else:
         return None
 
     def check(future):
-        if refuse(loop := _get_running_loop()):
+        if refuse(loop := asyncio._get_running_loop()):
             raise RuntimeError(
                 f"Waiting for {future!r} would deadlock: current event loop '{loop!r}' was set in 'prevent_blocking_wait_in_loops'")
 
@@ -48,19 +44,3 @@ def copy_exception[E: BaseException](error: E, *causes: BaseException) -> E:
     else:
         new.__cause__, new.__suppress_context__ = error.__cause__, error.__suppress_context__
     return new
-
-class LockProtected[T](AbstractContextManager[T]):
-    __slots__ = ("_acquire", "_release", "_value")
-
-    def __init__(self, initial: T, recursive=False):
-        lock = RLock() if recursive else Lock()
-        self._acquire = lock.acquire
-        self._release = lock.release
-        self._value = initial
-
-    def __exit__(self, *_):
-        self._release()
-
-    def __enter__(self):
-        self._acquire()
-        return self._value

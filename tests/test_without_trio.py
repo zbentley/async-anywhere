@@ -23,18 +23,18 @@ SCRIPT = textwrap.dedent(
     modules = sorted(module.name for module in pkgutil.walk_packages(async_anywhere.__path__, "async_anywhere."))
     for name in modules:
         importlib.import_module(name)
-    from async_anywhere.captive import CaptiveWorker
+    from async_anywhere.executors import EventLoopExecutor
     from async_anywhere.futures import AwaitableFuture
 
     async def main():
         pending = AwaitableFuture()
         threading.Timer(0.01, pending.set_result, ("awaited",)).start()
-        worker = CaptiveWorker()
+        worker = EventLoopExecutor()
 
         async def job():
             return "bridged"
 
-        return await pending, await worker.bridge(job)(), type((await worker.stop())[2]).__name__
+        return await pending, await worker.bridge(job)(), type((await worker.shutdown(wait=False))[2]).__name__
 
     print(repr((modules, asyncio.run(main()))))
     """

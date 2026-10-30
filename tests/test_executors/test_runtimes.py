@@ -1,6 +1,6 @@
-"""CaptiveWorkers with async libraries other than asyncio: callers on trio, or using anyio's API on any of its backends,
-and parent tasks using anyio, or trio, run as a guest on the worker's loop (see TrioGuest), which bridged functions can
-hand trio code to. The worker's own loop is asyncio's, or uvloop's: see worker_loop()."""
+"""EventLoopExecutors with async libraries other than asyncio: callers on trio, or using anyio's API on any of its
+backends, and parent tasks using anyio, or trio, run as a guest on the worker's loop (see TrioGuest), which bridged
+functions can hand trio code to. The worker's own loop is asyncio's, or uvloop's: see worker_loop()."""
 from __future__ import annotations
 
 import asyncio
@@ -11,9 +11,9 @@ import anyio
 import pytest
 import trio
 
-from async_anywhere.captive.exceptions import CleanStop, WorkerStopped
+from async_anywhere.executors.exceptions import CleanStop, WorkerStopped
 from async_anywhere.futures import AwaitableFuture
-from tests.test_captive.utils import Tidy, bridge, running
+from tests.test_executors.utils import Tidy, bridge, running
 
 
 pytestmark = pytest.mark.backends("asyncio", "uvloop", "trio")
@@ -96,7 +96,7 @@ async def test_interrupted_calls_raise_why_rather_than_cancelling_their_callers(
         async with anyio.create_task_group() as group:
             group.start_soon(wait)
             await worker.reached("work")
-            await worker.stop(interrupt=True)
+            await worker.shutdown(wait=False, cancel_futures=True)
         error = await raised
         assert isinstance(error, concurrent.futures.CancelledError)
         assert not isinstance(error, anyio.get_cancelled_exc_class())  # Not the caller's own cancellation
@@ -108,11 +108,11 @@ async def test_giving_up_waiting_on_stop_cancels_nothing_with_any_library():
         call = worker.waits_for(release := AwaitableFuture())
         await worker.reached("waits_for")
         with anyio.move_on_after(0.05):
-            await worker.stop()  # A drain, waiting for the call
+            await worker.shutdown(wait=False)  # A drain, waiting for the call
         assert worker.state is worker.Stopping
         release.set_result("finished")
         assert await call == "finished"
-        assert type((await worker.stop())[2]) is CleanStop
+        assert type((await worker.shutdown(wait=False))[2]) is CleanStop
 
 
 @pytest.mark.backends("trio")
@@ -156,7 +156,7 @@ async def test_parent_tasks_can_use_anyio():
     async with running(AnyioRun) as worker:
         await worker.reached("child")
         assert await worker.sees() == (asyncio.CancelledError, "unset")
-        _, _, stopped = await worker.stop(interrupt=True)
+        _, _, stopped = await worker.shutdown(wait=False, cancel_futures=True)
         assert stopped.args == ("(idle) manually stopped",)
         assert worker.reached("child cleaned up").done()
 
@@ -255,7 +255,7 @@ async def test_parent_tasks_can_run_trio_as_a_guest():
 
     async with running(parent_task=TrioGuest(trio_main).parent_task) as worker:
         assert await marks["started"] == (asyncio.CancelledError, "unset")
-        _, _, stopped = await worker.stop(interrupt=True)
+        _, _, stopped = await worker.shutdown(wait=False, cancel_futures=True)
         assert stopped.args == ("(idle) manually stopped",)
         assert marks["cleaned up"].result_or_none() is True
 
@@ -325,7 +325,7 @@ async def test_interrupting_cancels_the_trio_code_calls_handed_over():
     async with running(parent_task=guest.parent_task) as worker:
         call = worker.bridge(guest.run)(tidies, marks)
         await marks["started"]
-        _, _, stopped = await worker.stop(interrupt=True)
+        _, _, stopped = await worker.shutdown(wait=False, cancel_futures=True)
         assert stopped.args == ("(interrupted) manually stopped",)
         assert marks["cleaned up"].done()  # Before the worker finished
         with pytest.raises(concurrent.futures.CancelledError) as raised:
