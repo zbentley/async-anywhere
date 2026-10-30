@@ -7,11 +7,10 @@ from threading import Lock
 from types import SimpleNamespace
 from typing import Any, Callable, Coroutine
 
-from async_anywhere import chain_futures
 from async_anywhere.executors import EventLoopExecutor
 from async_anywhere.executors._fork_safety import workers
 from async_anywhere.executors.exceptions import WorkerStopped
-from async_anywhere.futures import AwaitableFuture
+from async_anywhere.futures import AwaitableFuture, chain
 
 # What a singleton holds when it has no worker to use (before the first get(), once the constructor has raised, and in
 # a forked process): a stopped one, so that get() makes one
@@ -32,6 +31,9 @@ class SingletonEventLoopExecutor:
         workers.ensure_registered(self)
         if not lazy:
             self.get().result()  # Raising what the constructor does
+
+    # TODO make this a state machine with observable, but not waitable, states: not started, running/stopping/stopped,
+    # loopable back around.
 
     def _after_fork_in_child(self):
         self._lock.acquire(timeout=0)
@@ -98,7 +100,7 @@ class SingletonEventLoopExecutor:
             except Exception as ex:  # The constructor raised, or the replacement refused the call
                 call.set_exception_if_not_done(ex)
             else:
-                chain_futures(job, call)  # Cancelling call cancels the job
+                chain.link_futures(job, call)  # Cancelling call cancels the job
 
         pending.add_done_callback(start)
         return call

@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import functools
+import sys
+
+import attrs
+from sphinx.pycode import ModuleAnalyzer
+
 
 project = "async-anywhere"
 author = "Zac Bentley"
@@ -16,7 +22,7 @@ intersphinx_mapping = {'python': ('https://docs.python.org/3', None)}
 autodoc_class_signature = "separated"
 autodoc_default_options = {
     'show-inheritance': True,
-    # 'member-order': 'bysource',
+    'member-order': 'bysource',
     'inherited-members': True,
     # 'special-members': '__call__,__enter__,__exit__,__aenter__,__aexit__',
     'undoc-members': True,
@@ -54,6 +60,28 @@ def process_bases_hook(*args):
     args[-1][:] = rv + sorted(tail, key=str)
 
 
+def attrs_init_param_docs(app, what, name, obj, options, lines):  # noqa: PLR0917
+    # Feed attrs fields' attribute docstrings (string after, or #: before) into the generated __init__'s :param <alias>: fields
+    if what != "method" or getattr(obj, "__name__", None) != "__init__":
+        return
+    owner = functools.reduce(getattr, obj.__qualname__.split(".")[:-1], sys.modules[obj.__module__])
+    if not attrs.has(owner) or owner.__init__ is not obj:
+        return
+    attr_docs = ModuleAnalyzer.for_module(owner.__module__).find_attr_docs()
+    for a in attrs.fields(owner):
+        doc = attr_docs.get((owner.__qualname__, a.name), [""])
+        if a.init and doc[0]:
+            lines.extend(["", f":param {a.alias}: {doc[0]}", *("   " + line for line in doc[1:])])
+
+
+def executor_map_doc(app, what, name, obj, options, lines):  # noqa: PLR0917
+    # EventLoopExecutor inherits map() unchanged: point at the base's docs rather than repeating them
+    if name == "async_anywhere.executors.EventLoopExecutor.map":
+        lines[:] = ["See :py:meth:`concurrent.futures.Executor.map`."]
+
+
 def setup(app):
     # https://www.sphinx-doc.org/en/master/usage/extensions/autodoc.html#event-autodoc-process-bases
     app.connect('autodoc-process-bases', process_bases_hook)
+    app.connect('autodoc-process-docstring', attrs_init_param_docs)
+    app.connect('autodoc-process-docstring', executor_map_doc)

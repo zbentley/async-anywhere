@@ -53,7 +53,7 @@ class Harness:
     def __init__(self):
         self._marks, self._counts = {}, {}
         self.runloop = AwaitableFuture()
-        self.worker = EventLoopExecutor(parent_task=self._parent, idle_timeout=self.idle_timeout)
+        self.worker = EventLoopExecutor(main=self._parent, idle_timeout=self.idle_timeout)
 
     def __getattr__(self, name):
         if name == "worker":  # Not yet set

@@ -10,6 +10,7 @@ from async_anywhere._util import blocking_wait_checker, LoopSelector
 from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.futures import _fork_safety
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
+from async_anywhere.futures._trio import TrioAwaitableFuture
 from async_anywhere.state_tracker import State, StateTracker
 
 
@@ -122,7 +123,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         # What concurrent.futures.wait() and as_completed() read, under _condition, on every future they're given
         return self._CF_STATES[self.state]
 
-    def after_state_change(self, old_state: State, new_state: State, data: Any):
+    def _after_state_change(self, old_state: State, new_state: State, data: Any):
         # Under _condition, so concurrent.futures.wait() and as_completed(), which add their waiters under it, miss nothing
         if new_state is self.Running:
             return
@@ -164,7 +165,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
 
         # Trio first, as a guest run's tasks run on an asyncio loop's thread, while it's running
         if loop is None and TrioRuntime.in_task():
-            return TrioRuntime.Future(self, TrioRuntime.current_token())
+            return TrioAwaitableFuture(self, TrioRuntime.current_token())
         if loop is None:
             loop = asyncio.get_running_loop() if require_running_loop else asyncio.get_event_loop()
         elif require_running_loop and loop.is_closed():
@@ -179,7 +180,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         return self.as_async_future().__await__()
 
     def _await_finished(self):
-        # In trio, waiters get result()'s concurrent.futures.CancelledError, as TrioRuntime.Future's do
+        # In trio, waiters get result()'s concurrent.futures.CancelledError, as TrioAwaitableFuture's do
         if self.cancelled() and not TrioRuntime.in_task():
             # Since result() raises concurrent.futures.CancelledError, convert to asyncio.CancelledError here
             raise asyncio.CancelledError

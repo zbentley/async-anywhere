@@ -162,7 +162,7 @@ async def test_parent_tasks_can_use_anyio():
 
 
 class TrioGuest:
-    """A recipe for trio code in a worker: parent_task (pass it as the worker's) runs `await trio_main(worker)` (or sleeps
+    """A recipe for trio code in a worker: parent_task (pass it as the worker's main) runs `await trio_main(worker)` (or sleeps
     until cancelled) in trio, as a guest on the worker's loop, with a nursery that run() hands trio code to from asyncio
     code there, such as bridged functions. The parent task ends as trio_main() does, and interrupting it cancels
     trio_main() and what run() handed over. Calls made in trio code can be awaited there."""
@@ -253,7 +253,7 @@ async def test_parent_tasks_can_run_trio_as_a_guest():
                 await trio.sleep(0.01)  # Cleanup that awaits, in trio
             marks["cleaned up"].set_result(trio.lowlevel.in_trio_task())
 
-    async with running(parent_task=TrioGuest(trio_main).parent_task) as worker:
+    async with running(main=TrioGuest(trio_main).parent_task) as worker:
         assert await marks["started"] == (asyncio.CancelledError, "unset")
         _, _, stopped = await worker.shutdown(wait=False, cancel_futures=True)
         assert stopped.args == ("(idle) manually stopped",)
@@ -273,7 +273,7 @@ async def test_a_trio_guest_ending_stops_the_worker(end, kind, text):
         await trio.sleep(0.01)
         end()
 
-    async with running(parent_task=TrioGuest(trio_main).parent_task) as worker:
+    async with running(main=TrioGuest(trio_main).parent_task) as worker:
         _, _, stopped = await worker.wait_for_state(worker.Stopped)  # Of its own accord
         assert type(stopped) is kind and stopped.args == (text,)
 
@@ -301,7 +301,7 @@ async def tidies(marks):
 
 async def test_bridged_functions_can_hand_trio_code_to_a_trio_guest():
     guest = TrioGuest()
-    async with running(parent_task=guest.parent_task) as worker:
+    async with running(main=guest.parent_task) as worker:
         in_trio = worker.bridge(guest.run)
         assert await in_trio(checks, "value") == (True, "value")  # Made as the worker starts, maybe before the guest
         with pytest.raises(ValueError) as raised:
@@ -312,7 +312,7 @@ async def test_bridged_functions_can_hand_trio_code_to_a_trio_guest():
 
 async def test_cancelling_a_call_cancels_the_trio_code_it_handed_over():
     guest, marks = TrioGuest(), {name: AwaitableFuture() for name in ("started", "cleaned up")}
-    async with running(parent_task=guest.parent_task) as worker:
+    async with running(main=guest.parent_task) as worker:
         call = worker.bridge(guest.run)(tidies, marks)
         await marks["started"]
         assert call.cancel()
@@ -322,7 +322,7 @@ async def test_cancelling_a_call_cancels_the_trio_code_it_handed_over():
 
 async def test_interrupting_cancels_the_trio_code_calls_handed_over():
     guest, marks = TrioGuest(), {name: AwaitableFuture() for name in ("started", "cleaned up")}
-    async with running(parent_task=guest.parent_task) as worker:
+    async with running(main=guest.parent_task) as worker:
         call = worker.bridge(guest.run)(tidies, marks)
         await marks["started"]
         _, _, stopped = await worker.shutdown(wait=False, cancel_futures=True)

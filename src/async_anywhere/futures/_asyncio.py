@@ -10,11 +10,7 @@ _convert_future_exc = asyncio.futures._convert_future_exc
 
 
 class AsyncioAwaitableFuture[T](asyncio.Future[T]):
-    """What AwaitableFuture.as_async_future() returns on asyncio: it finishes as its source does, at once if its source
-    finishes on its loop's thread while that runs, or else in a callback queued on its loop, as asyncio.wrap_future()'s
-    does. It holds its source until it's done, and its source holds it (through its done-callback) until the source is
-    done."""
-
+    # TODO doc
     __slots__ = ('_source',)
 
     def __init__(self, source: AwaitableFuture[T], loop: asyncio.AbstractEventLoop):

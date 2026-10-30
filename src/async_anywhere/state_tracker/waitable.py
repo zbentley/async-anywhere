@@ -50,7 +50,7 @@ class WaitableStateTracker(StateTracker, ABC):
             old_waiters = self._waiters[target]
             waiters = tuple(old_waiters)  # Not copy() because we don't need to hash -- TODO right? Or is copy faster even on weakset?
             old_waiters.clear()
-            self.after_state_change(old_state, target, data)
+            self._after_state_change(old_state, target, data)
 
         for future in waiters:
             future.set_result_if_not_done(result)

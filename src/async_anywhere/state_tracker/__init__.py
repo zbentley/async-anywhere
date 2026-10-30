@@ -65,9 +65,9 @@ class StateTracker(ABC):
 
     def __init__(self, lock: ContextManager | None = None) -> None:
         """
-        lock: held by each transition, and its after_state_change(). The default is a fresh RLock, so
-            after_state_change() can use the StateTracker again. Pass contextlib.nullcontext() to take no lock, and only
-            use the StateTracker from one thread at a time.
+        lock: held by each transition, and its _after_state_change(). The default is a fresh RLock, so
+            _after_state_change() can use the StateTracker again. Pass contextlib.nullcontext() to take no lock, and
+            only use the StateTracker from one thread at a time.
         """
         self._last_transition = self._initial_transition
         self._condition = RLock() if lock is None else lock
@@ -144,7 +144,7 @@ class StateTracker(ABC):
         cls.states = states
         cls._initial_transition = (None, initial, None)  # A tuple, not a State, so this class doesn't declare one
 
-    def after_state_change(self, old_state: State, new_state: State, data: Any):
+    def _after_state_change(self, old_state: State, new_state: State, data: Any):
         """To be overridden by subclassers."""
         # NB: runs under the lock, just after the transition, so self.state is new_state; keep it brief
 
@@ -163,7 +163,7 @@ class StateTracker(ABC):
             if target not in old_state._destinations:
                 raise StateTrackerError(self, "Could not transition to state", self._check_state(target))
             self._last_transition = (old_state, target, data)
-            self.after_state_change(old_state, target, data)
+            self._after_state_change(old_state, target, data)
 
     def _try_transition(self, target: State, data: Any = None) -> bool:
         # Through _transition(), so a subclass's is used. A State not of this class still raises TypeError.

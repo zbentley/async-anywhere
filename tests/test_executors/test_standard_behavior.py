@@ -9,6 +9,7 @@ import gc
 import threading
 import time
 import traceback
+from datetime import timedelta
 
 import pytest
 
@@ -80,10 +81,12 @@ async def test_workers_state_can_be_required_and_waited_for():
     "kwargs, error, match",
     [
         # Making a coroutine, but not an async def
-        (dict(parent_task=lambda worker: asyncio.sleep(0)), TypeError, "^parent_task must be a coroutine function"),
-        (dict(parent_task=print), TypeError, "^parent_task must be a coroutine function"),
-        (dict(idle_timeout="1"), TypeError, "'idle_timeout' must be"),
-        (dict(idle_timeout=0), ValueError, "^'idle_timeout' must be > 0"),
+        (dict(main=lambda worker: asyncio.sleep(0)), TypeError, "^_parent_task must be a coroutine function"),
+        (dict(main=print), TypeError, "^_parent_task must be a coroutine function"),
+        (dict(idle_timeout="1"), TypeError, "'_idle_timeout' must be"),
+        (dict(idle_timeout=0), ValueError, "^'_idle_timeout' must be > 0"),
+        (dict(idle_timeout=timedelta(0)), ValueError, "^'_idle_timeout' must be > 0"),
+        (dict(idle_timeout=timedelta(seconds=-1)), ValueError, "^'_idle_timeout' must be > 0"),
         (dict(loop_factory=3), TypeError, "callable"),  # Called as the timer is made, before attrs validates it
         (dict(loop_factory=lambda: "not a loop"), TypeError, "^loop_factory must make a new event loop"),
         (
@@ -117,7 +120,7 @@ async def test_functions_can_be_bridged_whenever():
         fetched.set_result(await Fetcher(worker).fetch("at once"))  # Bridged, and called, as the worker starts
         await asyncio.Future()
 
-    async with running(parent_task=parent_task) as worker:
+    async with running(main=parent_task) as worker:
         assert await fetched == "at once"
         assert await Fetcher(worker).fetch("later") == "later"  # Once the worker is running
         await worker.shutdown(wait=False)
@@ -139,7 +142,7 @@ async def test_the_parent_task_gets_the_worker_and_bridged_functions_just_their_
         given.set_result(worker)
         await asyncio.Future()
 
-    async with running(parent_task=parent_task) as worker:
+    async with running(main=parent_task) as worker:
         assert worker._loop.is_running()  # Constructed only once it was
         assert await given is worker
 

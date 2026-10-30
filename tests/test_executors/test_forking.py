@@ -37,7 +37,7 @@ def test_a_forked_process_cant_use_its_copies_of_workers_nor_wait_for_them():
     assert type(stop_begun(draining).result(1)[2]) is CleanStop  # Draining as the process forks
     stopping = draining.shutdown(wait=False)  # So still waiting for the drain as the process forks
     in_flight = worker.waits()  # Submitted as made, so in flight as the process forks
-    # Bridged before the fork, so that calling them there reaches the call itself, past bridge()'s own check
+    # Bridged before the fork, as callers' functions would be, and called after it
     work, other_work, draining_work = worker.work, other.work, draining.work
     holding, release = AwaitableFuture(), AwaitableFuture()
 
@@ -66,7 +66,7 @@ def test_a_forked_process_cant_use_its_copies_of_workers_nor_wait_for_them():
             with pytest.raises(WorkerForked):
                 other_work()
             with pytest.raises(WorkerForked):
-                worker.bridge(asyncio.sleep)  # Best-effort, but so here
+                worker.bridge(asyncio.sleep)(0)  # Bridging is never refused, but calling is
             with pytest.raises(WorkerForked):
                 draining_work()  # Draining at the fork, so as if running
             with pytest.raises(WorkerForked):

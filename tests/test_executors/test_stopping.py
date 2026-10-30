@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import traceback
+from datetime import timedelta
 
 import pytest
 
@@ -52,6 +53,12 @@ class SlowCleanup(Expiring):
 
 async def test_expires_when_idle():
     async with running(Expiring) as worker:
+        _, _, stopped = await worker.wait_for_state(worker.Stopped)  # Of its own accord
+        assert type(stopped) is CleanStop and stopped.args == ("(idle) expired",)
+
+
+async def test_expires_when_idle_for_a_timedelta():
+    async with running(idle_timeout=timedelta(seconds=IDLE)) as worker:
         _, _, stopped = await worker.wait_for_state(worker.Stopped)  # Of its own accord
         assert type(stopped) is CleanStop and stopped.args == ("(idle) expired",)
 

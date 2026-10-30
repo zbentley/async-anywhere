@@ -6,7 +6,7 @@ import asyncio
 import pytest
 from asgiref.sync import async_to_sync
 
-from async_anywhere import gather
+from async_anywhere.misc import gather
 
 
 def test_gathering_nothing_needs_no_loop():

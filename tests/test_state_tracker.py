@@ -43,7 +43,7 @@ def test_after_state_change_runs_under_the_lock_once_transitioned():
         Initial = State(initial=True)
         Next = State(sources=Initial)
 
-        def after_state_change(self, old_state, new_state, data):
+        def _after_state_change(self, old_state, new_state, data):
             seen.append((self._condition._is_owned(), self.state, self._last_transition))
 
     Hooked(lock=threading.RLock())._transition(Hooked.Next, "data")
