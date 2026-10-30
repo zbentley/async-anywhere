@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC
-from typing import Any, ContextManager
+from typing import Any, ContextManager, TypeAlias
 from weakref import WeakSet
 
 from async_anywhere.futures import AwaitableFuture
@@ -10,7 +10,8 @@ from async_anywhere.state_tracker import State, StateTracker, StateTrackerError
 
 class WaitableStateTracker(StateTracker, ABC):
     # Old state and data are None for the initial state, which no transition entered
-    type _FutureType = tuple[State | None, State, Any]
+    # Not a PEP 695 type statement, which Sphinx renders by its name: this one is transparent, so docs show the tuple
+    _FutureType: TypeAlias = tuple[State | None, State, Any]
     _waiters: dict[State, WeakSet[AwaitableFuture[_FutureType]]]
 
     __slots__ = ('_waiters',)

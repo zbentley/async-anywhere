@@ -29,4 +29,5 @@ Glossary
         User-supplied Python code that executes in the captive thread of an EventLoopExecutor, including code in the user-supplied ``main`` constructor parameter, code passed to the worker via ``executor.submit()``, and code decorated with ``@executor.bridge``.
 
     interrupt, cancel [an EventLoopExecutor job]
-        Call `.cancel()` on the asyncio.Task running a given job in an executor. Calling `AwaitableFuture.cancel()` on the futures returned from `EventLoopExecutor.submit()` cancels their jobs. Certain executor stop conditions also cancel running jobs.
+        Call `.cancel()` on the asyncio.Task running a given job in an executor. Calling `AwaitableFuture.cancel()` on the futures returned from `EventLoopExecutor.submit()` cancels their jobs. Certain executor stop conditions also cancel running jobs. Note that an asyncio.Task can be cancelled (and thus raise CancelledError from certain await points) more than once.
+

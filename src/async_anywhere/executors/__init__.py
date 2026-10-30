@@ -54,9 +54,8 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
     If you need an executor which starts lazily and/or restarts its thread after stop, see `SingletonEventLoopExecutor`(TODO).
 
-    Once a worker is stopped (in the EventLoopExecutor.Stopping or EventLoopExecutor.Stopped state), it will not accept
-    new jobs. In-progress jobs and the "main" task may be interrupted, or may continue running, depending on how a stop
-    was triggered. See `Stopping`(TODO) for more information.
+    Once a worker is stopped, it will not accept new jobs. In-progress jobs and the "main" task may be interrupted, or
+    may continue running, depending on how a stop was triggered. See `Stopping`(TODO) for more information.
 
     Usage:
         Jobs can be submitted to an executor via `.submit()` or via the `@bridge` decorator:
@@ -75,11 +74,12 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         The return value of `.submit()` and `@bridge`d functions is an `AwaitableFuture`, which can be awaited on, or
         blocked on, from any number of event loops or threads.
 
+        Code running inside an EventLoopExecutor can itself run jobs on the executor.
+
     Advanced usage:
         EventLoopExecutors have several optional features for advanced use:
 
         - They can time out and shut themselves down after a configurable idle time.
-        - Code running inside an EventLoopExecutor can itself run jobs on the executor.
         - Users can supply a custom "main" awaitable function which will always be running as an asyncio.Task inside the
           EventLoopExecutor. If that awaitable ever completes, the executor will shut itself down.
         - Users can supply custom event loops to be used inside of the executor. This facilitates e.g. combining uvloop
@@ -94,6 +94,12 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         >>>    loop_factory=uvloop.new_event_loop,
         >>>    logger=logging.getLogger("mylogger"),
         >>> )
+
+    Note:
+
+        Every method in an Executor's public API can be called (and its result waited for, if it returns a future) from
+        `any` thread or event loop context within the process that created the EventLoopExecutor it is bound to.
+        This includes things like calling ``.submit()`` from the executor's own loop and thread.
 
     Trio:
         ``await``ing on the result of ``submit()`` or ``@bridge`` from Trio works automatically. Running code in an
@@ -128,7 +134,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     )
     """An amount of time spent idle, after which the executor will stop itself via ``shutdown(wait=False)``.
     The time-spend-idle tracker resets every time a job is submitted to an executor. An executor will never expire while
-    a job is running. Must be a positive timedelta or number of seconds. 
+    a job is running. Must be a positive ``datetime.timedelta`` or floating-point number of seconds. 
     
     Defaults to ``float("inf")``, i.e. never time out.
     """
@@ -172,11 +178,11 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     )
 
     Running: ClassVar[State] = State(initial=True)
-    Stopping: ClassVar[State] = State(sources=Running)
-    Stopped: ClassVar[State] = State(sources=Stopping)
     """
     Observing executor state:
-        An EventLoopExecutor is a WaitableStateTracker whose state moves linearly from EventLoopExecutor.Running -> EventLoopExecutor.Stopping -> EventLoopExecutor.Stopped.
+        An EventLoopExecutor is a WaitableStateTracker whose state moves linearly, thus:
+        ``EventLoopExecutor.Running`` -> ``EventLoopExecutor.Stopping`` -> ``EventLoopExecutor.Stopped``
+
         After construction, executors will be in the Running state until something causes them to stop (see "Stopping"(TODO)).
 
         Users can observe and wait for state changes by using WaitableStateTracker's `wait_for_state` method, e.g.:
@@ -184,9 +190,20 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         >>> executor = EventLoopExecutor()
         >>> await executor.wait_for_state(executor.Stopping)
 
-        If users want to externally react to worker state changes, the AwaitableFutures returned from wait_for_state can be used
-        directly, or subscribed to via AwaitableFuture.add_done_callback.
+        If users want to externally react to worker state changes, the AwaitableFutures returned from wait_for_state can
+        be used directly, or subscribed to via AwaitableFuture.add_done_callback.
     """
+    Stopping: ClassVar[State] = State(sources=Running)
+    """This state is entered once, when :py:func:`shutdown()` is called or the worker stops for any other reason."""
+    Stopped: ClassVar[State] = State(sources=Stopping)
+    """This state is entered once, after the worker has shut down its event loop and has joined its captive thread."""
+
+
+    def __attrs_post_init__(self):
+        WaitableStateTracker.__init__(self)
+        _fork_safety.workers.ensure_registered(self)  # Before the thread starts, so the fork handler knows of every worker running
+        self._thread.start()
+        self._runner.result()  # So that, once constructed, the worker is running
 
     @cached_property
     def _loop(self) -> asyncio.AbstractEventLoop:
@@ -204,12 +221,6 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         # Refuses blocking waits on the worker's loop, for its calls' and state waits' futures: made once, for all
         return blocking_wait_checker((self._loop,))
 
-    def __attrs_post_init__(self):
-        WaitableStateTracker.__init__(self)
-        _fork_safety.workers.ensure_registered(self)  # Before the thread starts, so the fork handler knows of every worker running
-        self._thread.start()
-        self._runner.result()  # So that, once constructed, the worker is running
-
     def submit(
         self, func: Callable[_P, Coroutine[Any, Any, _T]], /, *args: _P.args, **kwargs: _P.kwargs
     ) -> AwaitableFuture[_T]:
@@ -221,9 +232,6 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
         The function will execute in a ``contextvars.Context`` copied from the caller, regardless of which thread it
         executes on, and regardless of the value of ``thread_inherit_context``.
-
-        ``executor.submit()`` can be called (and its result waited for) from any thread or event loop context within the
-        process that created "executor". This includes the executor's own loop and thread.
 
         Args:
             func: The function to be called. It should return a coroutine, and should not unduly block (if it does, the
@@ -296,7 +304,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     def in_worker(self) -> bool:
         """
         Returns True if called from the worker's captive event loop thread. Returns False otherwise. Also returns False
-        if the worker's thread has fork(2)ed and this method is called from a child process.
+        if the worker's thread has ``fork(2)``ed and this method is called from a child process.
         """
         # The worker's thread becomes the main thread if a fork() has occurred. Since the worker's thread is a daemon,
         # it'll never become the main thread in the parent, even if the original main thread exits.
@@ -305,9 +313,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     def wait_for_state(
         self, state: State, *states: State, prevent_blocking_wait_in_loops: LoopSelector = None, **kwargs
     ) -> AwaitableFuture[WaitableStateTracker._FutureType]:
-        """Behaves identically to WaitableStateTracker.wait_for_state(), with the added invariant that blocking on the
-        returned future from within the executor's own event loop/thread will always raise an error if the future has
-        not yet resolved."""
+        """Behaves identically to WaitableStateTracker.wait_for_state(), with the added invariant attempting to block on
+        the result of the returned AwaitableFuture from within the executor's own event loop/thread will always raise an
+        error if the future has not yet resolved."""
         # Refusing blocking waits on the worker's loop too, whatever's given: only its thread changes its state
         if prevent_blocking_wait_in_loops is None:
             prevent_blocking_wait_in_loops = self._runtime_checker  # Its one checker, rather than a new one per future
@@ -316,13 +324,43 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         return super().wait_for_state(state, *states, prevent_blocking_wait_in_loops=prevent_blocking_wait_in_loops, **kwargs)
 
     def shutdown(self, wait=True, *, cancel_futures=False) -> AwaitableFuture[WaitableStateTracker._FutureType]:
-        """Stop the worker, and return a future that resolves to (old state, new state, why it stopped) once the worker
-        has finished: with `wait`, only once it has.
+        # TODO do better WRT return type; cache a future that's just the exception.
+        r"""
+        Immediately signal the executor to stop accepting jobs, and begin the process of shutting down its captive event
+        loop and thread.
 
-        Calls are refused from then on. Those in flight are cancelled, along with the parent task, each time this is
-        called with `cancel_futures`, or left to finish before the parent task is (a drain, which a later shutdown() with
-        `cancel_futures` can cut short). On the worker's own thread, `wait` is an error, as it would wait for itself,
-        and `cancel_futures` cancels the calling task too."""
+        Args:
+            wait (bool): If True, this method will `synchronously` block until the worker has fully stopped its thread and
+                event loop. If True and ``shutdown()`` is called inside the executor, an error will be raised if this
+                method would block.
+
+                Warning:
+                    The default of ``wait=True`` is somewhat dangerous, as it can block the event loop of callers. That
+                    default is necessary for compatibility with stdlib functions that interact with
+                    :py:class:`concurrent.futures.Executor`, so it's important to be mindful.
+            cancel_futures (bool): If True, jobs running on the worker (including any job started via the ``main=`` constructor
+                argument) will be interrupted by cancelling the :py:class:`asyncio.Task`\ s that contain each job. If
+                False, submitted jobs will not be cancelled, but the job started via the ``main=`` constructor argument
+                `will` be cancelled if it has not already been cancelled for any reason.
+
+                Note:
+                    Jobs will be cancelled `each time` ``shutdown(cancel_futures=True)`` is called. Async code can be
+                    cancelled multiple times in Python. This can result in multiple :py:class:`asyncio.CancelledError`\ s
+                    being raised from the same job if users call ``shutdown(cancel_futures=True)`` repeatedly.
+
+        Returns:
+            An :py:class:`AwaitableFuture` produced from ``EventLoopExecutor.wait_for_state(EventLoopExecutor.Stopped)``.
+            In other words, a future that resolves only when the worker has shut down its thread and event loop. The
+            future will resolve to the triple ``(EventLoopExecutor.Stopped, EventLoopExecutor.Stopped, reason)``, where
+            ``reason`` is an instance of :py:class:`WorkerStopped` describing the reason for the stop.
+
+            If ``wait=True``, the returned future will be done.
+
+            Cancelling the returned AwaitableFuture does nothing. ``shutdown()`` cannot be aborted or reversed.
+
+            Note:
+                The returned AwaitableFuture may not be unique.
+        """
 
         if isinstance(broken := self._last_transition[2], WorkerBroken):
             raise copy_exception(broken)
@@ -330,7 +368,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         if wait and self.in_worker():
             raise RuntimeError("shutdown(wait=True) on the worker's own thread would wait for itself")
 
-        def begin():  # On the worker's loop. Not a call, so it isn't refused once the worker has stopped: it can cut a drain short.
+        def report_stop():  # On the worker's loop. Not a call, so it isn't refused once the worker has stopped: it can cut a drain short.
             if cancel_futures and len(self._calls) > 0:
                 self._unclean_stop("manually stopped")
             else:
@@ -339,7 +377,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                 self._interrupt(cancel_futures)  # Otherwise the last call to end does: see _job()
 
         with suppress(RuntimeError):  # The loop has closed, so the worker has already stopped
-            self._loop.call_soon_threadsafe(begin)  # Queued even on the worker's thread, behind calls made before it
+            self._loop.call_soon_threadsafe(report_stop)  # Queued even on the worker's thread, behind calls made before it
         stopped = self.wait_for_state(self.Stopped)
         if wait:
             stopped.result()

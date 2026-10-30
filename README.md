@@ -79,7 +79,7 @@ print(fut.result(timeout=1)) # ... or synchronously.
 from async_anywhere.executors import EventLoopExecutor
 import asyncio
 
-executor = EventLoopExecutor(_idle_timeout=10)  # Dies if not given work to do for 10 seconds
+executor = EventLoopExecutor(idle_timeout=10)  # Dies if not given work to do for 10 seconds
 
 fut = executor.submit(asyncio.sleep, 1, result="Hello from a captive loop after 1 second!")
 

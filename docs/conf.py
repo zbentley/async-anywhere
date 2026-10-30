@@ -50,14 +50,13 @@ def _colliding_module_name(cls):
 def process_bases_hook(*args):
 
     rv = []
-    tail = set()
     for base in args[-1]:
         if base.__module__.startswith('async_anywhere'):
             rv.append(base)
         else:
             rv.append(_colliding_module_name(base))
 
-    args[-1][:] = rv + sorted(tail, key=str)
+    args[-1][:] = rv
 
 
 def attrs_init_param_docs(app, what, name, obj, options, lines):  # noqa: PLR0917
