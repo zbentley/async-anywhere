@@ -11,14 +11,14 @@ extensions = [
     "myst_parser",
     "pytest_doctestplus.sphinx.doctestplus",
 ]
-autodoc_typehints = "both"
+autodoc_typehints = "description"
 intersphinx_mapping = {'python': ('https://docs.python.org/3', None)}
 autodoc_class_signature = "separated"
 autodoc_default_options = {
     'show-inheritance': True,
-    'member-order': 'bysource',
+    # 'member-order': 'bysource',
     'inherited-members': True,
-    'special-members': '__call__,__enter__,__exit__,__aenter__,__aexit__',
+    # 'special-members': '__call__,__enter__,__exit__,__aenter__,__aexit__',
     'undoc-members': True,
     'exclude-members': '__weakref__,__new__'
 }
