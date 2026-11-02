@@ -6,10 +6,10 @@ from collections import defaultdict
 from threading import RLock
 from typing import Any, ClassVar, Self, ContextManager
 
-from async_anywhere.state_tracker._exceptions import StateTrackerError
+from async_anywhere.exceptions import StateTrackerError
 from async_anywhere.state_tracker._state import State, _binding_lock, _structural_invariant
 
-__all__ = ["State", "StateTracker", "StateTrackerError"]
+__all__ = ["State", "StateTracker"]
 
 
 # TODO think about hash or not

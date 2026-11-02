@@ -6,8 +6,9 @@ from threading import Condition
 from time import monotonic
 from typing import Any, Awaitable, Callable, Self
 
-from async_anywhere._util import blocking_wait_checker, LoopSelector
+from async_anywhere._util import LoopSelector
 from async_anywhere._util.trio import TrioRuntime
+from async_anywhere.exceptions import WouldBlock
 from async_anywhere.futures import _fork_safety
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
 from async_anywhere.futures._trio import TrioAwaitableFuture
@@ -73,7 +74,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     }
 
     __slots__ = (
-        '_runtime_checker',  # Refuses blocking waits where they'd deadlock (see blocking_wait_checker()), or None
+        '_runtime_checker',  # Refuses blocking waits where they'd deadlock (see WouldBlock._checker()), or None
         '_ignore_cancel',
         '_cancel_pending_in_forked_child',
         '_completed_at',
@@ -95,12 +96,12 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         # observable behavior contract (which, per the stdlib's documented warning, is NOT limited to public methods)
         # must remain a superset of concurrent.future.Future's contract.
         StateTracker.__init__(self, lock=Condition())
-        # Not calling blocking_wait_checker() for None (most futures) saves its call: these are made on hot paths
+        # Not calling WouldBlock._checker() for None (most futures) saves its call: these are made on hot paths
         # Or a checker it made, passed back, as a worker does. NB if you pass a callable iterable, this will break.
         if prevent_blocking_wait_in_loops is None or callable(prevent_blocking_wait_in_loops):
             self._runtime_checker = prevent_blocking_wait_in_loops
         else:
-            self._runtime_checker = blocking_wait_checker(prevent_blocking_wait_in_loops)
+            self._runtime_checker = WouldBlock._checker(prevent_blocking_wait_in_loops)
         self._ignore_cancel = ignore_cancel
         self._cancel_pending_in_forked_child = cancel_pending_in_forked_child
         self._completed_at: float | None = None

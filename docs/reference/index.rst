@@ -19,6 +19,7 @@ Modules
    async_anywhere
    async_anywhere.futures
    async_anywhere.executors
+   async_anywhere.exceptions
    async_anywhere.misc
 
 .. |attrs| replace:: ``attrs``

@@ -13,7 +13,7 @@ import time
 import pytest
 
 from async_anywhere.executors import _fork_safety
-from async_anywhere.executors.exceptions import CleanStop, WorkerForked, WorkerStopped
+from async_anywhere.exceptions import CleanStop, WorkerForked, WorkerStopped
 from async_anywhere.futures import AwaitableFuture
 from tests.test_executors.utils import Worker, bridge, forked, reason, running, stop_begun
 

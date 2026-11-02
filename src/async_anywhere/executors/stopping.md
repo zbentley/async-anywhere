@@ -1,5 +1,3 @@
-# TODO clean up docs; half of these are scratchpad/duplicate notes
-"""
 Workers are stopped in these situations:
 
 - `shutdown()` is called (as `with worker:` exits, say).

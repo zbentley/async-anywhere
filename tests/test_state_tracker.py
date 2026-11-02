@@ -12,8 +12,8 @@ import anyio
 import attr
 import pytest
 
-from async_anywhere._util import copy_exception
-from async_anywhere.state_tracker import StateTracker, State, StateTrackerError
+from async_anywhere.exceptions import StateTrackerError
+from async_anywhere.state_tracker import StateTracker, State
 from async_anywhere.state_tracker.waitable import WaitableStateTracker
 
 
@@ -231,7 +231,7 @@ def test_error_is_copyable():
         MyStateTracker()._transition(MyStateTracker.Initial)
     error = info.value
     error.add_note("a note")
-    for duplicate in (copy.copy(error), pickle.loads(pickle.dumps(error)), copy_exception(error)):
+    for duplicate in (copy.copy(error), pickle.loads(pickle.dumps(error)), error.copy()):
         assert type(duplicate) is StateTrackerError
         assert duplicate.args == error.args
         assert duplicate.__notes__ == ["a note"]
@@ -263,6 +263,26 @@ def test_wait_for_state_resolves_on_transition():
     assert future.result(0) == (MyWaitable.A, MyWaitable.B, "data")
     inst._transition(MyWaitable.C)  # Its future, done, is still among C's waiters
     assert future.result(0)[1] is MyWaitable.B
+
+class CyclicWaitable(WaitableStateTracker):
+    A = State(initial=True, destinations=[Self])
+    B = State(sources=[A])
+    C = State(sources=[B], destinations=[A])
+
+def test_ignore_current_state_waits_to_reenter_it():
+    inst = CyclicWaitable()
+    future = inst.wait_for_state(CyclicWaitable.A, ignore_current_state=True)
+    assert not future.done()
+    inst._transition(CyclicWaitable.A, "data")
+    assert future.result(0) == (CyclicWaitable.A, CyclicWaitable.A, "data")
+
+def test_ignore_current_state_waits_for_any_given_state():
+    inst = CyclicWaitable()
+    future = inst.wait_for_state(CyclicWaitable.A, CyclicWaitable.C, ignore_current_state=True)
+    inst._transition(CyclicWaitable.B)
+    assert not future.done()
+    inst._transition(CyclicWaitable.C, "data")
+    assert future.result(0) == (CyclicWaitable.B, CyclicWaitable.C, "data")
 
 def test_waiters_refuse_cancellation():
     inst = MyWaitable()

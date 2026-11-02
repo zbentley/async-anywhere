@@ -12,9 +12,9 @@ from weakref import WeakSet
 import sniffio
 from attrs import Factory, define, field, setters, validators
 
-from async_anywhere._util import LoopSelector, blocking_wait_checker, validate_coroutine_function, copy_exception
+from async_anywhere._util import LoopSelector, validate_coroutine_function, copy_exception
+from async_anywhere.exceptions import CleanStop, WorkerBroken, WorkerInterrupted, WorkerStopped, WorkerForked, WouldBlock
 from async_anywhere.executors import _fork_safety
-from async_anywhere.executors.exceptions import CleanStop, WorkerBroken, WorkerInterrupted, WorkerStopped, WorkerForked
 from async_anywhere.executors._timer import Timer
 from async_anywhere.futures import AwaitableFuture
 from async_anywhere.state_tracker import State
@@ -219,7 +219,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     @cached_property
     def _runtime_checker(self) -> Callable[[Any], None]:
         # Refuses blocking waits on the worker's loop, for its calls' and state waits' futures: made once, for all
-        return blocking_wait_checker((self._loop,))
+        return WouldBlock._checker((self._loop,))
 
     def submit(
         self, func: Callable[_P, Coroutine[Any, Any, _T]], /, *args: _P.args, **kwargs: _P.kwargs
@@ -244,7 +244,8 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             Attempting to block on the returned future via AwaitableFuture.result() from inside the executor will raise
             an error if the future is not yet completed, to avoid accidental deadlock.
 
-            Calling ``fork(2)`` will, in the child process, cancel any not-yet-completed futures returned by this method.
+            Calling ``fork(2)`` will, in the child process, fail (complete with a WorkerForked exception) any
+            not-yet-completed futures that were returned by this method.
 
         Note:
             Cancelling the returned AwaitableFuture will cancel the job running on the worker's event loop. If this is
@@ -273,7 +274,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         with self._condition:
             _, state, why = self._last_transition
             if state is not self.Running:
-                raise copy_exception(why)  # A copy, as for _fail()
+                raise why.copy()  # A copy, as for _fail()
             self._submitted.add(future)
             # Only queues a callback, so never waits for the worker's loop. It runs in a copy of the caller's context.
             if in_loop:
@@ -363,7 +364,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         """
 
         if isinstance(broken := self._last_transition[2], WorkerBroken):
-            raise copy_exception(broken)
+            raise broken.copy()
         # Eagerly, before the stop is queued, so that refusing to wait stops nothing
         if wait and self.in_worker():
             raise RuntimeError("shutdown(wait=True) on the worker's own thread would wait for itself")
@@ -411,7 +412,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
     def _fail(self, future: AwaitableFuture, error: BaseException | None = None) -> bool:
         # Else a copy of why the worker stopped, per future: each raise adds its frames to the exception's traceback
-        return future.set_exception_if_not_done(error or copy_exception(self._last_transition[2]))
+        return future.set_exception_if_not_done(error or self._last_transition[2].copy())
 
     def _log(self, level: int, msg: str, *args, **kwargs):
         # Only on the worker's thread: in a forked process, a handler's stream may be locked forever
@@ -569,7 +570,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # so, this job's waiters get an error indicating where the job was cancelled, with exception-chain-context
             # about why the worker stopped.
             if self._interrupted and task.cancelling():
-                error = WorkerInterrupted.from_cancellation(ex, copy_exception(self._last_transition[2]))
+                error = WorkerInterrupted._from_cancellation(ex, self._last_transition[2].copy())
             else:
                 error = ex
             # If we can't report it to the user, crash the task so Python's logger reports the failure

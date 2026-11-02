@@ -11,7 +11,7 @@ import anyio
 import pytest
 import trio
 
-from async_anywhere.executors.exceptions import CleanStop, WorkerStopped
+from async_anywhere.exceptions import CleanStop, WorkerStopped
 from async_anywhere.futures import AwaitableFuture
 from tests.test_executors.utils import Tidy, bridge, running
 

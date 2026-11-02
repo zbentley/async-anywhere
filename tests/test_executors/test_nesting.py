@@ -8,7 +8,7 @@ import concurrent.futures
 import anyio
 import pytest
 
-from async_anywhere.executors.exceptions import CleanStop, WorkerStopped
+from async_anywhere.exceptions import CleanStop, WorkerStopped
 from tests.test_executors.utils import Tidy, Worker, bridge, running
 
 

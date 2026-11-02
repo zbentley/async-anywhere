@@ -15,6 +15,7 @@ import uvloop
 from _pytest.threadexception import ThreadExceptionMeta, thread_exceptions as thread_exceptions_key
 
 from async_anywhere.executors import _fork_safety
+from async_anywhere.executors.singleton import SingletonEventLoopExecutor
 
 
 pytest.register_assert_rewrite("tests.test_executors.utils")  # Before test modules import it
@@ -100,6 +101,8 @@ def strict_teardown(request, caplog):
             problems.append(f"{worker!r} was left running")
             with suppress(BaseException):
                 worker.shutdown(wait=False, cancel_futures=True).result(2)
+        if isinstance(worker, SingletonEventLoopExecutor):
+            continue  # Its workers are among these
         worker._thread.join(2)
         if worker._thread.is_alive():
             problems.append(f"{worker!r}'s thread never finished")

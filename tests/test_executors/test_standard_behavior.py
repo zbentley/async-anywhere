@@ -13,10 +13,9 @@ from datetime import timedelta
 
 import pytest
 
+from async_anywhere.exceptions import CleanStop, StateTrackerError, WorkerStopped
 from async_anywhere.executors import EventLoopExecutor
-from async_anywhere.executors.exceptions import CleanStop, WorkerStopped
 from async_anywhere.futures import AwaitableFuture
-from async_anywhere.state_tracker import StateTrackerError
 from tests.test_executors.utils import BlocksLoop, Tidy, Worker, bridge, running, stop_begun
 
 

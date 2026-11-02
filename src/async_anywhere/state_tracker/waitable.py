@@ -4,8 +4,9 @@ from abc import ABC
 from typing import Any, ContextManager, TypeAlias
 from weakref import WeakSet
 
+from async_anywhere.exceptions import StateTrackerError
 from async_anywhere.futures import AwaitableFuture
-from async_anywhere.state_tracker import State, StateTracker, StateTrackerError
+from async_anywhere.state_tracker import State, StateTracker
 
 
 class WaitableStateTracker(StateTracker, ABC):
@@ -25,17 +26,20 @@ class WaitableStateTracker(StateTracker, ABC):
         super().__init__(lock=lock)
         self._waiters = {s: WeakSet() for s in self.states}
 
-    def wait_for_state(self, state: State, *states: State, **kwargs) -> AwaitableFuture[_FutureType]:
+    def wait_for_state(
+        self, state: State, *states: State, ignore_current_state: bool = False, **kwargs
+    ) -> AwaitableFuture[_FutureType]:
         # NB: the future returned here will be resolved once the StateTracker has passed through the given state, even
         # if it is no longer in that state. If a worker transitions twice in rapid succession, or a waiter is attached
         # and then not waited on until later, after the worker has passed through *states, it'll still resolve.
+        # NB: ignore_current_state=True always waits, for the next transition into *states, even if already in one.
         # NB: cancelling the returned future does nothing.
         # NB: if your done callbacks are slow, you'll break stuff (here and everywhere)
         # NB: kwargs go to AwaitableFuture() (prevent_blocking_wait_in_loops, say), bar ignore_cancel: that's an error
         states = [self._check_state(state) for state in (state, *states)]
         future = AwaitableFuture(**kwargs, ignore_cancel=True)  # Giving up on it leaves it, and other waiters, alone
         with self._condition:
-            if self.state in states:
+            if not ignore_current_state and self.state in states:
                 future.set_result(self._last_transition)
             else:
                 for state in states:
