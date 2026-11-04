@@ -1,12 +1,34 @@
-Workers are stopped in these situations:
+# `EventLoopExecutor` Stopping
 
-- `shutdown()` is called (as `with worker:` exits, say).
-- The parent task finishes.
-- After a fork, workers inherited by a child process register as being stopped in that process.
+An `EventLoopExecutor` can be **stopped**, meaning that it's `WaitableStateTracker` is in the `Stopping` or `Shutdown` 
+States.
 
-## Worker shutdown:
+Once an executor is stopped, attempts to submit new jobs will fail with an error. Waiting for jobs submitted just before 
+it was stopped (that have not yet started running) will also fail with an error.
 
-A worker is shut down (Stopped) once it has terminated its event loop. The internal order of shutdown is roughly:
+## When is an executor stopped?
+
+Executors are stopped in these situations:
+
+1. `EventLoopExecutor.shutdown()` is called by the user.
+1. The parent task provided via the `main=` keyword argument to the executor constructor returns or raises an exception.
+1. After a fork, executor inherited by a child process register as being stopped in that process.
+1. When the captive event loop used by the executor crashes (e.g. if user code inside the executor calls 
+   `asyncio.get_event_loop().close()`, or if an unhandled event loop runtime error occurs).
+
+## What happens when an executor is stopped?
+
+When an executor is stopped in the process that created it, the following behavior happens:
+
+1. Immediately upon being stopped, new jobs can no longer be submitted to the executor.
+2. If the parent task provided via the `main=` keyword argument to the constructor is still running, and has not been
+   cancelled, `asyncio.Task.cancel()` is called on it.
+3. The worker's captive event loop then waits for all requested [jobs](TODO link to glossary) to complete. Jobs can receive [interruptions](TODO) during this phase.
+4. The worker's captive event loop is shut down. This is done by shutting down all active tasks, async generators, and signalling the loop's executor to shut down before calling `.close()` on the event loop.
+5. TODO wait for executor and bg tasks.
+6. The executor's captive daemon thread is joined and the executor is transitioned to the `Shutdown` State.
+
+A worker is shut down (Shutdown) once it has terminated its event loop. The internal order of shutdown is roughly:
 
 1. Ensure the worker is stopped, or stop it.
 2. Ensure the parent task and all bridge jobs in flight have completed (see "Interruption" for cancellation semantics).
@@ -54,5 +76,5 @@ so callers' tracebacks don't pile up on one shared exception.
 
 Once the parent task and every call have finished, the loop cancels any tasks left on it (work that the parent task or
 calls spawned and didn't wait for), gives them 0.05s, shuts down async generators and the default executor (abandoning, with a RuntimeWarning,
-threads that haven't finished by then), and closes. Only then does the worker move to Stopped, waking shutdown()'s waiters.
+threads that haven't finished by then), and closes. Only then does the worker move to Shutdown, waking shutdown()'s waiters.
 """
