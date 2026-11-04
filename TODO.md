@@ -71,7 +71,7 @@ WorkerStopped, not RuntimeError).
 Calls made on the worker's own thread are no different.
 
 shutdown(wait=True, *, cancel_futures=False) isn't a call. It queues the stop on the worker's loop, behind calls already
-made (which a drain lets finish), from any thread, the worker's own included. It returns wait_for_state(Stopped)'s
+made (which a drain lets finish), from any thread, the worker's own included. It returns wait_for_state(Shutdown)'s
 AwaitableFuture, resolving once the worker has finished to (old state, new state, why the worker stopped), why being a
 WorkerStopped, which it returns rather than raises (a WorkerForked, in a process forked from the worker's). With wait=True
 (as `with worker:` exits, too) it first waits for that future, blocking the calling thread, and any event loop running
@@ -108,7 +108,7 @@ Caveats
 - Workers run on daemon threads: one not shut down before the interpreter exits stops without cleaning up (the parent
   task's cleanup never runs). Shut workers down with atexit if that matters.
 - A process forked with workers alive inherits copies of them, but not their threads, so none can be used there: see
-  _fork_safety (unless they'd shut down already, they're Stopped there, why being a WorkerForked, which is a
+  _fork_safety (unless they'd shut down already, they're Shutdown there, why being a WorkerForked, which is a
   WorkerBroken, itself a WorkerStopped). That goes for a call that forked too, whose
   child runs on in a copy of the worker's loop (one asyncio no longer counts as running): the worker carries on only in
   the parent.

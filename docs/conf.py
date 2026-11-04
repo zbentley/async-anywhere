@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import inspect
 import sys
 
 import attrs
@@ -61,7 +62,8 @@ def process_bases_hook(*args):
 
 def attrs_init_param_docs(app, what, name, obj, options, lines):  # noqa: PLR0917
     # Feed attrs fields' attribute docstrings (string after, or #: before) into the generated __init__'s :param <alias>: fields
-    if what != "method" or getattr(obj, "__name__", None) != "__init__":
+    # Python functions, as attrs makes: not inherited C slot wrappers (BaseException.__init__), which lack __module__
+    if what != "method" or not inspect.isfunction(obj) or obj.__name__ != "__init__":
         return
     owner = functools.reduce(getattr, obj.__qualname__.split(".")[:-1], sys.modules[obj.__module__])
     if not attrs.has(owner) or owner.__init__ is not obj:

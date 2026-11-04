@@ -27,3 +27,11 @@ run = "sphinx-build docs docs/_build --color"
 [tasks.docs]
 depends = ["docs.build"]
 run = "open docs/_build/index.html"
+
+# Serves docs on http://127.0.0.1:8000, rebuilding and reloading the page whenever docs, docstrings, or included files change
+# -E: incremental builds miss edits to conf.py's handlers, and skip unchanged pages' warnings
+# __pycache__: the build's imports write bytecode into src, which would trigger a second rebuild
+# --pre-build: Sphinx never deletes output for removed sources; pages 404 for ~1s while each rebuild runs
+[tasks.'docs.watch']
+depends = ["docs.clean"]
+run = "sphinx-autobuild docs docs/_build --color -E --watch src --watch README.md --watch LICENSE --re-ignore __pycache__ --pre-build 'rm -rf docs/_build'"
