@@ -218,6 +218,63 @@ def test_state_waits_refuse_blocking_waits_on_a_stopping_workers_loop_while_its_
         replacement.result(5)
 
 
+@contextlib.contextmanager
+def making_slowly():
+    """`with making_slowly() as (loop_factory, making, release):` gives a loop_factory that sets making, then waits for
+    release to be set."""
+    making, release = threading.Event(), threading.Event()
+
+    def loop_factory():
+        making.set()
+        release.wait(5)
+        return asyncio.new_event_loop()
+
+    yield loop_factory, making, release
+    release.set()
+
+
+def interrupted(_):
+    raise KeyboardInterrupt  # As Ctrl+C would, landing in it
+
+
+def test_a_callback_on_gets_future_raising_doesnt_keep_calls_made_meanwhile_from_starting(thread_exceptions):
+    with making_slowly() as (loop_factory, making, release), running_singleton(loop_factory=loop_factory) as singleton:
+        maker = threading.Thread(target=singleton.get)  # Making the worker, there
+        maker.start()
+        assert making.wait(5)
+        singleton.get().add_done_callback(interrupted)
+        call = singleton.submit(work)
+        release.set()
+        maker.join(5)
+        assert call.result(2) == "done"
+    assert [type(error) for error in thread_exceptions()] == [KeyboardInterrupt]  # Raised on the maker's thread
+
+
+def test_cancelling_a_call_made_as_its_worker_is_made_cancels_its_job_though_a_callback_on_it_raises():
+    with making_slowly() as (loop_factory, making, release), running_singleton(loop_factory=loop_factory) as singleton:
+        maker = threading.Thread(target=singleton.get)  # Making the worker, there
+        maker.start()
+        assert making.wait(5)
+        call = singleton.submit(waits_for, started := AwaitableFuture(), AwaitableFuture())  # Never released
+        call.add_done_callback(interrupted)
+        release.set()
+        maker.join(5)
+        started.result(5)
+        with pytest.raises(KeyboardInterrupt):
+            call.cancel()
+        singleton.shutdown(wait=False, cancel_futures=False).result(2)  # A drain, which the job would hold up
+
+
+def test_a_callback_on_its_running_wait_raising_doesnt_keep_its_worker_from_being_handed_out_or_followed():
+    with running_singleton() as singleton:
+        running = singleton.wait_for_state(singleton.Running)  # Held, as its waiter set holds it only weakly
+        running.add_done_callback(interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            singleton.get()  # Making the worker, here
+        assert singleton.submit(work).result(5) == "done"
+        singleton.shutdown(wait=False).result(5)  # Followed to Shutdown
+
+
 def test_a_worker_interrupted_as_its_made_fails_its_calls_and_is_made_again_by_the_next_get():
     calls = []
 

@@ -1,7 +1,6 @@
 import asyncio
 import concurrent.futures
 import logging
-import signal
 from contextlib import suppress
 from contextvars import Context, copy_context
 from datetime import timedelta
@@ -13,7 +12,7 @@ from weakref import WeakKeyDictionary
 import sniffio
 from attrs import Factory, define, field, setters, validators
 
-from async_anywhere._util import BlockingSignals, LoopSelector, validate_coroutine_function, copy_exception
+from async_anywhere._util import LoopSelector, validate_coroutine_function, copy_exception
 from async_anywhere.exceptions import CleanStop, WorkerBroken, WorkerInterrupted, WorkerStopped, WorkerForked, WouldBlock
 from async_anywhere.executors import _fork_safety
 from async_anywhere.executors._timer import Timer
@@ -449,11 +448,10 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             self._cancellation_forwarder(future)
 
     @cached_property
-    def _cancellation_forwarder(self) -> BlockingSignals[[AwaitableFuture], None]:
+    def _cancellation_forwarder(self) -> Callable[[AwaitableFuture], None]:
         # Each call's future's first done callback (see submit()), made once, for all: cancelling the future cancels its
-        # job's task, once _start() has made it, with SIGINT blocked, so that Ctrl+C can't cut that short. The task's
-        # popped, so that this and _start() cancel it only once between them; under _condition, as _finalize() lists
-        # them under it.
+        # job's task, once _start() has made it. The task's popped, so that this and _start() cancel it only once
+        # between them; under _condition, as _finalize() lists them under it.
 
         def forward_cancellations(future: AwaitableFuture):
             if future.cancelled():
@@ -472,7 +470,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                     except RuntimeError:  # The loop has closed
                         pass
 
-        return BlockingSignals((signal.SIGINT,), forward_cancellations)
+        return forward_cancellations
 
     def _fail(self, future: AwaitableFuture, error: BaseException | None = None) -> bool:
         # Else a copy of why the worker stopped, per future: each raise adds its frames to the exception's traceback

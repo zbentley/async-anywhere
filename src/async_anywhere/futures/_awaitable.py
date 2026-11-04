@@ -4,9 +4,9 @@ from concurrent.futures._base import CANCELLED_AND_NOTIFIED, FINISHED, PENDING, 
 from math import isinf
 from threading import Condition
 from time import monotonic
-from typing import Any, Awaitable, Callable, Self, Sequence
+from typing import Any, Awaitable, Callable, Self
 
-from async_anywhere._util import BlockingSignals, LoopSelector, futures_logger
+from async_anywhere._util import LoopSelector, futures_logger
 from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.exceptions import WouldBlock
 from async_anywhere.futures import _fork_safety
@@ -46,7 +46,6 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
       own (but doesn't ensure across fork(2)), unless added with run_in_forked_child=True. In a forked process, one
       that hadn't finished is left pending, as a concurrent.futures.Future would be, unless made with
       cancel_pending_in_forked_child=True, which cancels it there: see _fork_safety.
-    - add_done_callback() can block signals (Ctrl+C's SIGINT, say) while a callback runs: see its block_signals.
     - With transform_result (None by default), set_result() (and so set_result_if_not_done()) resolves it with
       transform_result(result) rather than with result itself. It must be pure and run in constant time, as it runs on
       whichever thread finishes the future, before it has. If it raises, the future fails with what it raised, which
@@ -257,31 +256,17 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             del self
 
     def add_done_callback(
-        self,
-        fn: Callable[[Self], Any],
-        *,
-        run_in_forked_child: bool = False,
-        raise_if_failed_immediately: bool = False,
-        block_signals: Sequence[int | str] | None = None,
+        self, fn: Callable[[Self], Any], run_in_forked_child: bool = False, raise_if_failed_immediately=False,
     ) -> _DoneCallbackToken:
         """As concurrent.futures.Future's, but with run_in_forked_child, fn runs in a process forked from this one too,
         as the future finishes there: see _fork_safety. Returns a token for remove_done_callback() that removes just
         this registration (one that, if this future has finished, has already run fn).
 
-        With block_signals (signal.SIGINT, or "SIGINT", say), those signals are blocked while fn runs on the main
-        thread, the only one Python runs signal handlers on: one that arrives meanwhile is handled once fn returns, as
-        though it had arrived then, so that a KeyboardInterrupt from Ctrl+C can't cut fn short. They're handled in the
-        order given, each handler running whatever the one before raised, as CPython runs pending signals' handlers.
-        Raises ValueError for one that can't be blocked (SIGKILL, say).
-
         Warning:
-            While fn runs with signals blocked, they do nothing: if fn blocks, or runs long, Ctrl+C can't interrupt it,
-            or the program. That includes waiting (on a lock, a future, or I/O), and finishing other futures, whose own
-            callbacks then run with the signals still blocked. Only block signals for a callback that's short, and that
-            can't block.
+            fn mustn't raise a BaseException that isn't an Exception (KeyboardInterrupt or SystemExit, say). As with
+            concurrent.futures.Future, that propagates at once, out of whatever finished the future, and the callbacks
+            after fn never run: waiters that they would have woken (a thread, a task, another future) may wait for good.
         """
-        if block_signals is not None and len(block_signals) > 0:
-            fn = BlockingSignals(block_signals, fn)
         token = _ForkAllowedDoneCallbackToken() if run_in_forked_child else _DoneCallbackToken()
         with self._condition:
             if not self._last_transition[1].terminal:

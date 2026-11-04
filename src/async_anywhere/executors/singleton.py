@@ -43,6 +43,7 @@ class SingletonEventLoopExecutor(WaitableStateTracker):
         # (once this has followed the predecessor there), and the worker's state future that this follows it by: held
         # here, as their trackers hold them only weakly
         self._future, self._stopped, self._following = LockProtected(_SHUTDOWN), None, None
+        self._ready = None  # The replacement's own future, while get()'s is pending: see _get()
         workers.ensure_registered(self)
         if not lazy:
             self.get().result()  # Raising what the constructor does
@@ -60,22 +61,32 @@ class SingletonEventLoopExecutor(WaitableStateTracker):
         """The worker's future, which can't be cancelled. If the worker has stopped, a new one's, which resolves once
         the old has shut down: shut down by the first get() to find it stopping. It fails with what the constructor
         raises (or with a WorkerStopped, if that's interrupted, by Ctrl+C, say), which the next get() tries again."""
+        return self._get()[0]
+
+    def _get(self) -> tuple[AwaitableFuture[EventLoopExecutor], AwaitableFuture[EventLoopExecutor]]:
+        # get()'s future, and, while that's pending, the replacement's own (else get()'s again): only this adds
+        # callbacks to that one (see submit() and shutdown()), which is resolved first, so that none users add to
+        # get()'s can keep them from running
         with self._future as future:
             if not future.done():
-                return future  # A replacement, pending
+                return future, self._ready  # A replacement, pending
             match (worker := future.result()).state:
                 case EventLoopExecutor.Running:
-                    return future
+                    return future, future
                 case EventLoopExecutor.Stopping:
                     worker.shutdown(wait=False, cancel_futures=self._interrupt_stopping_workers)
                     checker = worker._runtime_checker  # Waiting for its replacement on its own thread would deadlock
                 case EventLoopExecutor.Shutdown:
                     checker = None  # Done already, so it's replaced at once, unless this is yet to follow it to Shutdown
             workers.ensure_registered(self)  # Again, in a forked process, whose fork handler let go of it
-            future = AwaitableFuture(
-                prevent_blocking_wait_in_loops=checker, ignore_cancel=True, cancel_pending_in_forked_child=True
+            future, ready = (
+                AwaitableFuture(
+                    prevent_blocking_wait_in_loops=checker, ignore_cancel=True, cancel_pending_in_forked_child=True
+                )
+                for _ in range(2)
             )
             self._future.replace_value(future)
+            self._ready = ready
             # This one's, not the worker's: so that this is Shutdown before it's Running again
             self._stopped = stopped = self.wait_for_state(self.Shutdown)
 
@@ -85,27 +96,35 @@ class SingletonEventLoopExecutor(WaitableStateTracker):
             except BaseException as ex:  # What the constructor raises, or a KeyboardInterrupt (Ctrl+C) as it runs, say
                 with self._future:
                     self._future.replace_value(_SHUTDOWN)  # For the next get() to try again
-                if isinstance(ex, Exception):
-                    future.set_exception(ex)
-                else:  # Raised on here: its waiters, on any thread, get an Exception saying so
-                    future.set_exception(WorkerStopped("interrupted while starting", ex))
+                # If interrupted, raised on here: their waiters, on any thread, get an Exception saying so
+                error = ex if isinstance(ex, Exception) else WorkerStopped("interrupted while starting", ex)
+                try:
+                    ready.set_exception(error)
+                finally:  # Whatever callbacks on the calls it fails raise
+                    future.set_exception(error)
+                if error is not ex:
                     raise
             else:
                 self._threads.add(worker._thread)
-                self._transition(self.Running, worker)
 
                 def stopping(begun):  # On the worker's thread as it stops, unless it had already
                     self._transition(self.Stopping, begun.result())
                     self._following = worker.wait_for_state(worker.Shutdown)
                     self._following.add_done_callback(lambda done: self._transition(self.Shutdown, done.result()))
 
-                # Following the worker to Stopping, then from there to Shutdown: both at once, if it's stopped already
-                self._following = worker.wait_for_state(worker.Stopping, worker.Shutdown)
-                self._following.add_done_callback(stopping)
-                future.set_result(worker)
+                try:
+                    self._transition(self.Running, worker)
+                finally:  # Whatever its waiters' callbacks raise: else nothing follows the worker, and get() waits for good
+                    # Following the worker to Stopping, then from there to Shutdown: both at once, if it's stopped already
+                    self._following = worker.wait_for_state(worker.Stopping, worker.Shutdown)
+                    self._following.add_done_callback(stopping)
+                    try:
+                        ready.set_result(worker)
+                    finally:
+                        future.set_result(worker)
 
         stopped.add_done_callback(replace)  # Outside the lock, so that other get()s don't wait for the constructor
-        return future
+        return future, ready
 
     def wait_for_state(
         self, state: State, *states: State, prevent_blocking_wait_in_loops: LoopSelector = None, **kwargs
@@ -132,6 +151,7 @@ class SingletonEventLoopExecutor(WaitableStateTracker):
             worker = future.result() if future.done() else None
             if worker is not None:  # Before a get() could replace the worker, so that it's this one's stop waited for
                 stopped = self.wait_for_state(self.Shutdown)
+            ready = self._ready
         if worker is None:  # A replacement, pending
             if wait and future._runtime_checker is not None:
                 future._runtime_checker(future)  # Refusing to wait where it would deadlock, before stopping anything
@@ -140,10 +160,14 @@ class SingletonEventLoopExecutor(WaitableStateTracker):
                 ignore_cancel=True,
                 cancel_pending_in_forked_child=True,
             )
-            # Linked both ways, so that stopped holds the future that resolves it, which this holds only weakly
-            future.add_done_callback(
-                lambda _: chain.link_futures(self.shutdown(wait=False, cancel_futures=cancel_futures), stopped)
-            )
+
+            def stop(made):  # Once the calls made to the replacement before this have started: see _get()
+                if made.exception() is None:
+                    made.result().shutdown(wait=False, cancel_futures=cancel_futures)
+                # Linked both ways, so that stopped holds the future that resolves it, which this holds only weakly
+                chain.link_futures(self.wait_for_state(self.Shutdown), stopped)
+
+            ready.add_done_callback(stop)
         elif future is not _SHUTDOWN:
             worker.shutdown(wait=wait, cancel_futures=cancel_futures)
         if wait:
@@ -155,29 +179,40 @@ class SingletonEventLoopExecutor(WaitableStateTracker):
     ) -> AwaitableFuture[T]:
         """As EventLoopExecutor.submit(), to get()'s worker: once it's been made, if it's being replaced. If the worker
         stopped since get(), refusing the call, it's made once more, to its replacement."""
-        pending = self.get()
+        pending, ready = self._get()
         if pending.done():  # Its worker's running, unless the constructor raised, which this raises
             try:
                 return pending.result().submit(fn, *args, **kwargs)
             except WorkerStopped:  # It stopped since get()
-                pending = self.get()
+                pending, ready = self._get()
         # Refusing blocking waits wherever waiting for the replacement would deadlock
         call = AwaitableFuture(
             prevent_blocking_wait_in_loops=pending._runtime_checker, cancel_pending_in_forked_child=True
         )
         context = copy_context()  # The caller's, for the job to copy, as it would submitting here
+        job = None
 
-        def start(_):
+        def cancel_job(_):
+            if call.cancelled() and job is not None:
+                job.cancel()
+
+        def start(made):  # Before any callbacks users added to get()'s future: see _get()
+            nonlocal job
             if call.done():  # Cancelled meanwhile
                 return
             try:
-                job = context.run(pending.result().submit, fn, *args, **kwargs)
+                job = context.run(made.result().submit, fn, *args, **kwargs)
             except Exception as ex:  # The constructor raised, or the replacement refused the call
                 call.set_exception_if_not_done(ex)
             else:
-                chain.link_futures(job, call)  # Cancelling call cancels the job
+                chain.link_futures(job, call, on_dest_cancel=chain.DO_NOTHING)  # Its result: see cancel_job()
+                if call.cancelled():  # Since done() above, so before cancel_job() could find the job
+                    job.cancel()
 
-        pending.add_done_callback(start)
+        # Its first callback, as no caller has it yet, so that none of theirs can keep it from running (by raising a
+        # KeyboardInterrupt from Ctrl+C, say)
+        call.add_done_callback(cancel_job)
+        ready.add_done_callback(start)
         return call
 
     def bridge[**P, T](self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:

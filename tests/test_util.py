@@ -2,99 +2,12 @@
 from __future__ import annotations
 
 import concurrent.futures
-import re
-import signal
 import sys
 
 import pytest
 from attrs import define, field
 
-from async_anywhere._util import BlockingSignals, LockProtected, copy_exception, validate_coroutine_function
-
-POSIX_ONLY = pytest.mark.skipif(not hasattr(signal, "SIGUSR1"), reason="Uses SIGUSR1 and SIGUSR2")
-
-
-@pytest.fixture
-def usr_handlers():
-    """Installs a handler for SIGUSR1 and SIGUSR2 that the test gives, for the test, then restores what was there."""
-    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGUSR1, signal.SIGUSR2)}
-
-    def install(handler):
-        for signum in previous:
-            signal.signal(signum, handler)
-
-    yield install
-    for signum, handler in previous.items():
-        signal.signal(signum, handler)
-
-
-@POSIX_ONLY
-def test_blocked_signals_are_raised_once_each_as_the_call_returns_in_the_order_given(usr_handlers):
-    handled = []
-    usr_handlers(lambda signum, _: handled.append(signum))
-    handler = signal.getsignal(signal.SIGUSR1)
-
-    def raises_them():
-        for signum in signal.SIGUSR1, signal.SIGUSR2, signal.SIGUSR1:
-            signal.raise_signal(signum)
-        assert handled == []
-        return "returned"
-
-    assert BlockingSignals(["SIGUSR2", signal.SIGUSR1], raises_them)() == "returned"  # By name, or number
-    assert handled == [signal.SIGUSR2, signal.SIGUSR1]
-    assert signal.getsignal(signal.SIGUSR1) is handler is signal.getsignal(signal.SIGUSR2)  # Restored
-
-
-@POSIX_ONLY
-def test_a_blocked_signals_handler_raising_doesnt_keep_the_next_from_running(usr_handlers):
-    handled = []
-
-    def handler(signum, _):
-        handled.append(signum)
-        raise (KeyError if signum == signal.SIGUSR1 else ValueError)(signum)
-
-    usr_handlers(handler)
-
-    def raises_them():
-        signal.raise_signal(signal.SIGUSR2)
-        signal.raise_signal(signal.SIGUSR1)
-
-    with pytest.raises(ValueError) as raised:
-        BlockingSignals([signal.SIGUSR1, signal.SIGUSR2], raises_them)()
-    assert handled == [signal.SIGUSR1, signal.SIGUSR2]
-    assert type(raised.value.__context__) is KeyError  # As with CPython's own pending signals
-    assert signal.getsignal(signal.SIGUSR1) is handler is signal.getsignal(signal.SIGUSR2)  # Restored
-
-
-@POSIX_ONLY
-def test_a_handler_installed_for_a_blocked_signal_is_kept(usr_handlers):
-    usr_handlers(signal.SIG_IGN)
-
-    def installed(signum, _): ...
-
-    BlockingSignals([signal.SIGUSR1, signal.SIGUSR2], lambda: signal.signal(signal.SIGUSR1, installed))()
-    assert signal.getsignal(signal.SIGUSR1) is installed and signal.getsignal(signal.SIGUSR2) is signal.SIG_IGN
-
-
-@pytest.mark.parametrize(
-    "value",
-    ["SIGNOPE", 0, -1, None, *(getattr(signal, name) for name in ("SIGKILL", "SIGSTOP") if hasattr(signal, name))],
-)
-def test_signals_that_cant_be_blocked_are_refused(value):
-    with pytest.raises(ValueError, match=re.escape(repr(value))):
-        BlockingSignals([signal.SIGINT, value], print)
-
-
-def test_blocking_no_signals_blocks_nothing():
-    reached = []
-
-    def interrupted():
-        signal.raise_signal(signal.SIGINT)
-        reached.append("after")
-
-    with pytest.raises(KeyboardInterrupt):
-        BlockingSignals([], interrupted)()
-    assert reached == []
+from async_anywhere._util import LockProtected, copy_exception, validate_coroutine_function
 
 
 def test_copies_keep_the_originals_state():

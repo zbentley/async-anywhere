@@ -5,7 +5,6 @@ import asyncio
 import concurrent.futures
 import gc
 import os
-import signal
 import threading
 import time
 import weakref
@@ -367,40 +366,18 @@ def test_completed_at_is_when_it_finished():
     assert not refusing.cancel() and refusing.completed_at is None
 
 
-def test_callbacks_signals_are_blocked_until_they_return_on_the_main_thread():
-    future, ran = AwaitableFuture(), []
-
-    def interrupted(_):
-        signal.raise_signal(signal.SIGINT)  # As Ctrl+C would be, as it runs
-        ran.append("returned")
-
-    future.add_done_callback(interrupted, block_signals=(signal.SIGINT,))
-    future.add_done_callback(ran.append)
-    with pytest.raises(KeyboardInterrupt):
-        future.set_result("done")
-    assert ran == ["returned"]  # Raised once it returned: then, as concurrent.futures.Future's, skipping the rest
-    with pytest.raises(KeyboardInterrupt):
-        future.add_done_callback(interrupted, block_signals=(signal.SIGINT,))  # Run here, as it's done
-    assert ran == ["returned"] * 2
-
-
-def test_blocking_signals_off_the_main_thread_blocks_nothing():
-    future, ran = AwaitableFuture(), []
-    future.add_done_callback(lambda _: ran.append(threading.current_thread()), block_signals=(signal.SIGINT,))
-    thread = threading.Thread(target=future.set_result, args=("done",))
-    thread.start()
-    thread.join()
-    assert ran == [thread]  # Run there, where signal.signal() would have refused to block anything
-
-
-def test_callbacks_blocking_signals_are_checked_as_theyre_added_and_can_be_removed_as_any_other():
+async def test_an_async_future_a_callback_kept_from_finishing_finishes_once_cancelled():
     future = AwaitableFuture()
-    with pytest.raises(ValueError, match="'SIGNOPE'"):
-        future.add_done_callback(print, block_signals=["SIGINT", "SIGNOPE"])
-    future.add_done_callback(print, block_signals=["SIGINT"])
-    token = future.add_done_callback(print, block_signals=[])
-    assert future._done_callbacks[token] is print  # Blocking nothing, as with None
-    assert future.remove_done_callback(print) == 2
+
+    def exits(_):
+        raise SystemExit(1)  # Keeping the callbacks added after it from running, as concurrent.futures.Future's do
+
+    future.add_done_callback(exits)
+    waiting = future.as_async_future()
+    with pytest.raises(SystemExit):
+        future.set_result("done")
+    assert not waiting.done()
+    assert not waiting.cancel() and waiting.result() == "done"  # Rather than left waiting for good
 
 
 # Other async libraries: awaited through anyio's API, so on trio as well as asyncio
