@@ -154,6 +154,28 @@ async def test_the_parent_task_gets_the_worker_and_bridged_functions_just_their_
         assert await asyncio.to_thread(lambda: free("z").result(1)) == (True, "z")
 
 
+async def test_current_is_the_worker_whose_thread_runs_the_code():
+    started = AwaitableFuture()
+
+    async def parent_task(worker):
+        started.set_result(EventLoopExecutor.current())
+        await asyncio.Future()
+
+    async def current_worker():
+        return EventLoopExecutor.current()
+
+    async with running(main=parent_task) as worker, running() as other:
+        assert await started is worker and EventLoopExecutor.current() is None
+
+        @worker.bridge
+        async def nested():
+            # Its context, copied to one of its loop's threads, and to the other worker's call: neither is in this one
+            copied = await asyncio.to_thread(EventLoopExecutor.current)
+            return await current_worker(), copied, await other.submit(current_worker)
+
+        assert await nested() == (worker, None, other)
+
+
 # As an executor
 
 

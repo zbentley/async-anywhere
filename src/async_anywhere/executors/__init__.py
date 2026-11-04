@@ -2,7 +2,7 @@ import asyncio
 import concurrent.futures
 import logging
 from contextlib import suppress
-from contextvars import Context, copy_context
+from contextvars import Context, ContextVar, copy_context
 from datetime import timedelta
 from functools import cached_property, partial, update_wrapper
 from threading import Thread, current_thread, main_thread, RLock
@@ -38,6 +38,9 @@ def _timer_factory(worker: EventLoopExecutor):
         callback=lambda: worker._clean_stop("expired") and worker._interrupt(True),
     )
 
+
+# Set by each worker in every context it runs code in, on its own thread: see EventLoopExecutor.current()
+_current_worker: ContextVar[EventLoopExecutor | None] = ContextVar("current_worker", default=None)
 
 
 @final
@@ -168,6 +171,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         Using this logger must not unduly block the event loop. Loggers that wait on network services or slow disks can
         cause the executor to hang.
     """
+    # Where else, besides its own thread, waiting for its futures would deadlock: a SingletonEventLoopExecutor's workers,
+    # say, for those that replace them. See _runtime_checker.
+    _would_deadlock: Callable[[], bool] | None = field(alias="_would_deadlock", default=None)
 
     # Bridged calls in flight: their jobs' tasks. They hold off idle expiry, and drains wait for them; see _interrupt().
     _calls: set[asyncio.Task] = field(init=False, factory=set)
@@ -182,10 +188,6 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     # transitions take too, so none is added once the worker has stopped; _start() just sets tasks, on the worker's
     # thread, which _finalize() lists them on.
     _submitted: WeakKeyDictionary[AwaitableFuture, asyncio.Task | None] = field(init=False, factory=WeakKeyDictionary)
-    _thread: Thread = field(
-        init=False,
-        default=Factory(lambda self: Thread(target=self._main, name=self.logger.name, daemon=True), takes_self=True),
-    )
 
     Running: ClassVar[State] = State(initial=True)
     """
@@ -233,11 +235,21 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         return loop
 
     @cached_property
+    def _thread(self) -> Thread:
+        # Explicitly given a fresh context, holding just the worker, which run()'s task copies (otherwise it's dependent
+        # on the widely-considered-surprising sys.thread_inherit_context flag). Made as __attrs_post_init__() starts it.
+        context = Context()
+        context.run(_current_worker.set, self)
+        return Thread(target=self._main, name=self.logger.name, daemon=True, context=context)
+
+    @cached_property
     def _runtime_checker(self) -> Callable[[Any], None]:
         # Refuses blocking waits on the worker's thread, whether or not its loop is running (as done callbacks run once
         # it's stopped), for its calls' and state waits' futures: made once, for all
-        thread = self._thread  # Not self, which the futures would keep alive
-        return partial(WouldBlock._invariant, lambda _: current_thread() is thread)
+        thread, elsewhere = self._thread, self._would_deadlock  # Not self, which the futures would keep alive
+        if elsewhere is None:
+            return partial(WouldBlock._invariant, lambda _: current_thread() is thread)
+        return partial(WouldBlock._invariant, lambda _: current_thread() is thread or elsewhere())
 
     def submit(
         self, func: Callable[_P, Coroutine[Any, Any, _T]], /, *args: _P.args, **kwargs: _P.kwargs
@@ -329,14 +341,39 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         # keywords bound: they'd cost it its fast path, more than naming the job once, here, would save.
         return update_wrapper(partial(self.submit, func), func)
 
+    @classmethod
+    def current(cls) -> EventLoopExecutor | None:
+        """
+        Returns the executor whose captive thread this is called from, or None if called from any other thread.
+
+        Note:
+            Each executor records itself in a :py:class:`contextvars.ContextVar`, in every context it runs code in (its
+            jobs, its "main" task, and its own), which this checks against the calling thread: a copy of one of those
+            contexts on another thread (via :py:func:`asyncio.to_thread`, say) is not inside the executor. Neither is
+            code the executor's loop runs in a context from another thread, such as callbacks queued on it with
+            ``call_soon_threadsafe()``, or coroutines scheduled with :py:func:`asyncio.run_coroutine_threadsafe`.
+
+            In a process forked from an executor's thread, this still returns that executor there, though the fork has
+            shut it down.
+        """
+        worker = _current_worker.get()
+        if worker is not None and worker._thread is current_thread():
+            return worker
+        return None
+
     def in_worker(self) -> bool:
         """
-        Returns True if called from the worker's captive event loop thread. Returns False otherwise. Also returns False
-        if the worker's thread has ``fork(2)``ed and this method is called from a child process.
+        Returns True if called from the worker's captive event loop thread, i.e. if :py:meth:`current` would return
+        this worker. Returns False otherwise.
         """
+        # As current() is self, without its call: this is on submit()'s path
+        return _current_worker.get() is self and current_thread() is self._thread
+
+    @property
+    def _forked(self) -> bool:
         # The worker's thread becomes the main thread if a fork() has occurred. Since the worker's thread is a daemon,
         # it'll never become the main thread in the parent, even if the original main thread exits.
-        return current_thread() is self._thread is not main_thread()
+        return self._thread is main_thread()
 
     @overload
     def wait_for_state(
@@ -416,10 +453,11 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         if isinstance(broken := self._last_transition[2], WorkerBroken):
             raise broken.copy()
         # Eagerly, before the stop is queued, so that refusing to wait stops nothing
-        if wait and self.in_worker():
+        if wait and self.in_worker() and not self._forked:
             raise RuntimeError("shutdown(wait=True) on the worker's own thread would wait for itself")
 
         def report_stop():  # On the worker's loop. Not a call, so it isn't refused once the worker has stopped: it can cut a drain short.
+            _current_worker.set(self)  # Queued from any thread, so it runs in a copy of that thread's context
             if cancel_futures and len(self._calls) > 0:
                 self._unclean_stop("manually stopped")
             else:
@@ -438,6 +476,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         # If the job was cancelled by its caller or failed by the worker e.g. forking, do nothing.
         if future.done():
             return
+        _current_worker.set(self)  # In the call's context (see submit()), which its job's task copies
         job = self._job(func, args, kwargs, future)
         job.__qualname__ = name
         # eager_start=True ensures that the job is queued to run before anything dispatched after it. Not setting this
@@ -478,7 +517,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
     def _log(self, level: int, msg: str, *args, **kwargs):
         # Only on the worker's thread: in a forked process, a handler's stream may be locked forever
-        if self.in_worker():
+        if self.in_worker() and not self._forked:
             # Naming what recorded the stop: past this, _after_state_change(), the two transition methods, and
             # _clean_stop() or _unclean_stop()
             self.logger.log(level, msg, *args, stacklevel=6, **kwargs)
@@ -548,9 +587,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         loop = self._loop
         try:
             try:
-                # Explicitly create a task for run(), so we can manually set the context (otherwise it's dependent on
-                # the widely-considered-surprising sys.thread_inherit_context flag).
-                loop.run_until_complete(loop.create_task(run(), context=Context()))
+                loop.run_until_complete(loop.create_task(run()))
             except (Exception, asyncio.CancelledError) as ex:
                 # If a stop came first, it has recorded why already, so this does nothing. Otherwise, the parent task
                 # raised (CancelledError included) of its own accord.
@@ -577,9 +614,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             self._fail(self._runner)
             # Not in a process forked from a call: its copy of the loop would run cleanup that talks over the parent's
             # sockets, and closing it may unregister fds from the epoll it shares with the parent
-            in_worker = self.in_worker()
+            forked = self._forked
             try:
-                if in_worker:
+                if not forked:
                     # TODO log the non-call/non-run tasks this cancels
                     tasks = asyncio.all_tasks(loop)
                     for task in tasks:
@@ -596,7 +633,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             finally:
                 self._finalize()
                 self._calls.clear()
-                if in_worker:  # Else a process forked from a call, whose fork handler has finished it
+                if not forked:  # Else a process forked from a call, whose fork handler has finished it
                     self._loop.close()  # Shuts the executor down without waiting, if it hasn't been already
                     # The very last action: shutdown()'s waiters wait for it
                     self._transition(self.Shutdown, self._last_transition[2])
