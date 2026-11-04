@@ -34,7 +34,7 @@ SCRIPT = textwrap.dedent(
         async def job():
             return "bridged"
 
-        return await pending, await worker.bridge(job)(), type((await worker.shutdown(wait=False))[2]).__name__
+        return await pending, await worker.bridge(job)(), type(await worker.shutdown(wait=False)).__name__
 
     print(repr((modules, asyncio.run(main()))))
     """

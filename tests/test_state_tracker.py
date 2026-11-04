@@ -244,12 +244,22 @@ class MyWaitable(WaitableStateTracker):
 
 def test_wait_for_current_state_is_done():
     inst = MyWaitable()
-    assert inst.wait_for_state(MyWaitable.A, MyWaitable.B).result(0) == (None, MyWaitable.A, None)
-    waiting = inst.wait_for_state(MyWaitable.B)
+    assert inst.wait_for_state(MyWaitable.A, MyWaitable.B, return_states=True).result(0) == (None, MyWaitable.A, None)
+    waiting = inst.wait_for_state(MyWaitable.B, return_states=True)
     inst._transition(MyWaitable.B, "data")
-    assert inst.wait_for_state(MyWaitable.B).result(0) == waiting.result(0) == (MyWaitable.A, MyWaitable.B, "data")
+    done = inst.wait_for_state(MyWaitable.B, return_states=True)
+    assert done.result(0) == waiting.result(0) == (MyWaitable.A, MyWaitable.B, "data")
     inst._transition(MyWaitable.C)
-    assert inst.wait_for_state(MyWaitable.C, MyWaitable.A).result(0) == (MyWaitable.B, MyWaitable.C, None)
+    done = inst.wait_for_state(MyWaitable.C, MyWaitable.A, return_states=True)
+    assert done.result(0) == (MyWaitable.B, MyWaitable.C, None)
+
+def test_waiters_get_the_transitions_data_unless_asked_for_its_states_too():
+    inst, data = MyWaitable(), object()
+    assert inst.wait_for_state(MyWaitable.A).result(0) is None  # The initial state's, which no transition entered
+    waiting, with_states = inst.wait_for_state(MyWaitable.B), inst.wait_for_state(MyWaitable.B, return_states=True)
+    inst._transition(MyWaitable.B, data)
+    assert waiting.result(0) is data and inst.wait_for_state(MyWaitable.B).result(0) is data  # Done already
+    assert with_states.result(0) == (MyWaitable.A, MyWaitable.B, data)
 
 def test_wait_for_state_validates_states():
     with pytest.raises(TypeError, match="not one of this class's states"):
@@ -257,7 +267,7 @@ def test_wait_for_state_validates_states():
 
 def test_wait_for_state_resolves_on_transition():
     inst = MyWaitable()
-    future = inst.wait_for_state(MyWaitable.B, MyWaitable.C)
+    future = inst.wait_for_state(MyWaitable.B, MyWaitable.C, return_states=True)
     assert not future.done()
     inst._transition(MyWaitable.B, "data")
     assert future.result(0) == (MyWaitable.A, MyWaitable.B, "data")
@@ -271,14 +281,14 @@ class CyclicWaitable(WaitableStateTracker):
 
 def test_ignore_current_state_waits_to_reenter_it():
     inst = CyclicWaitable()
-    future = inst.wait_for_state(CyclicWaitable.A, ignore_current_state=True)
+    future = inst.wait_for_state(CyclicWaitable.A, ignore_current_state=True, return_states=True)
     assert not future.done()
     inst._transition(CyclicWaitable.A, "data")
     assert future.result(0) == (CyclicWaitable.A, CyclicWaitable.A, "data")
 
 def test_ignore_current_state_waits_for_any_given_state():
     inst = CyclicWaitable()
-    future = inst.wait_for_state(CyclicWaitable.A, CyclicWaitable.C, ignore_current_state=True)
+    future = inst.wait_for_state(CyclicWaitable.A, CyclicWaitable.C, ignore_current_state=True, return_states=True)
     inst._transition(CyclicWaitable.B)
     assert not future.done()
     inst._transition(CyclicWaitable.C, "data")
@@ -289,12 +299,12 @@ def test_waiters_refuse_cancellation():
     future = inst.wait_for_state(MyWaitable.B)
     assert not future.cancel() and not future.done()
     inst._transition(MyWaitable.B, "data")
-    assert future.result(0) == (MyWaitable.A, MyWaitable.B, "data")
+    assert future.result(0) == "data"
 
 def test_try_transition_resolves_waiters():
     inst = MyWaitable()
     future = inst.wait_for_state(MyWaitable.B)
-    assert inst._try_transition(MyWaitable.B, "data") and future.result(0) == (MyWaitable.A, MyWaitable.B, "data")
+    assert inst._try_transition(MyWaitable.B, "data") and future.result(0) == "data"
     assert not inst._try_transition(MyWaitable.B)  # B can't transition to itself
 
 def test_dropped_waiters_are_not_resolved():
@@ -312,9 +322,13 @@ async def test_prevent_blocking_wait_in_loops():
     with pytest.raises(TimeoutError):  # Only the futures given it check
         inst.wait_for_state(MyWaitable.B).result(0)
     done = inst.wait_for_state(MyWaitable.A, prevent_blocking_wait_in_loops=here)
-    assert done.result(0) == (None, MyWaitable.A, None)  # Done, so not checked
+    assert done.result(0) is None  # Done, so not checked
 
-@pytest.mark.parametrize("kwargs", [{"ignore_cancel": False}, {"nonsense": True}], ids=["ignore_cancel", "unknown"])
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"ignore_cancel": False}, {"transform_result": str}, {"nonsense": True}],
+    ids=["ignore_cancel", "transform_result", "unknown"],
+)
 def test_wait_for_state_refuses_kwargs_its_futures_cannot_take(kwargs):
     with pytest.raises(TypeError):
         MyWaitable().wait_for_state(MyWaitable.B, **kwargs)
@@ -326,5 +340,5 @@ async def test_wait_for_state_across_threads():
     thread = threading.Thread(target=inst._transition, args=(MyWaitable.B, "data"))
     thread.start()
     with anyio.fail_after(5):
-        assert await future == (MyWaitable.A, MyWaitable.B, "data")
+        assert await future == "data"
     thread.join()

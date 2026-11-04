@@ -70,7 +70,6 @@ class AsyncAnywhereException(ABC):
 
 # Futures
 
-
 class WouldBlock(AsyncAnywhereException, RuntimeError):
     def __init__(self, future, loop) -> None:
         super().__init__(f"Waiting for {future!r} would deadlock on current event loop '{loop!r}'")

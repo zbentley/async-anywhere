@@ -13,7 +13,7 @@ from datetime import timedelta
 
 import pytest
 
-from async_anywhere.exceptions import CleanStop, StateTrackerError, WorkerStopped
+from async_anywhere.exceptions import CleanStop, StateTrackerError, WorkerStopped, WouldBlock
 from async_anywhere.executors import EventLoopExecutor
 from async_anywhere.futures import AwaitableFuture
 from tests.test_executors.utils import BlocksLoop, Tidy, Worker, bridge, running, stop_begun
@@ -25,8 +25,8 @@ from tests.test_executors.utils import BlocksLoop, Tidy, Worker, bridge, running
 @pytest.mark.parametrize("interrupt", [False, True])
 async def test_idle_stop(interrupt):
     async with running() as worker:  # With the default parent task
-        old, new, stopped = await worker.shutdown(wait=False, cancel_futures=interrupt)
-        assert (old, new) == (worker.Stopping, worker.Stopped)
+        stopped = await worker.shutdown(wait=False, cancel_futures=interrupt)
+        assert worker.state is worker.Shutdown
         assert type(stopped) is CleanStop and stopped.args == ("(idle) manually stopped",)
 
 
@@ -51,26 +51,27 @@ async def test_state_callbacks_run_on_the_workers_thread(interrupt):
         await worker.shutdown(wait=False, cancel_futures=interrupt)
         await worker.shutdown(wait=False, cancel_futures=True)  # Again, which changes nothing
         assert await worker.reached("stopped") == (True, worker.Stopping)  # See Harness._parent()
-        assert await worker.reached("shutdown") == (True, worker.Stopped, True)  # Once its loop has closed
+        assert await worker.reached("shutdown") == (True, worker.Shutdown, True)  # Once its loop has closed
 
 
 async def test_workers_state_can_be_required_and_waited_for():
     async with running(Worker) as worker:  # A harness: worker.worker is its EventLoopExecutor
         assert worker.require(worker.Running) is worker.worker
-        assert await worker.wait_for_state(worker.Running) == (None, worker.Running, None)
-        stopped = worker.wait_for_state(worker.Stopped)
+        assert await worker.wait_for_state(worker.Running, return_states=True) == (None, worker.Running, None)
+        stopped = worker.wait_for_state(worker.Shutdown, return_states=True)
         call = worker.waits_for(release := AwaitableFuture())
         await worker.reached("waits_for")
-        old, new, why = await stop_begun(worker)  # A drain, held up by the call
-        assert (old, new) == (worker.Running, worker.Stopping) and type(why) is CleanStop
+        why = await stop_begun(worker)  # A drain, held up by the call
+        assert type(why) is CleanStop
         assert worker.state is worker.Stopping and not stopped.done()
         with pytest.raises(StateTrackerError, match="Not in required state"):
             worker.require(worker.Running)
         release.set_result(None)
         await call
-        assert await stopped == (worker.Stopping, worker.Stopped, why)
-        assert await worker.wait_for_state(worker.Stopping, worker.Stopped) == (worker.Stopping, worker.Stopped, why)
-        assert worker.require(worker.Running, worker.Stopped) is worker.worker
+        assert await stopped == (worker.Stopping, worker.Shutdown, why)
+        latest = worker.wait_for_state(worker.Stopping, worker.Shutdown, return_states=True)
+        assert await latest == (worker.Stopping, worker.Shutdown, why)
+        assert worker.require(worker.Running, worker.Shutdown) is worker.worker
 
 
 # A refused argument leaves the loop its timer made unclosed (attrs validates once every field is set): only the GC
@@ -204,7 +205,7 @@ def test_with_shuts_the_worker_down_as_it_exits_letting_calls_finish():
     with EventLoopExecutor() as worker:
         assert isinstance(worker, concurrent.futures.Executor)
         call = worker.submit(asyncio.sleep, 0.05, "finished")
-    assert worker.state is worker.Stopped and call.result(0) == "finished"  # A drain
+    assert worker.state is worker.Shutdown and call.result(0) == "finished"  # A drain
 
 
 # Calls compared with coroutines
@@ -297,7 +298,7 @@ async def test_waiting_synchronously_on_a_stop_on_the_workers_own_loop_is_an_err
 class WaitsForItsState(Worker):
     @bridge
     async def waits(self, kwargs):
-        return self.wait_for_state(self.Stopped, **kwargs).result(1)
+        return self.wait_for_state(self.Shutdown, **kwargs).result(1)
 
 
 @pytest.mark.parametrize("given", ["nothing", "loops", "an iterator of loops", "all loops", "something else"])
@@ -319,9 +320,38 @@ async def test_a_workers_state_waits_refuse_blocking_waits_in_the_loops_given_to
     here = (asyncio.get_running_loop(),)
     async with running(Worker) as worker:
         with pytest.raises(RuntimeError, match="would deadlock"):
-            worker.wait_for_state(worker.Stopped, prevent_blocking_wait_in_loops=here).result(0)
+            worker.wait_for_state(worker.Shutdown, prevent_blocking_wait_in_loops=here).result(0)
         with pytest.raises(TimeoutError):  # Off the worker's loop, nothing else is refused by default
-            worker.wait_for_state(worker.Stopped).result(0)
+            worker.wait_for_state(worker.Shutdown).result(0)
+
+
+@pytest.mark.parametrize("given", ["nothing", "loops", "all loops"])
+async def test_blocking_waits_on_the_workers_thread_are_refused_outside_its_loop_too(given):
+    # Where done callbacks run: a stop's, here, as run returning stops the worker once its loop has stopped running
+    other = asyncio.get_running_loop()  # The test's, never the worker's
+    kwargs = {
+        "nothing": {},
+        "loops": {"prevent_blocking_wait_in_loops": (other,)},
+        "all loops": {"prevent_blocking_wait_in_loops": "all"},  # Outside any loop, this alone refuses nothing
+    }[given]
+    async with running(Worker) as worker:
+        call = worker.waits_for(AwaitableFuture())  # In flight, so pending until the stop interrupts it
+        await worker.reached("waits_for")
+        seen = AwaitableFuture()
+
+        def waits(_):
+            raised = []
+            for future in worker.wait_for_state(worker.Shutdown, **kwargs), call:
+                try:
+                    future.result(1)
+                except BaseException as error:
+                    raised.append(type(error))
+            seen.set_result((asyncio._get_running_loop(), raised))
+
+        stopping = worker.wait_for_state(worker.Stopping)  # Held, as its waiter set holds it only weakly
+        stopping.add_done_callback(waits)
+        worker.runloop.set_result(None)
+        assert await asyncio.wait_for(seen, 5) == (None, [WouldBlock, WouldBlock])
 
 
 async def test_calls_made_once_the_worker_has_stopped_are_refused_unrun():

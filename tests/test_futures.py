@@ -5,6 +5,7 @@ import asyncio
 import concurrent.futures
 import gc
 import os
+import signal
 import threading
 import time
 import weakref
@@ -312,7 +313,7 @@ def test_executors_can_make_them(monkeypatch, caplog):
         assert len(concurrent.futures.wait([succeeding, failing, cancelled], timeout=2).done) == 3
         assert succeeding.result() == 1 and type(failing.exception()) is ValueError
         assert list(executor.map(int, "34", timeout=2)) == [3, 4]  # So its worker skipped the cancelled one, and lived
-    assert not any(record.name == "concurrent.futures" for record in caplog.records)
+    assert not any(record.name.startswith("concurrent.futures") for record in caplog.records)
 
 
 def test_a_future_that_started_just_after_cancel_found_it_pending_isnt_cancelled():
@@ -364,6 +365,42 @@ def test_completed_at_is_when_it_finished():
     assert not running.cancel() and running.completed_at is None  # Refused, so it hasn't finished
     refusing = AwaitableFuture(ignore_cancel=True)
     assert not refusing.cancel() and refusing.completed_at is None
+
+
+def test_callbacks_signals_are_blocked_until_they_return_on_the_main_thread():
+    future, ran = AwaitableFuture(), []
+
+    def interrupted(_):
+        signal.raise_signal(signal.SIGINT)  # As Ctrl+C would be, as it runs
+        ran.append("returned")
+
+    future.add_done_callback(interrupted, block_signals=(signal.SIGINT,))
+    future.add_done_callback(ran.append)
+    with pytest.raises(KeyboardInterrupt):
+        future.set_result("done")
+    assert ran == ["returned"]  # Raised once it returned: then, as concurrent.futures.Future's, skipping the rest
+    with pytest.raises(KeyboardInterrupt):
+        future.add_done_callback(interrupted, block_signals=(signal.SIGINT,))  # Run here, as it's done
+    assert ran == ["returned"] * 2
+
+
+def test_blocking_signals_off_the_main_thread_blocks_nothing():
+    future, ran = AwaitableFuture(), []
+    future.add_done_callback(lambda _: ran.append(threading.current_thread()), block_signals=(signal.SIGINT,))
+    thread = threading.Thread(target=future.set_result, args=("done",))
+    thread.start()
+    thread.join()
+    assert ran == [thread]  # Run there, where signal.signal() would have refused to block anything
+
+
+def test_callbacks_blocking_signals_are_checked_as_theyre_added_and_can_be_removed_as_any_other():
+    future = AwaitableFuture()
+    with pytest.raises(ValueError, match="'SIGNOPE'"):
+        future.add_done_callback(print, block_signals=["SIGINT", "SIGNOPE"])
+    future.add_done_callback(print, block_signals=["SIGINT"])
+    token = future.add_done_callback(print, block_signals=[])
+    assert future._done_callbacks[token] is print  # Blocking nothing, as with None
+    assert future.remove_done_callback(print) == 2
 
 
 # Other async libraries: awaited through anyio's API, so on trio as well as asyncio
@@ -575,3 +612,41 @@ def test_a_forked_process_lets_go_of_futures_that_had_finished_as_it_forked():
     assert future in _fork_safety.futures.instances  # Here, until the thread finishing it unregisters it
     future._invoke_callbacks()
     assert future not in _fork_safety.futures.instances
+
+
+# Transforming results
+
+
+def test_results_are_kept_as_given_unless_transformed():
+    result = object()
+    plain, transformed = AwaitableFuture(), AwaitableFuture(transform_result=lambda given: [given])
+    plain.set_result(result)
+    assert transformed.set_result_if_not_done(result)
+    assert plain.result(0) is result and transformed.result(0) == [result] and transformed.result_or_none() == [result]
+
+
+async def test_awaiters_get_the_transformed_result():
+    pending, done = AwaitableFuture(transform_result=str), AwaitableFuture(transform_result=str)
+    done.set_result(1)
+    asyncio.get_running_loop().call_soon(pending.set_result, 2)
+    assert await done == "1" and await pending == "2"
+
+
+@pytest.mark.parametrize("method", ["set_result", "set_result_if_not_done"])
+@pytest.mark.parametrize("error", [ValueError("transform"), KeyboardInterrupt()], ids=["Exception", "BaseException"])
+def test_a_failing_transform_fails_the_future_and_is_raised_without_holding_it(error, method):
+    def transform(_):
+        raise error
+
+    future, seen = AwaitableFuture(transform_result=transform), []
+    future.add_done_callback(lambda done: seen.append(done.exception(0)))
+    with pytest.raises(type(error)) as raised:
+        getattr(future, method)("result")
+    assert raised.value is error and future.exception(0) is error and seen == [error]
+    freed = weakref.ref(future)
+    gc.disable()  # So that only refcounting frees it, while what it raised, and so its traceback, lives on
+    try:
+        del future
+        assert freed() is None and raised.value is not None
+    finally:
+        gc.enable()

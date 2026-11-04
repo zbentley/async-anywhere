@@ -1,10 +1,11 @@
 import asyncio
 import logging
+import signal
 from copy import copy
 from functools import cache
 from inspect import iscoroutinefunction
-from threading import Lock, RLock
-from typing import Iterable, Literal, final
+from threading import Lock, RLock, current_thread, main_thread
+from typing import Callable, ClassVar, Iterable, Literal, Sequence, final
 
 type LoopSelector = None | Literal["all"] | Iterable[asyncio.AbstractEventLoop]
 
@@ -21,6 +22,68 @@ def futures_logger() -> logging.Logger:
     import concurrent.futures._base
     # TODO guard against the symbol moving?
     return concurrent.futures._base.LOGGER.getChild("async_anywhere")
+
+
+class BlockingSignals[**P, T]:
+    """fn, called with the given signals (numbers, or names) blocked while it runs on the main thread, the only one
+    Python runs signal handlers on: one that arrives meanwhile is raised again once fn returns, so that its handler
+    runs then, as though it had arrived then. They're raised in the order given, each handler running whatever the one
+    before raised, as CPython runs pending signals' (see _raise_each()). A handler fn installs for one is kept. Equal
+    to fn, so that remove_done_callback(fn) finds it. partial(BlockingSignals, signals) decorates."""
+
+    __slots__ = ("_signals", "_fn")
+    _UNBLOCKABLE: ClassVar[frozenset[int]] = frozenset(
+        getattr(signal, name)
+        for name in ("SIGKILL", "SIGSTOP", "CTRL_C_EVENT", "CTRL_BREAK_EVENT")
+        if hasattr(signal, name)
+    )
+
+    def __init__(self, signals: Sequence[int | str], fn: Callable[P, T]):
+        signums = {}
+        for value in signals:
+            try:
+                signum = signal.Signals[value] if isinstance(value, str) else signal.Signals(value)
+            except (KeyError, TypeError, ValueError):
+                signum = None
+            if signum is None or signum in self._UNBLOCKABLE:
+                raise ValueError(f"Can't block signal {value!r}")
+            signums[signum] = None
+        self._signals, self._fn = tuple(signums), fn
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
+        if current_thread() is not main_thread():
+            return self._fn(*args, **kwargs)
+        arrived, blocked = set(), []
+
+        def record(signum, _):
+            arrived.add(signum)
+
+        try:
+            for signum in self._signals:
+                if signal.getsignal(signum) is not None:  # Else installed outside Python, so it couldn't be put back
+                    blocked.append((signum, signal.signal(signum, record)))
+            return self._fn(*args, **kwargs)
+        finally:
+            for signum, handler in blocked:
+                if (current := signal.signal(signum, handler)) is not record:  # Installed by fn: so kept
+                    signal.signal(signum, current)
+            _raise_each([signum for signum, _ in blocked if signum in arrived])
+
+    def __eq__(self, other):
+        return self._fn == other
+
+    def __hash__(self):
+        return hash(self._fn)
+
+
+def _raise_each(signums: list[int]):
+    """Raises each signal in turn, each in a finally block after the one before: so each one's handler runs whatever the
+    one before raised, and what it raises has that as its context, as with CPython's own pending signals."""
+    if len(signums) > 0:
+        try:
+            signal.raise_signal(signums[0])
+        finally:
+            _raise_each(signums[1:])
 
 
 def copy_exception[E: BaseException](error: E, *causes: BaseException) -> E:

@@ -34,7 +34,7 @@ class Owner(Forwards):
             assert await self.inner.work(0.01, "from the parent task") == "from the parent task"
             await self.runloop
         finally:
-            self.mark("inner stopped", (await self.inner.shutdown(wait=False))[2])
+            self.mark("inner stopped", await self.inner.shutdown(wait=False))
 
 
 async def test_a_worker_can_use_one_made_in_its_parent_task():
@@ -84,11 +84,11 @@ async def test_a_worker_can_stop_one_it_owns_as_it_stops(how):
         inner = await outer.reached("made")
         if how == "parent task returned":
             outer.runloop.set_result(None)
-            await outer.wait_for_state(outer.Stopped)
+            await outer.wait_for_state(outer.Shutdown)
         else:
             await outer.shutdown(wait=False, cancel_futures=how == "interrupted")
         assert type(await outer.reached("inner stopped")) is CleanStop
-        assert inner.state is inner.Stopped
+        assert inner.state is inner.Shutdown
         with pytest.raises(CleanStop):
             await inner.work()
 
@@ -122,11 +122,11 @@ async def test_a_worker_handed_out_by_the_one_that_made_it_can_be_used_from_anyw
                 assert await outer.forwards(inner.work, 0.01, "from the outer worker") == "from the outer worker"
             case "parent task returned":
                 outer.runloop.set_result(None)
-                await outer.wait_for_state(outer.Stopped)
+                await outer.wait_for_state(outer.Shutdown)
             case _:
                 await outer.shutdown(wait=False, cancel_futures=outer_is == "interrupted")
         if outer_is != "running":
-            assert outer.state is outer.Stopped and not outer._thread.is_alive()
+            assert outer.state is outer.Shutdown and not outer._thread.is_alive()
             with pytest.raises(WorkerStopped):
                 await outer.work()
 
@@ -137,7 +137,7 @@ async def test_a_worker_handed_out_by_the_one_that_made_it_can_be_used_from_anyw
         assert await anyio.to_thread.run_sync(lambda: inner.work(0.01, "a thread").result(1)) == "a thread"
         assert await anyio.to_thread.run_sync(asyncio.run, on_a_fresh_loop()) == "on a fresh loop"
         assert await inner.nested(0.01) == "outer done"  # Its calls on its own thread
-        assert type((await inner.shutdown(wait=False))[2]) is CleanStop
+        assert type(await inner.shutdown(wait=False)) is CleanStop
         # Its states' futures' callbacks run on its own thread
         assert await inner.reached("stopped") == (True, inner.Stopping)
-        assert await inner.reached("shutdown") == (True, inner.Stopped, True)
+        assert await inner.reached("shutdown") == (True, inner.Shutdown, True)

@@ -77,7 +77,7 @@ class Harness:
     async def _parent(self, worker):
         self.worker = worker  # Before the constructor returns it, as _run() may want it at once
         # Before anything else on its loop could stop it. Kept, as the worker holds what waits for its states weakly.
-        self._stops = worker.wait_for_state(worker.Stopping, worker.Stopped), worker.wait_for_state(worker.Stopped)
+        self._stops = worker.wait_for_state(worker.Stopping, worker.Shutdown), worker.wait_for_state(worker.Shutdown)
         self._stops[0].add_done_callback(lambda _: self.mark("stopped", (worker.in_worker(), worker.state)))
         self._stops[1].add_done_callback(
             lambda _: self.mark("shutdown", (worker.in_worker(), worker.state, worker._loop.is_closed()))
@@ -145,14 +145,14 @@ class SlowStop(Worker):
 
 
 def reason(worker: EventLoopExecutor | Harness) -> str:
-    return worker.wait_for_state(worker.Stopping, worker.Stopped).result()[2].args[0]
+    return worker.wait_for_state(worker.Stopping, worker.Shutdown).result().args[0]
 
 
 def stop_begun(worker: EventLoopExecutor | Harness, cancel_futures=False) -> AwaitableFuture:
     """Shuts the worker down without waiting, returning a future for the stop having begun, rather than shutdown()'s, for
     the worker having finished."""
     worker.shutdown(wait=False, cancel_futures=cancel_futures)
-    return worker.wait_for_state(worker.Stopping, worker.Stopped)
+    return worker.wait_for_state(worker.Stopping, worker.Shutdown)
 
 
 # Resolved once the worker's loop has run every callback queued before this (a stop's, or a caller's cancellation, say),

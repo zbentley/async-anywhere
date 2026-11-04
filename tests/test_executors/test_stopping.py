@@ -6,6 +6,7 @@ import concurrent.futures
 import contextlib
 import gc
 import logging
+import signal
 import sys
 import threading
 import time
@@ -14,7 +15,7 @@ from datetime import timedelta
 
 import pytest
 
-from async_anywhere.executors import EventLoopExecutor
+from async_anywhere.executors import EventLoopExecutor, _fork_safety
 from async_anywhere.exceptions import CleanStop, WorkerStopped
 from async_anywhere.futures import AwaitableFuture
 from tests.test_executors.utils import (
@@ -53,13 +54,13 @@ class SlowCleanup(Expiring):
 
 async def test_expires_when_idle():
     async with running(Expiring) as worker:
-        _, _, stopped = await worker.wait_for_state(worker.Stopped)  # Of its own accord
+        stopped = await worker.wait_for_state(worker.Shutdown)  # Of its own accord
         assert type(stopped) is CleanStop and stopped.args == ("(idle) expired",)
 
 
 async def test_expires_when_idle_for_a_timedelta():
     async with running(idle_timeout=timedelta(seconds=IDLE)) as worker:
-        _, _, stopped = await worker.wait_for_state(worker.Stopped)  # Of its own accord
+        stopped = await worker.wait_for_state(worker.Shutdown)  # Of its own accord
         assert type(stopped) is CleanStop and stopped.args == ("(idle) expired",)
 
 
@@ -172,7 +173,7 @@ async def test_run_ending_stops_the_worker(cls, end, kind, text, cause):
         end(worker.runloop)
         with pytest.raises(concurrent.futures.CancelledError) as raised:
             await call  # In flight as _run() ends, so interrupted
-        _, _, stopped = await worker.wait_for_state(worker.Stopped)  # Of its own accord
+        stopped = await worker.wait_for_state(worker.Shutdown)  # Of its own accord
         assert type(stopped) is kind and stopped.args == (text,)
         why = raised.value.__cause__  # Why the worker stopped, raised from what stopped it, if anything did
         assert type(why) is kind and why.args == stopped.args and type(why.__cause__) is cause
@@ -189,7 +190,7 @@ async def test_interrupt_cancels_calls_once_and_tells_callers_why():
         await worker.reached("_run ended")
         await settled(worker)  # Past whatever the worker does as the parent task ends, before it waits for the call
         worker.mark("release")
-        _, _, stopped = await stopping
+        stopped = await stopping
         assert type(stopped) is WorkerStopped and stopped.args == ("(interrupted) manually stopped",)
         assert worker.reached("tidied").result_or_none() == 1  # Cancelled once: its cleanup wasn't cut short
         with pytest.raises(concurrent.futures.CancelledError) as raised:
@@ -261,7 +262,7 @@ def test_an_interrupt_cancels_calls_once_though_what_awaits_them_is_cancelled_to
             worker.reached("_run ended").result(2)
             settled(worker).result(2)  # Which then pass it on to the calls' jobs
             worker.mark("release")
-        assert all(isinstance(stop.result(2)[2], WorkerStopped) for stop in stops)
+        assert all(isinstance(stop.result(2), WorkerStopped) for stop in stops)
     tidied = [worker.reached("tidied", n).result_or_none() for worker in workers for n in range(1, calls + 1)]
     assert tidied == [1] * calls * 10 * scale
 
@@ -312,7 +313,7 @@ async def test_a_crash_stops_the_worker_and_interrupts_calls_in_flight(caplog, t
         await asyncio.to_thread(worker._thread.join, 1)
         frames = [frame.name for frame in traceback.extract_tb(exiting.value.__traceback__)]
         assert "exit" in frames and "_main" not in frames  # A copy, untouched by the worker raising the original
-        assert (await worker.shutdown(wait=False))[2].args == why.args
+        assert (await worker.shutdown(wait=False)).args == why.args
     assert [type(error) for error in thread_exceptions()] == [SystemExit]  # Raised again on the worker's thread
     assert caplog.text.count("Stopping due to error") == 1
 
@@ -342,7 +343,7 @@ async def test_a_crash_in_run_stops_the_worker_and_interrupts_calls_in_flight(th
 async def test_interrupting_during_expiry_cleanup_cancels_run_again():
     async with running(SlowCleanup) as worker:
         await worker.reached("stopped")
-        _, _, stopped = await worker.shutdown(wait=False, cancel_futures=True)
+        stopped = await worker.shutdown(wait=False, cancel_futures=True)
         assert stopped.args == ("(idle) expired",) and worker._interrupted
         assert not worker.reached("cleaned up").done()  # Cut short
 
@@ -461,14 +462,14 @@ async def test_drain_refuses_new_calls_and_lets_calls_in_flight_finish():
     async with running(Worker) as worker:
         call = worker.waits_for(release := AwaitableFuture())
         await worker.reached("waits_for")
-        _, _, stopped = await asyncio.wait_for(stop_begun(worker), 1)  # Only until the stop began
+        stopped = await asyncio.wait_for(stop_begun(worker), 1)  # Only until the stop began
         assert type(stopped) is CleanStop and stopped.args == ("(waiting for running jobs) manually stopped",)
         with pytest.raises(CleanStop):
             await worker.work()
         release.set_result("finished")
         assert await call == "finished"
         await worker.shutdown(wait=False)
-        assert await worker.reached("shutdown") == (True, worker.Stopped, True)
+        assert await worker.reached("shutdown") == (True, worker.Shutdown, True)
 
 
 class CallsThenStops(Worker):
@@ -481,7 +482,7 @@ async def test_calls_made_just_before_a_drain_finish(scale):
     for _ in range(10 * scale):
         async with running(Worker) as worker:
             call = worker.work(0.01, "finished")
-            _, _, stopped = await worker.shutdown(wait=False)  # Queued behind the call
+            stopped = await worker.shutdown(wait=False)  # Queued behind the call
             assert stopped.args == ("(waiting for running jobs) manually stopped",)
             assert await call == "finished"
     async with running(CallsThenStops) as worker:  # Likewise on the worker's own thread
@@ -494,7 +495,7 @@ async def test_calls_made_during_a_drain_are_refused_without_waiting_for_the_loo
     async with running(BlocksLoop) as worker:
         blocking = worker.blocks(go := AwaitableFuture())
         await worker.reached("blocks")
-        assert "waiting for running jobs" in (await stop_begun(worker))[2].args[0]
+        assert "waiting for running jobs" in (await stop_begun(worker)).args[0]
         go.set_result(None)
         await worker.reached("blocked")  # Its loop is blocked now
         with pytest.raises(CleanStop):
@@ -522,9 +523,9 @@ async def test_draining_caller_gets_why_when_another_stop_finishes_the_worker(sc
             call = worker.work(5)
             await worker.reached("work")
             drain = asyncio.ensure_future(worker.shutdown(wait=False))
-            _, _, stopped = await worker.shutdown(wait=False, cancel_futures=True)
+            stopped = await worker.shutdown(wait=False, cancel_futures=True)
             assert stopped.args == ("(waiting for running jobs) manually stopped",)  # The first stop's reason stands
-            assert type((await drain)[2]) is CleanStop  # Not asyncio.CancelledError, though the teardown may cancel it
+            assert type(await drain) is CleanStop  # Not asyncio.CancelledError, though the teardown may cancel it
             with pytest.raises(concurrent.futures.CancelledError):
                 await call
 
@@ -538,7 +539,7 @@ async def test_a_drain_outlasts_run_returning():
     async with running(ReturnsWhenStopped) as worker:
         call = worker.waits_for(release := AwaitableFuture())
         await worker.reached("waits_for")
-        _, _, stopped = await stop_begun(worker)
+        stopped = await stop_begun(worker)
         assert stopped.args == ("(waiting for running jobs) manually stopped",)
         await worker.reached("_run ended")
         release.set_result("finished")
@@ -555,7 +556,7 @@ class RunCalls(Worker):
 async def test_drain_ends_when_runs_own_call_does():
     async with running(RunCalls) as worker:
         await worker.reached("work")
-        _, _, stopped = await asyncio.wait_for(worker.shutdown(wait=False), 2)
+        stopped = await asyncio.wait_for(worker.shutdown(wait=False), 2)
         assert stopped.args == ("(waiting for running jobs) manually stopped",)
         assert await worker.call == "done"  # Though the drain then cancelled _run(), which was awaiting it
 
@@ -590,7 +591,7 @@ class Stops(Worker):
 
     @bridge
     async def drain_from_inside(self):
-        _, _, stopped = await stop_begun(self)  # Once the stop has begun
+        stopped = await stop_begun(self)  # Once the stop has begun
         await asyncio.sleep(0)  # This call may still finish
         return stopped
 
@@ -626,8 +627,8 @@ async def test_draining_from_inside_a_call_returns_at_once_and_lets_calls_finish
 async def test_shutdown_waits_for_the_worker_to_finish_then_returns_its_future():
     async with running(Worker) as worker:
         shutdown = await asyncio.to_thread(worker.shutdown)  # wait=True, which blocks: so on a plain thread
-        assert worker.state is worker.Stopped and shutdown.done()
-        _, _, stopped = shutdown.result()
+        assert worker.state is worker.Shutdown and shutdown.done()
+        stopped = shutdown.result()
         assert type(stopped) is CleanStop and stopped.args == ("(idle) manually stopped",)
 
 
@@ -641,7 +642,7 @@ async def test_giving_up_waiting_on_stop_cancels_nothing():
             assert not future.cancelled()
         worker.mark("release")
         assert await call is None
-        assert (await worker.shutdown(wait=False))[2].args == ("(idle) manually stopped",)  # The stop went ahead, once the call had ended
+        assert (await worker.shutdown(wait=False)).args == ("(idle) manually stopped",)  # The stop went ahead, once the call had ended
 
 
 @TIMING_SENSITIVE
@@ -675,9 +676,48 @@ async def test_stop_futures_can_be_waited_on_anywhere_and_not_cancelled():
         blocked = asyncio.ensure_future(asyncio.to_thread(stopping.result, 2))
         blocked_too = asyncio.ensure_future(asyncio.to_thread(stopping.result, 2))
         awaited = asyncio.ensure_future(asyncio.to_thread(asyncio.run, wait()))  # On another loop
-        _, _, stopped = await worker.shutdown(wait=False)
+        stopped = await worker.shutdown(wait=False)
         whys = [await blocked, await blocked_too, await awaited, await stopping]
-        assert type(stopped) is CleanStop and whys == [(worker.Running, worker.Stopping, stopped)] * 4
+        assert type(stopped) is CleanStop and whys == [stopped] * 4
+
+
+async def test_cancelling_a_call_cancels_its_job_though_a_callback_added_before_it_started_raises():
+    async with running(BlocksLoop) as worker:
+        blocking = worker.blocks()
+        await worker.reached("blocked")  # So the call below isn't started, or given a task, till it's released
+        call = worker.waits_for(AwaitableFuture())
+
+        def interrupted(_):
+            raise KeyboardInterrupt  # As Ctrl+C would, landing in it
+
+        call.add_done_callback(interrupted)
+        worker.mark("release")
+        await blocking
+        await worker.reached("waits_for")  # Started, with its task, since interrupted() was added
+        with pytest.raises(KeyboardInterrupt):
+            call.cancel()
+        await asyncio.wait_for(worker.shutdown(wait=False), 2)  # A drain, which the call would hold up if not cancelled
+
+
+@pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="Interrupts the main thread with signal.pthread_kill()")
+def test_a_worker_interrupted_as_its_made_is_stopped_once_it_has_started():
+    main, name = threading.main_thread().ident, "interrupted-as-its-made"
+
+    class InterruptsItsMaker(asyncio.SelectorEventLoop):
+        interrupted = False
+
+        def run_until_complete(self, future):
+            if not self.interrupted:  # Its first run, which the constructor waits for to start
+                self.interrupted = True
+                signal.pthread_kill(main, signal.SIGINT)  # As Ctrl+C would, as the constructor waits
+                time.sleep(0.1)
+            return super().run_until_complete(future)
+
+    before = set(_fork_safety.workers.instances)
+    with pytest.raises(KeyboardInterrupt):
+        EventLoopExecutor(loop_factory=InterruptsItsMaker, logger=logging.getLogger(name))
+    [worker] = set(_fork_safety.workers.instances) - before
+    assert type(worker.wait_for_state(worker.Shutdown).result(2)) is CleanStop  # Rather than left running unreachable
 
 
 async def test_giving_up_waiting_on_stop_leaves_other_waiters_alone():
@@ -693,7 +733,7 @@ async def test_giving_up_waiting_on_stop_leaves_other_waiters_alone():
         later = asyncio.ensure_future(wait())  # Waiting on the same loop after one gave up, before the stop finishes
         await asyncio.sleep(0)  # So it's waiting
         release.set_result(None)
-        assert type((await other)[2]) is CleanStop and type((await later)[2]) is CleanStop
+        assert type(await other) is CleanStop and type(await later) is CleanStop
 
 
 async def test_a_call_from_a_handler_logging_the_stop_is_refused_rather_than_deadlocking(caplog):
@@ -714,7 +754,7 @@ async def test_a_call_from_a_handler_logging_the_stop_is_refused_rather_than_dea
         caplog.set_level(logging.INFO, logger=worker.logger.name)
         worker.logger.addHandler(handler := CallsTheWorker())
         try:
-            _, _, stopped = await worker.shutdown(wait=False)
+            stopped = await worker.shutdown(wait=False)
         finally:
             worker.logger.removeHandler(handler)
     assert [error.args for error in refused] == [stopped.args]
@@ -823,7 +863,7 @@ def test_submission_the_loop_never_runs_fails_instead_of_hanging(monkeypatch):
         if worker.in_worker():
             with worker._condition:
                 late.append(future := AwaitableFuture(prevent_blocking_wait_in_loops=(worker._loop,)))
-                worker._submitted.add(future)
+                worker._submitted[future] = None
                 worker._loop.call_soon_threadsafe(worker._start, future, asyncio.sleep, (0,), {}, "sleep")
         finalize(worker)
 

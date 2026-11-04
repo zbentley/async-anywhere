@@ -112,7 +112,7 @@ async def test_giving_up_waiting_on_stop_cancels_nothing_with_any_library():
         assert worker.state is worker.Stopping
         release.set_result("finished")
         assert await call == "finished"
-        assert type((await worker.shutdown(wait=False))[2]) is CleanStop
+        assert type(await worker.shutdown(wait=False)) is CleanStop
 
 
 @pytest.mark.backends("trio")
@@ -156,7 +156,7 @@ async def test_parent_tasks_can_use_anyio():
     async with running(AnyioRun) as worker:
         await worker.reached("child")
         assert await worker.sees() == (asyncio.CancelledError, "unset")
-        _, _, stopped = await worker.shutdown(wait=False, cancel_futures=True)
+        stopped = await worker.shutdown(wait=False, cancel_futures=True)
         assert stopped.args == ("(idle) manually stopped",)
         assert worker.reached("child cleaned up").done()
 
@@ -255,7 +255,7 @@ async def test_parent_tasks_can_run_trio_as_a_guest():
 
     async with running(main=TrioGuest(trio_main).parent_task) as worker:
         assert await marks["started"] == (asyncio.CancelledError, "unset")
-        _, _, stopped = await worker.shutdown(wait=False, cancel_futures=True)
+        stopped = await worker.shutdown(wait=False, cancel_futures=True)
         assert stopped.args == ("(idle) manually stopped",)
         assert marks["cleaned up"].result_or_none() is True
 
@@ -274,7 +274,7 @@ async def test_a_trio_guest_ending_stops_the_worker(end, kind, text):
         end()
 
     async with running(main=TrioGuest(trio_main).parent_task) as worker:
-        _, _, stopped = await worker.wait_for_state(worker.Stopped)  # Of its own accord
+        stopped = await worker.wait_for_state(worker.Shutdown)  # Of its own accord
         assert type(stopped) is kind and stopped.args == (text,)
 
 
@@ -325,7 +325,7 @@ async def test_interrupting_cancels_the_trio_code_calls_handed_over():
     async with running(main=guest.parent_task) as worker:
         call = worker.bridge(guest.run)(tidies, marks)
         await marks["started"]
-        _, _, stopped = await worker.shutdown(wait=False, cancel_futures=True)
+        stopped = await worker.shutdown(wait=False, cancel_futures=True)
         assert stopped.args == ("(interrupted) manually stopped",)
         assert marks["cleaned up"].done()  # Before the worker finished
         with pytest.raises(concurrent.futures.CancelledError) as raised:

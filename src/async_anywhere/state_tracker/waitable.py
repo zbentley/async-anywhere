@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 from abc import ABC
-from typing import Any, ContextManager, TypeAlias
+from operator import itemgetter
+from typing import Any, ContextManager, Literal, TypeAlias, overload
 from weakref import WeakSet
 
 from async_anywhere.exceptions import StateTrackerError
 from async_anywhere.futures import AwaitableFuture
 from async_anywhere.state_tracker import State, StateTracker
 
+_data = itemgetter(2)  # A transition's data, from its (old state, new state, data) triple
+
 
 class WaitableStateTracker(StateTracker, ABC):
     # Old state and data are None for the initial state, which no transition entered
     # Not a PEP 695 type statement, which Sphinx renders by its name: this one is transparent, so docs show the tuple
     _FutureType: TypeAlias = tuple[State | None, State, Any]
-    _waiters: dict[State, WeakSet[AwaitableFuture[_FutureType]]]
+    _waiters: dict[State, WeakSet[AwaitableFuture[Any]]]
 
     __slots__ = ('_waiters',)
     def __init__(self, lock: ContextManager | None = None):
@@ -26,18 +29,36 @@ class WaitableStateTracker(StateTracker, ABC):
         super().__init__(lock=lock)
         self._waiters = {s: WeakSet() for s in self.states}
 
+    @overload
     def wait_for_state(
-        self, state: State, *states: State, ignore_current_state: bool = False, **kwargs
-    ) -> AwaitableFuture[_FutureType]:
+        self,
+        state: State,
+        *states: State,
+        ignore_current_state: bool = False,
+        return_states: Literal[False] = False,
+        **kwargs,
+    ) -> AwaitableFuture[Any]: ...
+    @overload
+    def wait_for_state(
+        self, state: State, *states: State, ignore_current_state: bool = False, return_states: Literal[True], **kwargs
+    ) -> AwaitableFuture[_FutureType]: ...
+    def wait_for_state(
+        self, state: State, *states: State, ignore_current_state: bool = False, return_states: bool = False, **kwargs
+    ) -> AwaitableFuture[Any]:
         # NB: the future returned here will be resolved once the StateTracker has passed through the given state, even
         # if it is no longer in that state. If a worker transitions twice in rapid succession, or a waiter is attached
         # and then not waited on until later, after the worker has passed through *states, it'll still resolve.
         # NB: ignore_current_state=True always waits, for the next transition into *states, even if already in one.
+        # NB: it resolves with that transition's data (None for the initial state); with return_states=True, with its
+        # whole (old state, new state, data) triple.
         # NB: cancelling the returned future does nothing.
         # NB: if your done callbacks are slow, you'll break stuff (here and everywhere)
-        # NB: kwargs go to AwaitableFuture() (prevent_blocking_wait_in_loops, say), bar ignore_cancel: that's an error
+        # NB: kwargs go to AwaitableFuture() (prevent_blocking_wait_in_loops, say), bar ignore_cancel and
+        # transform_result: those are errors
         states = [self._check_state(state) for state in (state, *states)]
-        future = AwaitableFuture(**kwargs, ignore_cancel=True)  # Giving up on it leaves it, and other waiters, alone
+        future = AwaitableFuture(  # Giving up on it leaves it, and other waiters, alone
+            **kwargs, ignore_cancel=True, transform_result=None if return_states else _data
+        )
         with self._condition:
             if not ignore_current_state and self.state in states:
                 future.set_result(self._last_transition)
