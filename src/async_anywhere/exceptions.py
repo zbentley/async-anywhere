@@ -1,20 +1,11 @@
 r"""
-Exceptions raised by :py:mod:`async_anywhere`
+Note:
+    Users interacting with exception classes defined in this module must follow these rules:
 
-Exception classes in this file all have the following behavior:
+    - Do not subclass or manually construct :py:class:`AsyncAnywhereException` or any subclass thereof from user code.
+    - Treat instances of :py:class:`AsyncAnywhereException` as immutable. Changing any fields on them may break
+      functionality. Standard automatic mutation via the Python runtime (e.g. call stack manipulation) is permitted.
 
-- All custom (non-stdlib) exceptions raised by this library are subclasses of :py:class:`AsyncAnywhereException`.
-- All :py:class:`AsyncAnywhereException`\ s can be pickled/unpickled/copied and shared between processes.
-- Code in this library that raises exceptions (including stdlib Exceptions and :py:class:`AsyncAnywhereException`\ s)
-  does so in a way that does not artificially prolong object lifetimes (e.g. this library will not raise errors whose
-  handling or storage results in an event loop not being garbage collected when it should be). If you find that this is
-  not the case in a specific situation, file a bug.
-
-Users interacting with exception classes defined in this module must follow these rules:
-
-- Do not subclass or manually construct :py:class:`AsyncAnywhereException` or any subclass thereof from user code.
-- Treat instances of :py:class:`AsyncAnywhereException` as immutable. Changing any fields on them may break functionality.
--
 """
 from __future__ import annotations
 
@@ -22,18 +13,12 @@ import asyncio
 import concurrent.futures
 import copyreg
 import os
-from abc import ABC
-from functools import partial
+from abc import ABC, ABCMeta
 from typing import TYPE_CHECKING
-from weakref import WeakSet
-
-import async_anywhere
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from typing import Any, Self
+    from typing import Self
 
-    from async_anywhere._util import LoopSelector
     from async_anywhere.state_tracker import State, StateTracker
 
 
@@ -50,9 +35,17 @@ __all__ = [
 
 
 # ABC in a class's own bases marks one we never instantiate: only a marker, as BaseException.__new__() checks nothing
-class AsyncAnywhereException(ABC):
-    """Mixed into every exception async_anywhere raises of its own: not an Exception itself, so that each can extend
-    whichever builtin exception fits it."""
+class AsyncAnywhereException(ABC, Exception):
+    r"""
+    All custom (non-stdlib) exceptions raised by this library are subclasses of this class.
+
+    All :py:class:`AsyncAnywhereException`\ s can be pickled/unpickled/copied and shared between processes.
+
+    Code in this library that raises exceptions (including stdlib Exceptions and :py:class:`AsyncAnywhereException`\ s)
+    does so in a way that does not artificially prolong object lifetimes (e.g. this library will not raise errors whose
+    handling or storage results in an event loop not being garbage collected when it should be). If you find that this is
+    not the case in a specific situation, file a bug.
+    """
 
     __slots__ = ()
 
@@ -62,7 +55,10 @@ class AsyncAnywhereException(ABC):
         return copyreg.__newobj__, (type(self), *self.args), vars(self)
 
     def copy(self, *causes: BaseException) -> Self:
-        """A copy to raise in this one's place, raised from `causes` if any are given: see _util.copy_exception()."""
+        """Returns a deep copy of this exception object, optionally with additional ``__causes__`` added to its lineage.
+
+        :meta private:
+        """
         from async_anywhere._util import copy_exception  # Only on the sad paths that copy: see the module's docstring
 
         return copy_exception(self, *causes)
@@ -71,26 +67,9 @@ class AsyncAnywhereException(ABC):
 # Futures
 
 class WouldBlock(AsyncAnywhereException, RuntimeError):
-    def __init__(self, future, loop) -> None:
-        super().__init__(f"Waiting for {future!r} would deadlock on current event loop '{loop!r}'")
-
-    @classmethod
-    def _invariant(cls, would_block, future):
-        if would_block(loop := asyncio._get_running_loop()):
-            raise cls(future, loop)
-
-    @classmethod
-    def _checker(cls, loops: LoopSelector) -> Callable[[Any], None] | None:
-        """A function that raises WouldBlock, naming the future it's given, if called in one of `loops` (any, for "all")
-        while it runs: or None, if there are none to check. It holds the loops weakly."""
-        if loops == "all":
-            refuse = lambda loop: loop is not None  # None is outside any loop
-        elif len(refs := WeakSet(loops)) > 0:
-            assert all(isinstance(loop, asyncio.AbstractEventLoop) for loop in refs)
-            refuse = refs.__contains__  # None, outside a loop, is never in refs
-        else:
-            return None
-        return partial(cls._invariant, refuse)
+    def __init__(self, future, culprit) -> None:
+        """:meta private:"""
+        super().__init__(f"Waiting for {future!r} would deadlock: refused by {culprit!r}")
 
 
 # State trackers
@@ -102,6 +81,7 @@ class StateTrackerError(AsyncAnywhereException, asyncio.InvalidStateError, concu
         msg: str,
         *states: State,
     ):
+        """:meta private:"""
         desc = self._state_names(*states)
         errprefix = f"{source.__class__.__qualname__}[state={source.state.name}]"
         super().__init__(f"{errprefix}: {msg.strip(" :")}: {desc}")
@@ -119,6 +99,7 @@ class StateTrackerError(AsyncAnywhereException, asyncio.InvalidStateError, concu
 
 class WorkerStopped(AsyncAnywhereException, Exception):
     def __init__(self, summary: str, cause: BaseException | None = None):
+        """:meta private:"""
         super().__init__(summary)
         self.__cause__ = cause
 
@@ -134,6 +115,7 @@ class WorkerForked(WorkerBroken):
     """Why a worker can't be used: this is a process forked from its own (see executors._fork_safety)."""
 
     def __init__(self, summary: str = "", cause: BaseException | None = None):
+        """:meta private:"""
         super().__init__(summary or f"forked into process {os.getpid()}", cause)
 
 
