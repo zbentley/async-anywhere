@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import functools
+import importlib
 import inspect
 import sys
+from abc import ABC
 
 import attrs
+from sphinx.domains.python import PyClasslike
 from sphinx.pycode import ModuleAnalyzer
 
 
@@ -24,9 +27,9 @@ autodoc_class_signature = "separated"
 autodoc_default_options = {
     'show-inheritance': True,
     'member-order': 'bysource',
-    'inherited-members': True,
+    # 'inherited-members': True,
     # 'special-members': '__call__,__enter__,__exit__,__aenter__,__aexit__',
-    'undoc-members': True,
+    # 'undoc-members': True,
     'exclude-members': '__weakref__,__new__'
 }
 html_theme = "furo"
@@ -81,8 +84,33 @@ def executor_map_doc(app, what, name, obj, options, lines):  # noqa: PLR0917
         lines[:] = ["See :py:meth:`concurrent.futures.Executor.map`."]
 
 
+class AbstractAwarePyClasslike(PyClasslike):
+    # Autodoc never emits :abstract: for classes: add it for ABC-marked (ABC in own bases) or inspect.isabstract classes
+    def run(self):
+        qualname = [*filter(None, [self.env.ref_context.get('py:class')]), self.arguments[0].split('(')[0].strip()]
+        try:
+            obj = functools.reduce(
+                getattr, '.'.join(qualname).split('.'), importlib.import_module(self.env.ref_context.get('py:module'))
+            )
+        except (ImportError, AttributeError, TypeError):
+            obj = None
+        if inspect.isclass(obj) and (ABC in obj.__bases__ or inspect.isabstract(obj)):
+            self.options['abstract'] = True
+        return super().run()
+
+
+def expand_sidebar(app, pagename, templatename, context, doctree):  # noqa: PLR0917
+    # Furo only pre-checks the expand toggles of the current page's ancestors: check every one so the nav starts fully expanded
+    context["furo_navigation_tree"] = context["furo_navigation_tree"].replace('role="switch"', 'checked="" role="switch"')
+
+
 def setup(app):
     # https://www.sphinx-doc.org/en/master/usage/extensions/autodoc.html#event-autodoc-process-bases
     app.connect('autodoc-process-bases', process_bases_hook)
     app.connect('autodoc-process-docstring', attrs_init_param_docs)
     app.connect('autodoc-process-docstring', executor_map_doc)
+    # Separate registrations of the same class: overriding one leaves the other as stock PyClasslike
+    app.add_directive_to_domain('py', 'class', AbstractAwarePyClasslike, override=True)
+    app.add_directive_to_domain('py', 'exception', AbstractAwarePyClasslike, override=True)
+    # After furo's own html-page-context handler (default priority 500), which builds furo_navigation_tree
+    app.connect('html-page-context', expand_sidebar, priority=501)

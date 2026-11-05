@@ -9,18 +9,18 @@ API Usage Guidelines
     * A ``_private`` member with a docstring is still private unless documented otherwise.
 * Some things provided by this package may be :py:mod:`dataclasses` or |attrs|_-based classes. Whether an exported class does or does not do this is an implementation detail and not part of its public contract; do not rely on e.g. an exported class using ``@dataclass`` internally.
 
+API
+---
 
-Modules
--------
+.. automodule:: async_anywhere
+    :members:
 
 .. toctree::
-   :maxdepth: 4
+    :maxdepth: 4
+    :glob:
 
-   async_anywhere
-   async_anywhere.futures
-   async_anywhere.executors
-   async_anywhere.exceptions
-   async_anywhere.misc
+    *
+    executors/index
 
 .. |attrs| replace:: ``attrs``
 .. _attrs: https://www.attrs.org/en/stable/
