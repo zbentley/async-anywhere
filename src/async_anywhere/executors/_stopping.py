@@ -1,3 +1,4 @@
+r"""
 # `EventLoopExecutor` Stopping
 
 An `EventLoopExecutor` can be **stopped**, meaning that it's `WaitableStateTracker` is in the `Stopping` or `Shutdown` 

@@ -13,12 +13,11 @@ import asyncio
 import concurrent.futures
 import copyreg
 import os
-from abc import ABC, ABCMeta
-from typing import TYPE_CHECKING
+from abc import ABC
+from copy import copy
+from typing import TYPE_CHECKING, final, Self
 
 if TYPE_CHECKING:
-    from typing import Self
-
     from async_anywhere.state_tracker import State, StateTracker
 
 
@@ -59,9 +58,29 @@ class AsyncAnywhereException(ABC, Exception):
 
         :meta private:
         """
-        from async_anywhere._util import copy_exception  # Only on the sad paths that copy: see the module's docstring
+        return AsyncAnywhereException.copy_exception(self, *causes)
 
-        return copy_exception(self, *causes)
+    @final
+    @staticmethod
+    def copy_exception[E: BaseException](error: E, *causes: BaseException) -> E:
+        """A copy of `error` to raise in its place: the interpreter changes an exception's traceback and context as it's
+        raised, as add_note() does its notes, so raising one that others may be raising too would mix theirs into it. The
+        copy starts from the original's traceback, and is raised from `causes`, each from the next, if any are given, or
+        else from what the original was. Only for exceptions that copy.copy() round-trips: builtins and ours, not users'
+        in general.
+
+        :meta private:
+        """
+        new = copy(error).with_traceback(error.__traceback__)
+        new.__context__ = error.__context__
+        if len(notes := getattr(error, "__notes__", ())) > 0:
+            new.__notes__ = list(notes)
+        if len(causes) > 0:
+            # Copying all but the last, whose cause is kept
+            new.__cause__ = AsyncAnywhereException.copy_exception(*causes) if len(causes) > 1 else causes[0]
+        else:
+            new.__cause__, new.__suppress_context__ = error.__cause__, error.__suppress_context__
+        return new
 
 
 # Futures
@@ -69,7 +88,12 @@ class AsyncAnywhereException(ABC, Exception):
 class WouldBlock(AsyncAnywhereException, RuntimeError):
     def __init__(self, future, culprit) -> None:
         """:meta private:"""
-        super().__init__(f"Waiting for {future!r} would deadlock: refused by {culprit!r}")
+        # A thread or loop, or else AnyEventLoop or BlockingNotAllowed, from _util: named as users find them
+        if getattr(culprit, "__module__", None) == "async_anywhere._util":  # Instances of builtins have none
+            culprit = f"AwaitableFuture.{culprit.__name__}"
+        else:
+            culprit = repr(culprit)
+        super().__init__(f"Waiting for {future!r} would deadlock: refused by {culprit}")
 
 
 # State trackers
@@ -125,7 +149,8 @@ class WorkerInterrupted(AsyncAnywhereException, concurrent.futures.CancelledErro
     __cause__."""
 
     @classmethod
-    def _from_cancellation(cls, cancelled: BaseException, stopped: WorkerStopped) -> Self:
+    def from_cancellation(cls, cancelled: BaseException, stopped: WorkerStopped) -> Self:
+        """:meta private:"""
         interrupted = cls(*cancelled.args).with_traceback(cancelled.__traceback__)  # Ending where the job was cancelled
         interrupted.__cause__ = stopped
         return interrupted

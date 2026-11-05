@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import gc
 import os
 import signal
+import sys
 import threading
 import time
+import weakref
 
 import pytest
 
@@ -147,6 +150,19 @@ def test_a_stopping_workers_calls_go_to_its_replacement_but_cant_wait_for_it_the
         assert singleton.get() is not first
 
 
+def test_workers_it_has_replaced_are_let_go():
+    with running_singleton() as singleton:
+        replaced = []
+        for _ in range(3):
+            worker = singleton.get()
+            replaced.append(weakref.ref(worker))
+            worker.shutdown()
+            worker._thread.join()  # Past its last step, once its state has changed for the last time
+        del worker
+        gc.collect()
+        assert [ref() is None for ref in replaced] == [True, True, False]  # The last kept, until get() replaces it
+
+
 def test_callbacks_on_a_workers_thread_as_it_shuts_down_cant_wait_for_its_replacement():
     with running_singleton() as singleton:
         first, seen = singleton.get(), AwaitableFuture()
@@ -175,8 +191,16 @@ def test_a_worker_whose_get_was_interrupted_as_it_was_made_runs_nothing():
         def run_until_complete(self, future):
             if not self.interrupted:  # Its first run, which the constructor waits for to start
                 self.interrupted = True
+                waiting = EventLoopExecutor.current()._runner._condition
+                # Not until main is blocked in Condition.wait()'s try, which only run() below can wake it from: there, the
+                # interrupt comes from its acquire(), and the finally restores the lock, which elsewhere it can unbalance
+                while not (
+                    (frame := sys._current_frames()[main_ident]).f_code is threading.Condition.wait.__code__
+                    and frame.f_locals["self"] is waiting
+                    and "gotit" in frame.f_locals
+                ):
+                    time.sleep(0.001)
                 signal.pthread_kill(main_ident, signal.SIGINT)  # As Ctrl+C would, as get() makes it
-                time.sleep(0.1)
             return super().run_until_complete(future)
 
     made = []

@@ -1,7 +1,6 @@
 import asyncio
 import logging
 from collections.abc import Callable, Collection
-from copy import copy
 from functools import cache
 from inspect import iscoroutinefunction
 from threading import Lock, RLock, Thread, current_thread
@@ -34,23 +33,6 @@ def futures_logger() -> logging.Logger:
     return concurrent.futures._base.LOGGER.getChild("async_anywhere")
 
 
-def copy_exception[E: BaseException](error: E, *causes: BaseException) -> E:
-    """A copy of `error` to raise in its place: the interpreter changes an exception's traceback and context as it's
-    raised, as add_note() does its notes, so raising one that others may be raising too would mix theirs into it. The
-    copy starts from the original's traceback, and is raised from `causes`, each from the next, if any are given, or else
-    from what the original was. Only for exceptions that copy.copy() round-trips: builtins and ours, not users' in general.
-    """
-    new = copy(error).with_traceback(error.__traceback__)
-    new.__context__ = error.__context__
-    if len(notes := getattr(error, "__notes__", ())) > 0:
-        new.__notes__ = list(notes)
-    if len(causes) > 0:
-        new.__cause__ = copy_exception(*causes) if len(causes) > 1 else causes[0]  # Copying all but the last, whose cause is kept
-    else:
-        new.__cause__, new.__suppress_context__ = error.__cause__, error.__suppress_context__
-    return new
-
-
 @final
 class LockProtected[T]:
     """A value reachable only under its lock: `with protected as value:` holds the lock while the block runs."""
@@ -74,34 +56,40 @@ class LockProtected[T]:
         self._value = value
         return value
 
+
+def AnyEventLoop() -> bool:
+    """Sentinel for :py:obj:`AwaitableFuture.prevent_blocking_wait_when`: raises :py:exception:`WouldBlock` instead of
+    blocking if any event loop or Trio task is running."""
+    return asyncio._get_running_loop() is not None or TrioRuntime.in_task()
+
+
+def BlockingNotAllowed() -> bool:
+    """Sentinel for :py:obj:`AwaitableFuture.prevent_blocking_wait_when`: raises :py:exception:`WouldBlock` instead of
+    blocking in all cases."""
+    return True
+
+
 @final
 class BlockingChecker:
     """Where blocking waits for a future would deadlock, so are refused: on given threads, in given event loops (both held
-    weakly), in any running event loop or trio task (AnyEventLoop), or anywhere (All)."""
+    weakly), in any running event loop or trio task (AnyEventLoop), or anywhere (BlockingNotAllowed)."""
     __slots__ = ("_environments",)
-
-    @staticmethod
-    def AnyEventLoop() -> bool:
-        return asyncio._get_running_loop() is not None or TrioRuntime.in_task()
-
-    @staticmethod
-    def All() -> bool:
-        return True
 
     def __init__(self, environments: BlockingEnvironments = ()):
         self._environments = BlockingChecker._weakened(environments)
 
     @staticmethod
     def _weakened(environments: Collection) -> tuple:
-        # Threads and loops as weak references, so that futures never keep them alive: AnyEventLoop and All as they are
+        # Threads and loops as weak references, so that futures never keep them alive: AnyEventLoop and
+        # BlockingNotAllowed as they are
         weakened = []
         for environment in environments:
             if isinstance(environment, (asyncio.AbstractEventLoop, Thread)):
                 weakened.append(ref(environment))
-            elif environment is BlockingChecker.AnyEventLoop or environment is BlockingChecker.All:
+            elif environment is AnyEventLoop or environment is BlockingNotAllowed:
                 weakened.append(environment)
             else:
-                raise TypeError(f"Blocking waits can be refused in event loops, on threads, or by AnyEventLoop or All, not {environment!r}")
+                raise TypeError(f"Blocking waits can be refused in event loops, on threads, or by AnyEventLoop or BlockingNotAllowed, not {environment!r}")
         return tuple(weakened)
 
     def copy(self, environments: BlockingEnvironments = ()) -> BlockingChecker:
@@ -125,7 +113,7 @@ class BlockingChecker:
                 if isinstance(environment, ref):  # A thread or loop, or None once it's gone
                     if (culprit := environment()) is thread or (loop is not None and culprit is loop):
                         raise WouldBlock(future, culprit)
-                elif environment():  # AnyEventLoop or All
+                elif environment():  # AnyEventLoop or BlockingNotAllowed
                     raise WouldBlock(future, environment)
         finally:
             del future, thread, loop, culprit  # Else what this raises would keep them alive, through its traceback

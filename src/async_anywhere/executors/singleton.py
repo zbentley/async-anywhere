@@ -3,9 +3,9 @@ outlive any one worker: a database connection, for one. Only one of its workers 
 at a time: a replacement is made at once, but runs nothing until the worker it replaces has finished."""
 from functools import partial, update_wrapper
 from inspect import iscoroutinefunction
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine, final
 
-from async_anywhere._util import LockProtected
+from async_anywhere._util import BlockingChecker, LockProtected
 from async_anywhere.exceptions import WorkerStopped
 from async_anywhere.executors import EventLoopExecutor, _wait_forever
 from async_anywhere.executors._fork_safety import workers
@@ -16,6 +16,7 @@ _NO_WORKER = AwaitableFuture()
 _NO_WORKER.set_result(None)
 
 
+@final
 class SingletonEventLoopExecutor:
     def __init__(
         self,
@@ -33,12 +34,8 @@ class SingletonEventLoopExecutor:
         self._main, self._kwargs = main, kwargs
         self._interrupt_stopping_workers = interrupt_stopping_workers
         self._worker = LockProtected(None)  # The worker, once get() has made one
-
-        def in_its_workers() -> bool:  # Not self, which its workers' futures would keep alive: see get()
-            worker = EventLoopExecutor.current()
-            return worker is not None and worker._would_deadlock is in_its_workers  # Its own, so one of its workers
-
-        self._in_its_workers = in_its_workers
+        # Shared by its workers, each adding its own thread, so that their futures refuse blocking waits on any of them
+        self._blocking_checker = BlockingChecker()
         workers.ensure_registered(self)
         if not lazy:
             self.get()
@@ -70,17 +67,18 @@ class SingletonEventLoopExecutor:
                     new._expiry.reset(new._idle_timeout)
                     return await main(new)
 
-            new = EventLoopExecutor(main=gated, _would_deadlock=self._in_its_workers, **self._kwargs)
-            stored.replace_value(new)
-            return new
+            return stored.replace_value(EventLoopExecutor(
+                main=gated,
+                _blocking_checker=self._blocking_checker,
+                **self._kwargs,
+            ))
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> AwaitableFuture[WorkerStopped | None]:
         """As EventLoopExecutor.shutdown(), for get()'s worker; or, called on one of its workers (one it has replaced,
         say), for that one, so that this never makes one. Each worker shuts down after those it replaced. Not for good:
         the next get() makes a new worker. With no worker to stop, it resolves with None at once."""
-        if self._in_its_workers():
-            worker = EventLoopExecutor.current()
-        else:
+        worker = EventLoopExecutor.current()
+        if worker is None or worker._blocking_checker is not self._blocking_checker:  # Not one of its workers
             with self._worker as worker:
                 pass
         if worker is None:

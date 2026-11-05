@@ -9,6 +9,7 @@ import gc
 import threading
 import time
 import traceback
+import weakref
 from datetime import timedelta
 
 import pytest
@@ -323,14 +324,14 @@ class WaitsForItsState(Worker):
         return self.wait_for_state(self.Shutdown, **kwargs).result(1)
 
 
-@pytest.mark.parametrize("given", ["nothing", "loops", "an iterator of loops", "all loops", "something else"])
+@pytest.mark.parametrize("given", ["nothing", "loops", "threads", "any loop", "something else"])
 async def test_waiting_synchronously_for_a_state_on_the_workers_own_loop_is_an_error_whatever_kwargs_say(given):
     other = asyncio.get_running_loop()  # The test's, never the worker's
     kwargs = {
         "nothing": {},
-        "loops": {"prevent_blocking_wait_in_loops": (other,)},
-        "an iterator of loops": {"prevent_blocking_wait_in_loops": iter([other])},
-        "all loops": {"prevent_blocking_wait_in_loops": "all"},
+        "loops": {"prevent_blocking_wait_when": (other,)},
+        "threads": {"prevent_blocking_wait_when": (threading.current_thread(),)},
+        "any loop": {"prevent_blocking_wait_when": (AwaitableFuture.AnyEventLoop,)},
         "something else": {"cancel_pending_in_forked_child": True},
     }[given]
     async with running(WaitsForItsState) as worker:
@@ -342,19 +343,19 @@ async def test_a_workers_state_waits_refuse_blocking_waits_in_the_loops_given_to
     here = (asyncio.get_running_loop(),)
     async with running(Worker) as worker:
         with pytest.raises(RuntimeError, match="would deadlock"):
-            worker.wait_for_state(worker.Shutdown, prevent_blocking_wait_in_loops=here).result(0)
+            worker.wait_for_state(worker.Shutdown, prevent_blocking_wait_when=here).result(1)
         with pytest.raises(TimeoutError):  # Off the worker's loop, nothing else is refused by default
             worker.wait_for_state(worker.Shutdown).result(0)
 
 
-@pytest.mark.parametrize("given", ["nothing", "loops", "all loops"])
+@pytest.mark.parametrize("given", ["nothing", "loops", "any loop"])
 async def test_blocking_waits_on_the_workers_thread_are_refused_outside_its_loop_too(given):
     # Where done callbacks run: a stop's, here, as run returning stops the worker once its loop has stopped running
     other = asyncio.get_running_loop()  # The test's, never the worker's
     kwargs = {
         "nothing": {},
-        "loops": {"prevent_blocking_wait_in_loops": (other,)},
-        "all loops": {"prevent_blocking_wait_in_loops": "all"},  # Outside any loop, this alone refuses nothing
+        "loops": {"prevent_blocking_wait_when": (other,)},
+        "any loop": {"prevent_blocking_wait_when": (AwaitableFuture.AnyEventLoop,)},  # Outside any loop, this alone refuses nothing
     }[given]
     async with running(Worker) as worker:
         call = worker.waits_for(AwaitableFuture())  # In flight, so pending until the stop interrupts it
@@ -374,6 +375,19 @@ async def test_blocking_waits_on_the_workers_thread_are_refused_outside_its_loop
         stopping.add_done_callback(waits)
         worker.runloop.set_result(None)
         assert await asyncio.wait_for(seen, 5) == (None, [WouldBlock, WouldBlock])
+
+
+def test_a_finished_workers_futures_dont_keep_it_or_its_loop_alive():
+    async def work():
+        return "done"
+
+    worker = EventLoopExecutor()
+    futures = worker.submit(work), worker.wait_for_state(worker.Stopping), worker.shutdown()
+    worker._thread.join()  # Past its last step, once its state has changed for the last time
+    refs = weakref.ref(worker), weakref.ref(worker._loop)
+    del worker
+    gc.collect()
+    assert [ref() for ref in refs] == [None, None] and futures[0].result(0) == "done"
 
 
 async def test_calls_made_once_the_worker_has_stopped_are_refused_unrun():

@@ -862,7 +862,7 @@ def test_submission_the_loop_never_runs_fails_instead_of_hanging(monkeypatch):
         # has closed.
         if worker.in_worker():
             with worker._condition:
-                late.append(future := AwaitableFuture(prevent_blocking_wait_in_loops=(worker._loop,)))
+                late.append(future := AwaitableFuture(prevent_blocking_wait_when=(worker._loop,)))
                 worker._submitted[future] = None
                 worker._loop.call_soon_threadsafe(worker._start, future, asyncio.sleep, (0,), {}, "sleep")
         finalize(worker)

@@ -2,54 +2,16 @@
 from __future__ import annotations
 
 import concurrent.futures
+import gc
 import sys
+import threading
+import weakref
 
 import pytest
 from attrs import define, field
 
-from async_anywhere._util import LockProtected, copy_exception, validate_coroutine_function
-
-
-def test_copies_keep_the_originals_state():
-    with pytest.raises(SystemExit) as raised:
-        try:
-            raise KeyError("context")
-        except KeyError:
-            raise SystemExit(3) from ValueError("cause")
-
-    original = raised.value
-    original.add_note("note")
-    copy = copy_exception(original)
-    assert copy is not original and type(copy) is SystemExit and copy.code == 3  # Builtins' own state too
-    assert copy.__traceback__ is original.__traceback__ and copy.__notes__ == ["note"]
-    assert (copy.__cause__, copy.__context__) == (original.__cause__, original.__context__) and copy.__suppress_context__
-    with pytest.raises(SystemExit) as raised:
-        sys.exit(3)
-    assert not copy_exception(raised.value).__suppress_context__
-
-
-def test_raising_a_copy_leaves_the_original_alone():
-    with pytest.raises(SystemExit) as raised:
-        sys.exit(3)
-    original = raised.value
-    copy, traceback = copy_exception(original), original.__traceback__
-    with pytest.raises(SystemExit):
-        try:
-            raise KeyError("elsewhere")
-        except KeyError:
-            raise copy
-    copy.add_note("note")
-    assert copy.__traceback__ is not traceback and type(copy.__context__) is KeyError
-    assert original.__traceback__ is traceback and original.__context__ is None and not hasattr(original, "__notes__")
-
-
-def test_copies_are_raised_from_the_causes_given():
-    first, last, root = KeyError("first"), OSError("last"), TypeError("root")
-    last.__cause__ = root
-    copy = copy_exception(ValueError("error"), first, last)
-    assert type(copy.__cause__) is KeyError and copy.__cause__ is not first and first.__cause__ is None  # Unchanged
-    assert copy.__cause__.__cause__ is last and last.__cause__ is root  # The last kept as it is, with its own cause
-    assert copy.__suppress_context__
+from async_anywhere._util import AnyEventLoop, BlockingChecker, LockProtected, validate_coroutine_function
+from async_anywhere.exceptions import WouldBlock
 
 
 @pytest.mark.parametrize("recursive", [False, True])
@@ -75,7 +37,8 @@ def test_lock_protected_releases_its_lock_as_errors_leave():
 def test_lock_protected_values_are_replaced_for_later_entries():
     protected = LockProtected(old := object())
     with protected as entered:
-        protected.replace_value(new := object())
+        new = object()
+        assert protected.replace_value(new) is new
         assert entered is old
     with protected as entered:
         assert entered is new
@@ -92,3 +55,25 @@ def test_only_coroutine_functions_are_valid():
     for invalid in (lambda: run(), None):  # noqa: PLW0108 (Returning a coroutine isn't enough: it must be an async def)
         with pytest.raises(TypeError, match=r"^run must be a coroutine function \(an async def\), not "):
             Holder(invalid)
+
+
+def test_blocking_checkers_and_their_copies_dont_share_later_adds():
+    here = threading.current_thread()
+    checker = BlockingChecker()
+    copied = checker.copy([AnyEventLoop])  # Outside any loop, here: so refusing nothing
+    checker.add(here)
+    copied.check("future")
+    with pytest.raises(WouldBlock, match="'future' would deadlock"):
+        checker.check("future")
+    copied.add(here)
+    with pytest.raises(WouldBlock):
+        copied.check("future")
+
+
+def test_blocking_checkers_let_go_of_what_has_gone_as_they_add():
+    checker = BlockingChecker([gone := threading.Thread(target=print)])
+    del gone
+    gc.collect()
+    checker.check("future")  # Refusing nothing, once gone
+    checker.add(here := threading.current_thread())
+    assert checker._environments == (weakref.ref(here),)
