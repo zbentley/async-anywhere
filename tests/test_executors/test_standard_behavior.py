@@ -149,7 +149,7 @@ async def test_the_parent_task_gets_the_worker_and_bridged_functions_just_their_
 
         @worker.bridge
         async def free(key):
-            return worker.in_worker(), key
+            return worker.is_current_worker(), key
 
         assert await free("y") == (True, "y") and free.__name__ == "free"
         assert await asyncio.to_thread(lambda: free("z").result(1)) == (True, "z")

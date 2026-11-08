@@ -8,7 +8,9 @@ which accept asynchronous Python jobs, and run those jobs on an isolated, captiv
     :maxdepth: 2
 
     glossary
-    fork_safety
-    stopping
     EventLoopExecutor
     SingletonEventLoopExecutor
+    interruption
+    stopping
+    fork_safety
+

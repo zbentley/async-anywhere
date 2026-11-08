@@ -8,6 +8,14 @@ EventLoopExecutor todos;
 - cope with (really: yell about) interrupted jobs whose cleanup SYNC hangs
 - worker *is* a state machine
 - Log never-awaited on bridge futures
+- py:exception doc tag?
+- ditch the term interrupt from all docs
+
+# Comparison
+
+Vs anyio:
+- BlockingPortal's submit methods wait for the portal to accept the job, blocking the caller until it does. If the portal is blocked, this can cause hangs or deadlocks.
+- BlockingPortal is designed to run, well, *blocking* code. EventLoopExecutor is designed to run nonblocking/awaitable code concurrently (though it can run blocking code--necessarily in serial--as well).
 
 # Docs to incorporate into executor
 

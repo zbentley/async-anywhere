@@ -25,9 +25,9 @@ class _ForkAllowedDoneCallbackToken(_DoneCallbackToken):
 class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     """A concurrent.futures.Future subclass that can also be awaited. Provides the following behaviors:
 
-    - Calling "await AwaitableFuture(...)" can be done from any event loop, or trio task (anyio's included).
+    - Calling "await AwaitableFuture(...)" can be done from any thread, ``asyncio`` event loop context, or trio task.
     - If an AwaitableFuture has already completed, "await"ing it is significantly cheaper than "await"ing an
-      asyncio.Future or using asyncio.wrap_future.
+      asyncio.Future or using asyncio.wrap_future. TODO assess.
     - Users can specify one or more event loops or threads (or AwaitableFuture.AnyEventLoop, for any running loop or
       trio task, or AwaitableFuture.BlockingNotAllowed, for anywhere) within which blocking wait methods inherited from
       concurrent.futures.Future (e.g. fut.result(timeout=10)) will fail immediately, raising WouldBlock, if the invoking
@@ -177,10 +177,9 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         :return: an asyncio.Future linked to the invocant.
         """
 
-        # Trio first, as a guest run's tasks run on an asyncio loop's thread, while it's running
-        if loop is None and TrioRuntime.in_task():
-            return TrioAwaitableFuture(self, TrioRuntime.current_token())
         if loop is None:
+            if TrioRuntime.in_task():# TODO remove dot lookup
+                return TrioAwaitableFuture(self, TrioRuntime.current_token())
             loop = asyncio.get_running_loop() if require_running_loop else asyncio.get_event_loop()
         elif require_running_loop and loop.is_closed():
             raise RuntimeError('Event loop is closed')

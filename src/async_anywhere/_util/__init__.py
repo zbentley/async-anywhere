@@ -20,8 +20,8 @@ def validate_coroutine_function(_, attribute, value):
 @cache
 def futures_logger() -> logging.Logger:
     """
-    What :py:mod:`AwaitableFuture` logs to when un-observed errors or warnings occur (e.g. an :py:exception:`Exception`
-    is raised by a callback added via ``add_done_callback``--but not a :py:exception:`BaseException`, those are raised
+    What :py:mod:`AwaitableFuture` logs to when un-observed errors or warnings occur (e.g. an :py:class:`Exception`
+    is raised by a callback added via ``add_done_callback``--but not a :py:class:`BaseException`, those are raised
     and abort callback handling!).
 
     It's a child of the logger used internally by :py:class:`concurrent.futures.Future` for the same purpose, and is
@@ -58,13 +58,13 @@ class LockProtected[T]:
 
 
 def AnyEventLoop() -> bool:
-    """Sentinel for :py:obj:`AwaitableFuture.prevent_blocking_wait_when`: raises :py:exception:`WouldBlock` instead of
+    """Sentinel for :py:obj:`AwaitableFuture.prevent_blocking_wait_when`: raises :py:class:`WouldBlock` instead of
     blocking if any event loop or Trio task is running."""
     return asyncio._get_running_loop() is not None or TrioRuntime.in_task()
 
 
 def BlockingNotAllowed() -> bool:
-    """Sentinel for :py:obj:`AwaitableFuture.prevent_blocking_wait_when`: raises :py:exception:`WouldBlock` instead of
+    """Sentinel for :py:obj:`AwaitableFuture.prevent_blocking_wait_when`: raises :py:class:`WouldBlock` instead of
     blocking in all cases."""
     return True
 

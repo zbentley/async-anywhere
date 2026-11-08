@@ -86,6 +86,11 @@ class AsyncAnywhereException(ABC, Exception):
 # Futures
 
 class WouldBlock(AsyncAnywhereException, RuntimeError):
+    """Raised when synchronously waiting for an :py:class:`AwaitableFuture` with ``.result()`` or ``.exception()``
+    would block (that is, when a future is not done and a nonzero timeout is passed to those methods).
+
+    The behavior of when and where this exception will be raised can be controlled via :py:attr:`AwaitableFuture.prevent_blocking_wait_when` parameter.
+    """
     def __init__(self, future, culprit) -> None:
         """:meta private:"""
         # A thread or loop, or else AnyEventLoop or BlockingNotAllowed, from _util: named as users find them
@@ -99,6 +104,8 @@ class WouldBlock(AsyncAnywhereException, RuntimeError):
 # State trackers
 
 class StateTrackerError(AsyncAnywhereException, asyncio.InvalidStateError, concurrent.futures.InvalidStateError):
+    r"""Raised when invalid invalid configuration is requested for or invalid actions are performed on a
+    :py:class:`StateTracker`."""
     def __init__(
         self,
         source: StateTracker,
@@ -122,21 +129,29 @@ class StateTrackerError(AsyncAnywhereException, asyncio.InvalidStateError, concu
 
 
 class WorkerStopped(AsyncAnywhereException, Exception):
+    """
+    Indicates that an :py:class:`EventLoopExecutor` has :py:mod:`stopped <async_anywhere.executors._stopped>`, and why.
+
+    Raised (and sometimes returned) from various EventLoopExecutor functions, and may also be raised from :term:`job`
+    futures when jobs are aborted due to executor stop."""
     def __init__(self, summary: str, cause: BaseException | None = None):
         """:meta private:"""
         super().__init__(summary)
         self.__cause__ = cause
 
 
-class CleanStop(WorkerStopped): ...
-
+class CleanStop(WorkerStopped):
+    r"""Indicates that am :py:class:`EventLoopExecutor` stopped without interrupting any :term:`job`\ s (the
+    :term:`main task` is always interrupted regardless)."""
 
 class WorkerBroken(WorkerStopped, ABC):
-    """Why a worker can't be used at all: rather than refusing calls, it raises this for them, and for shutdown()."""
-
+    """Indicates that an :py:class:`EventLoopExecutor` cannot perform the requested action(s) because it was stopped
+    due to an internal error or unsupported state."""
 
 class WorkerForked(WorkerBroken):
-    """Why a worker can't be used: this is a process forked from its own (see executors._fork_safety)."""
+    """Indicates that an :py:class:`EventLoopExecutor` cannot perform the requested action(s) because it was created in
+    a parent process and cannot be used in a forked child. See
+    :py:mod:`executor fork safety <async_anywhere.executors._fork_safety>` for more information."""
 
     def __init__(self, summary: str = "", cause: BaseException | None = None):
         """:meta private:"""
@@ -144,9 +159,8 @@ class WorkerForked(WorkerBroken):
 
 
 class WorkerInterrupted(AsyncAnywhereException, concurrent.futures.CancelledError):
-    """What a call's waiters get when an interrupt cancels it (see EventLoopExecutor._job()): a subclass, as
-    wrap_future() remakes concurrent.futures.CancelledError itself as asyncio's for those awaiting it, losing its
-    __cause__."""
+    r"""Raised from attempts to wait on an :py:class:`EventLoopExecutor`\ s :term:`job` that has been cancelled due to
+    a worker stop condition that interrupts running work (e.g. ``EventLoopExecutor.shutdown(cancel_futures=True)``)."""
 
     @classmethod
     def from_cancellation(cls, cancelled: BaseException, stopped: WorkerStopped) -> Self:
