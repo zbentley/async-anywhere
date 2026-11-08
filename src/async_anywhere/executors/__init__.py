@@ -60,9 +60,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
     Running jobs on an executor produces :py:class:`AwaitableFuture`\ s which can be waited or ``await``\ ed on from any
     thread or event loop. The caller and the worker itself may
-    :py:mod:`interrupt <async_anywhere.executors._interruption>` (cancel) those jobs.
+    :ref:`interrupt <interruption>` (cancel) those jobs.
 
-    An executor runs until :py:mod:`stopped <async_anywhere.executors._stopping>`, after which it will not accept new
+    An executor runs until :ref:`stopped <stopping>`, after which it will not accept new
     jobs. In-progress jobs and the "main" task may be interrupted, or may continue running, depending on how a stop was triggered.
 
     Note:
@@ -120,13 +120,13 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     .. seealso::
 
         -  If you need an executor which starts lazily and/or restarts its thread after stop, see :py:class:`SingletonEventLoopExecutor`.
-        - For details about how and when an executor is stopped, see :py:mod:`Stopping Executors <async_anywhere.executors._stopping>`
+        - For details about how and when an executor is stopped, see :ref:`stopping`
         - For details about how and when :term:`code in an executor` is interrupted, see
-          :py:mod:`Interruption/Cancellation with EventLoopExecutor <async_anywhere.executors._interruption>`
+          :ref:`interruption`
         - Executors can be used in code that calls :py:obj:`os.fork`. Attempts to use an executor or interact with any
           jobs it is running or futures it has produced in a process other than the one that created it will fail immediately
           with an error. Additional care is needed when using executors with forking code, see
-          :py:mod:`Executor Fork Safety <async_anywhere.executors._fork_safety>`.
+          :ref:`fork_safety`.
         - ``await``\ ing the result of a :term:`job` from Trio[LINK] works automatically. Running :term:`code in an executor`
           that uses Trio requires some setup, since the internal machinery of EventLoopExecutor is asyncio-only
           at this time. To run Trio code in an executor, use Trio's facilities for acting as a "guest" of another event
@@ -300,8 +300,8 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
         Note:
             The asyncio.task running "func" may be :term:`interrupt`\ ed (cancelled) in response to executor failures
-            or user calls to :py:func:`EventLoopExecutor.shutdown(cancel_futures=True)`. For more details, see
-            :py:mod:`Interruption/Cancellation with EventLoopExecutor <async_anywhere.executors._interruption>`.
+            or user calls to :py:func:`EventLoopExecutor.shutdown(cancel_futures=True) <EventLoopExecutor.shutdown>`. For more details, see
+            :ref:`interruption`.
 
         Warning:
             Avoid blocking the executor's event loop: this is "supported" insofar as its semantics are documented and
@@ -405,7 +405,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     def shutdown(self, wait=True, *, cancel_futures=False) -> AwaitableFuture[WorkerStopped]:
         r"""
         Immediately signal the executor to stop accepting jobs, and begin the process of shutting down its captive event
-        loop and thread. See :py:mod:`Stopping EventLoopExecutors <async_anywhere.executors._stopping>` for details.
+        loop and thread. See :ref:`stopping` for details.
 
         Args:
             wait (bool): If True, this method will `synchronously` block until the worker has fully stopped its thread and
@@ -443,7 +443,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                 If an executor's captive thread is blocked and its event loop is not running, users can still signal the
                 executor to stop via ``.shutdown()``. As soon as ``.shutdown()`` is called, the executor will refuse to
                 accept any new :term:`job`\ s. When its event loop becomes unblocked, the remainder of
-                :py:mod:`the shutdown process <async_anywhere.executors._stopping>` will occur.
+                :ref:`the shutdown process <stopping>` will occur.
         """
 
         if isinstance(broken := self._last_transition[2], WorkerBroken):

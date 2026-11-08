@@ -104,7 +104,7 @@ class WouldBlock(AsyncAnywhereException, RuntimeError):
 # State trackers
 
 class StateTrackerError(AsyncAnywhereException, asyncio.InvalidStateError, concurrent.futures.InvalidStateError):
-    r"""Raised when invalid invalid configuration is requested for or invalid actions are performed on a
+    r"""Raised when invalid configuration is requested for or invalid actions are performed on a
     :py:class:`StateTracker`."""
     def __init__(
         self,
@@ -130,7 +130,7 @@ class StateTrackerError(AsyncAnywhereException, asyncio.InvalidStateError, concu
 
 class WorkerStopped(AsyncAnywhereException, Exception):
     """
-    Indicates that an :py:class:`EventLoopExecutor` has :py:mod:`stopped <async_anywhere.executors._stopped>`, and why.
+    Indicates that an :py:class:`EventLoopExecutor` has :ref:`stopped <stopping>`, and why.
 
     Raised (and sometimes returned) from various EventLoopExecutor functions, and may also be raised from :term:`job`
     futures when jobs are aborted due to executor stop."""
@@ -141,7 +141,7 @@ class WorkerStopped(AsyncAnywhereException, Exception):
 
 
 class CleanStop(WorkerStopped):
-    r"""Indicates that am :py:class:`EventLoopExecutor` stopped without interrupting any :term:`job`\ s (the
+    r"""Indicates that an :py:class:`EventLoopExecutor` stopped without interrupting any :term:`job`\ s (the
     :term:`main task` is always interrupted regardless)."""
 
 class WorkerBroken(WorkerStopped, ABC):
@@ -151,7 +151,7 @@ class WorkerBroken(WorkerStopped, ABC):
 class WorkerForked(WorkerBroken):
     """Indicates that an :py:class:`EventLoopExecutor` cannot perform the requested action(s) because it was created in
     a parent process and cannot be used in a forked child. See
-    :py:mod:`executor fork safety <async_anywhere.executors._fork_safety>` for more information."""
+    :ref:`fork_safety` for more information."""
 
     def __init__(self, summary: str = "", cause: BaseException | None = None):
         """:meta private:"""
@@ -159,7 +159,7 @@ class WorkerForked(WorkerBroken):
 
 
 class WorkerInterrupted(AsyncAnywhereException, concurrent.futures.CancelledError):
-    r"""Raised from attempts to wait on an :py:class:`EventLoopExecutor`\ s :term:`job` that has been cancelled due to
+    r"""Raised from attempts to wait on an :py:class:`EventLoopExecutor`'s :term:`job` that has been cancelled due to
     a worker stop condition that interrupts running work (e.g. ``EventLoopExecutor.shutdown(cancel_futures=True)``)."""
 
     @classmethod

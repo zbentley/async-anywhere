@@ -20,7 +20,7 @@ def validate_coroutine_function(_, attribute, value):
 @cache
 def futures_logger() -> logging.Logger:
     """
-    What :py:mod:`AwaitableFuture` logs to when un-observed errors or warnings occur (e.g. an :py:class:`Exception`
+    What :py:class:`AwaitableFuture` logs to when un-observed errors or warnings occur (e.g. an :py:class:`Exception`
     is raised by a callback added via ``add_done_callback``--but not a :py:class:`BaseException`, those are raised
     and abort callback handling!).
 
