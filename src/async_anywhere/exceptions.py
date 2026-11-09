@@ -89,9 +89,9 @@ class WouldBlock(AsyncAnywhereException, RuntimeError):
     """Raised when synchronously waiting for an action performed by ``async_anywhere`` would block in an environment
     where blocking is not allowed.
 
-    For example, this is raised from :py:func:`AwaitableFuture.result` when that method needs to synchronously wait for
+    For example, this is raised from :py:meth:`.AwaitableFuture.result` when that method needs to synchronously wait for
     a future to complete from a thread or event loop that the user marked as forbidden for blocking waits via the
-    :py:attr:`AwaitableFuture.prevent_blocking_wait_when` parameter.
+    ``prevent_blocking_wait_when`` parameter of :py:meth:`.AwaitableFuture.__init__`.
     """
     def __init__(self, subject, environment) -> None:
         """:meta private:"""
@@ -107,7 +107,7 @@ class WouldBlock(AsyncAnywhereException, RuntimeError):
 
 class StateTrackerError(AsyncAnywhereException, asyncio.InvalidStateError, concurrent.futures.InvalidStateError):
     r"""Raised when invalid configuration is requested for or invalid actions are performed on a
-    :py:class:`StateTracker`."""
+    :py:class:`.StateTracker`."""
     def __init__(
         self,
         source: StateTracker,
@@ -132,7 +132,7 @@ class StateTrackerError(AsyncAnywhereException, asyncio.InvalidStateError, concu
 
 class EventLoopExecutorStopped(AsyncAnywhereException, Exception):
     """
-    Indicates that an :py:class:`EventLoopExecutor` has :ref:`stopped <stopping>`, and why.
+    Indicates that an :py:class:`.EventLoopExecutor` has :ref:`stopped <stopping>`, and why.
 
     Raised (and sometimes returned) from various EventLoopExecutor functions, and may also be raised from :term:`job`
     futures when jobs are aborted due to executor stop."""
@@ -143,15 +143,15 @@ class EventLoopExecutorStopped(AsyncAnywhereException, Exception):
 
 
 class CleanStop(EventLoopExecutorStopped):
-    r"""Indicates that an :py:class:`EventLoopExecutor` stopped without interrupting any :term:`job`\ s (the
+    r"""Indicates that an :py:class:`.EventLoopExecutor` stopped without interrupting any :term:`job`\ s (the
     :term:`main task` is always interrupted regardless)."""
 
 class EventLoopExecutorBroken(EventLoopExecutorStopped, ABC):
-    """Indicates that an :py:class:`EventLoopExecutor` cannot perform the requested action(s) because it was stopped
+    """Indicates that an :py:class:`.EventLoopExecutor` cannot perform the requested action(s) because it was stopped
     due to an internal error or unsupported state."""
 
 class EventLoopExecutorForked(EventLoopExecutorBroken):
-    """Indicates that an :py:class:`EventLoopExecutor` cannot perform the requested action(s) because it was created in
+    """Indicates that an :py:class:`.EventLoopExecutor` cannot perform the requested action(s) because it was created in
     a parent process and cannot be used in a forked child. See
     :ref:`fork_safety` for more information."""
 
@@ -161,7 +161,7 @@ class EventLoopExecutorForked(EventLoopExecutorBroken):
 
 
 class EventLoopExecutorInterrupted(AsyncAnywhereException, concurrent.futures.CancelledError):
-    r"""Raised from attempts to wait on an :py:class:`EventLoopExecutor`'s :term:`job` that has been cancelled due to
+    r"""Raised from attempts to wait on an :py:class:`.EventLoopExecutor`'s :term:`job` that has been cancelled due to
     an executor stop condition that interrupts running work (e.g. ``EventLoopExecutor.shutdown(cancel_futures=True)``)."""
 
     @classmethod

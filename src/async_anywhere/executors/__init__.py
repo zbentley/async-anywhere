@@ -57,7 +57,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     The captive thread is always a daemon thread, is started when an EventLoopExecutor is constructed, and is never
     replaced.
 
-    Running jobs on an executor produces :py:class:`AwaitableFuture`\ s which can be waited or ``await``\ ed on from any
+    Running jobs on an executor produces :py:class:`.AwaitableFuture`\ s which can be waited or ``await``\ ed on from any
     thread or event loop. The caller and the executor itself may
     :ref:`interrupt <interruption>` (cancel) those jobs.
 
@@ -92,7 +92,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         - Users can supply a custom "main" awaitable function which will always be running as an asyncio.Task inside the
           EventLoopExecutor. If that awaitable ever completes, the executor will shut itself down.
         - Users can supply custom event loops to be used inside of the executor. This facilitates e.g. combining
-          :py:mod:`uvloop` and other event loops within the same program.
+          :doc:`uvloop <uvloop:index>` and other event loops within the same program.
         - Users can supply a custom logger that the ``EventLoopExecutor`` will use to emit lifecycle events.
 
     Example:
@@ -109,27 +109,27 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     Warning:
         Done callbacks added (via ``add_done_callback``) to the futures that a :py:class:`EventLoopExecutor` returns
         may run on any thread, including the executor's own. User code should not make any assumptions about what
-        thread, event loop, or :py:class:`contextvars.Context` is active when a callback runs.
+        thread, event loop, or :py:obj:`contextvars.Context` is active when a callback runs.
 
-        As with :py:class:`concurrent.futures.Future` and :py:class:`ThreadPoolExecutor` etc., user-attached callbacks
-        to the executor's futures must not block, and must not raise :py:class:`BaseException`\ s other than
-        :py:class:`KeyboardInterrupt` or :py:class:`SystemExit`. If they do, they risk breaking the executor's
+        As with :py:obj:`concurrent.futures.Future` and :py:obj:`~concurrent.futures.ThreadPoolExecutor` etc., user-attached callbacks
+        to the executor's futures must not block, and must not raise :py:obj:`BaseException`\ s other than
+        :py:obj:`KeyboardInterrupt` or :py:obj:`SystemExit`. If they do, they risk breaking the executor's
         invariants and corrupting or deadlocking it.
 
     .. seealso::
 
-        -  If you need an executor which starts lazily and/or restarts its thread after stop, see :py:class:`SingletonEventLoopExecutor`.
+        -  If you need an executor which starts lazily and/or restarts its thread after stop, see :py:class:`.SingletonEventLoopExecutor`.
         - For details about how and when an executor is stopped, see :ref:`stopping`
         - For details about how and when :term:`code in an executor` is interrupted, see
           :ref:`interruption`
-        - Executors can be used in code that calls :py:obj:`os.fork`. Attempts to use an executor or interact with any
+        - Executors can be used in code that calls :py:func:`os.fork`. Attempts to use an executor or interact with any
           jobs it is running or futures it has produced in a process other than the one that created it will fail immediately
           with an error. Additional care is needed when using executors with forking code, see
           :ref:`fork_safety`.
-        - ``await``\ ing the result of a :term:`job` from Trio[LINK] works automatically. Running :term:`code in an executor`
+        - ``await``\ ing the result of a :term:`job` from :doc:`Trio <trio:index>` works automatically. Running :term:`code in an executor`
           that uses Trio requires some setup, since the internal machinery of EventLoopExecutor is asyncio-only
-          at this time. To run Trio code in an executor, use Trio's facilities for acting as a "guest" of another event
-          loop, e.g. ``trio.lowlevel.start_guest_run()``. See tests/test_executors/test_runtimes.py for examples.
+          at this time. To run Trio code in an executor, use Trio's facilities for :ref:`acting as a "guest" of another
+          event loop <trio:guest-mode>`, e.g. :py:func:`trio.lowlevel.start_guest_run`. See tests/test_executors/test_runtimes.py for examples.
     """
     # TODO move trio docs into their own submod
 
@@ -140,7 +140,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         validator=validate_coroutine_function
     )
     """The executor's :term:`main task`. A coroutine function (``async def``) that will be wrapped in an 
-    :py:class:`asyncio.Task` and started inside the executor during construction. When this function completes, the 
+    :py:obj:`asyncio.Task` and started inside the executor during construction. When this function completes, the 
     executor will stop itself via ``shutdown(wait=False)``; "main" otherwise is treated like any other long-running job 
     submitted to the executor. Other jobs run on the executor will run concurrently with this function.
     
@@ -220,7 +220,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         be used directly, or subscribed to via AwaitableFuture.add_done_callback.
     """
     Stopping: ClassVar[State] = State(sources=Running)
-    """This state is entered once, when :py:func:`shutdown()` is called or the executor stops for any other reason."""
+    """This state is entered once, when :py:meth:`shutdown()` is called or the executor stops for any other reason."""
     Shutdown: ClassVar[State] = State(sources=Stopping)
     """This state is entered once, after the executor has shut down its event loop and has joined its captive thread."""
 
@@ -273,7 +273,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         The function's returned coroutine will be scheduled concurrently with any other jobs submitted to the executor,
         as well as with the "main" argument provided to the executor's constructor, if any.
 
-        The function will execute in a :py:class:`contextvars.Context` copied from the caller, regardless of which
+        The function will execute in a :py:obj:`contextvars.Context` copied from the caller, regardless of which
         thread it executes on, and regardless of the value of :py:obj:`sys.flags.thread_inherit_context`.
 
         Args:
@@ -289,9 +289,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                     not be passed to "func".
 
         Returns:
-            An :py:class:`AwaitableFuture` containing the result of executing "func" on the executor's event loop.
-            Attempting to block on the returned future via :py:func:`AwaitableFuture.result` from inside the executor
-            will raise :py:class:`WouldBlock` if the future is not yet completed, to avoid accidental deadlock.
+            An :py:class:`.AwaitableFuture` containing the result of executing "func" on the executor's event loop.
+            Attempting to block on the returned future via :py:meth:`.AwaitableFuture.result` from inside the executor
+            will raise :py:class:`.WouldBlock` if the future is not yet completed, to avoid accidental deadlock.
 
             Calling ``fork(2)`` will, in the child process, fail (complete with a EventLoopExecutorForked exception) any
             not-yet-completed futures that were returned by this method.
@@ -303,7 +303,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
         Note:
             The asyncio.task running "func" may be :term:`interrupt`\ ed (cancelled) in response to executor failures
-            or user calls to :py:func:`EventLoopExecutor.shutdown(cancel_futures=True) <EventLoopExecutor.shutdown>`. For more details, see
+            or user calls to :py:meth:`EventLoopExecutor.shutdown(cancel_futures=True) <shutdown>`. For more details, see
             :ref:`interruption`.
 
         Warning:
@@ -369,7 +369,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
     def bridge(self, func: Callable[_P, Coroutine[Any, Any, _T]]) -> Callable[_P, AwaitableFuture[_T]]:
         """
-        Decorator version of :py:func:`submit`, for convenience.
+        Decorator version of :py:meth:`submit`, for convenience.
 
         Args:
             func: A function to be wrapped. Should return a coroutine, and is subject to the same behaviors and constraints
@@ -389,7 +389,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     @classmethod
     def current(cls) -> EventLoopExecutor | None:
         """
-        Returns the executor whose captive :py:class:`threading.Thread` this method is called from, or None if called
+        Returns the executor whose captive :py:obj:`threading.Thread` this method is called from, or None if called
         from a thread that is not owned by an ``EventLoopExecutor``.
 
         Note:
@@ -437,9 +437,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         prevent_blocking_wait_when: Collection[asyncio.AbstractEventLoop | Thread] | None = None,
         **kwargs,
     ):
-        """Behaves identically to :py:func:`WaitableStateTracker.wait_for_state`, with the added invariant that
-        attempting to block on the returned :py:class:`AwaitableFuture` from within the executor's own event
-        loop/thread will always raise an :py:class:`WouldBlock` (to prevent accidental deadlock) if the future is not
+        """Behaves identically to :py:meth:`.WaitableStateTracker.wait_for_state`, with the added invariant that
+        attempting to block on the returned :py:class:`.AwaitableFuture` from within the executor's own event
+        loop/thread will always raise an :py:class:`.WouldBlock` (to prevent accidental deadlock) if the future is not
         yet done.
         """
         checker = self._blocking_checker
@@ -460,21 +460,21 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                 Warning:
                     The default of ``wait=True`` is somewhat dangerous, as it can block the event loop of callers. That
                     default is necessary for compatibility with stdlib functions that interact with
-                    :py:class:`concurrent.futures.Executor`, so it's important to be mindful.
+                    :py:obj:`concurrent.futures.Executor`, so it's important to be mindful.
             cancel_futures (bool): If True, jobs running on the executor (including any job started via the ``main=`` constructor
-                argument) will be interrupted by cancelling the :py:class:`asyncio.Task`\ s that contain each job. If
+                argument) will be interrupted by cancelling the :py:obj:`asyncio.Task`\ s that contain each job. If
                 False, submitted jobs will not be cancelled, but the job started via the ``main=`` constructor argument
                 `will` be cancelled if it has not already been cancelled for any reason.
 
                 Note:
                     Jobs will be cancelled `each time` ``shutdown(cancel_futures=True)`` is called. Async code can be
-                    cancelled multiple times in Python. This can result in multiple :py:class:`asyncio.CancelledError`\ s
+                    cancelled multiple times in Python. This can result in multiple :py:obj:`asyncio.CancelledError`\ s
                     being raised from the same job if users call ``shutdown(cancel_futures=True)`` repeatedly.
 
         Returns:
-            An :py:class:`AwaitableFuture` produced from ``EventLoopExecutor.wait_for_state(EventLoopExecutor.Shutdown)``.
+            An :py:class:`.AwaitableFuture` produced from ``EventLoopExecutor.wait_for_state(EventLoopExecutor.Shutdown)``.
             In other words, a future that resolves only when the executor has shut down its thread and event loop. The
-            future will resolve to an instance of :py:class:`EventLoopExecutorStopped` describing the reason for the stop.
+            future will resolve to an instance of :py:class:`.EventLoopExecutorStopped` describing the reason for the stop.
 
             If ``wait=True``, the returned future will be done.
 
@@ -503,7 +503,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             On the executor's captive loop, perform the shutdown: record the exception and cancel jobs or the main task if
             appropriate.
 
-            Doesn't use :py:func:`submit` or its machinery so it can be exempt from all internal checks aimed at
+            Doesn't use :py:meth:`submit` or its machinery so it can be exempt from all internal checks aimed at
             preventing code from running on a broken or stopping executor. ``shutdown()`` is the exception to those rules.
             """
 

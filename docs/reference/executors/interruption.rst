@@ -5,18 +5,18 @@
 Interruption/Cancellation with :py:class:`EventLoopExecutor`
 ------------------------------------------------------------
 
-User :term:`code in an executor` is :term:`interrupt`\ ed (cancelled via :py:class:`asyncio.CancelledError`) in a
+User :term:`code in an executor` is :term:`interrupt`\ ed (cancelled via :py:obj:`asyncio.CancelledError`) in a
 variety of situations, listed below.
 
 .. note::
-    Interruptions can be sent to the same :py:class:`asyncio.Task` more than once, both due to the user requesting
+    Interruptions can be sent to the same :py:obj:`asyncio.Task` more than once, both due to the user requesting
     interruption repeatedly or the executor harness cancelling code while stopping due to a failure.
 
     For example a cancellation is sent to the main task and running bridge jobs `each` time
     ``shutdown(cancel_futures=True)`` is called. This can lead to code receiving multiple cancellation events.
 
 .. note::
-    Code that chooses to ignore :py:class:`asyncio.CancelledError` may misbehave when interrupts occur or the executor
+    Code that chooses to ignore :py:obj:`asyncio.CancelledError` may misbehave when interrupts occur or the executor
     is stopped.
 
     Code which swallows or deduplicates cancellations (e.g. `TaskGroup`) may behave unexpectedly when this occurs.
@@ -50,8 +50,8 @@ An executor's :term:`main task` is interrupted in these situations:
 Non-job/non-parent-task Cancellation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Non-:term:`job` ``asyncio.Task``\ s created inside the executor (e.g. via executor code using :py:obj:`asyncio.shield` or
-un-awaited/backgrounded :py:class:`asyncio.Task`\ s) are interrupted in these situations:
+Non-:term:`job` ``asyncio.Task``\ s created inside the executor (e.g. via executor code using :py:func:`asyncio.shield` or
+un-awaited/backgrounded :py:obj:`asyncio.Task`\ s) are interrupted in these situations:
 
 - User code supervising a Task triggers an ordinary cancellation, as with normal async Python programming.
 - The executor finishes :ref:`shutting down <stopping>`.

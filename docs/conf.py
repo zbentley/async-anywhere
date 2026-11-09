@@ -4,11 +4,15 @@ import functools
 import importlib
 import inspect
 import sys
+import typing
 from abc import ABC
 
 import attrs
+from docutils import nodes
+from sphinx import addnodes
 from sphinx.domains.python import PyClasslike
 from sphinx.pycode import ModuleAnalyzer
+from sphinx.util.typing import restify
 
 
 project = "async-anywhere"
@@ -22,7 +26,12 @@ extensions = [
     "pytest_doctestplus.sphinx.doctestplus",
 ]
 autodoc_typehints = "both"
-intersphinx_mapping = {'python': ('https://docs.python.org/3', None)}
+intersphinx_mapping = {
+    'python': ('https://docs.python.org/3', None),
+    'trio': ('https://trio.readthedocs.io/en/stable', None),
+    'attrs': ('https://www.attrs.org/en/stable', None),
+    'uvloop': ('https://uvloop.readthedocs.io', None),  # Its pages only: it documents no Python objects
+}
 autodoc_class_signature = "separated"
 autodoc_default_options = {
     'show-inheritance': True,
@@ -33,6 +42,7 @@ autodoc_default_options = {
     'exclude-members': '__weakref__,__new__'
 }
 html_theme = "furo"
+nitpicky = True  # Warn about every cross-reference that doesn't resolve, which Sphinx is otherwise silent about
 
 
 def _colliding_module_name(cls):
@@ -55,12 +65,42 @@ def process_bases_hook(*args):
 
     rv = []
     for base in args[-1]:
-        if base.__module__.startswith('async_anywhere'):
-            rv.append(base)
-        else:
-            rv.append(_colliding_module_name(base))
+        # Split, as a generic alias (Future[T]) passes for its origin class, so would lose its [T]
+        origin, params = typing.get_origin(base) or base, typing.get_args(base)
+        if origin is typing.Generic:  # Never listed: PEP 695 classes get it implicitly
+            continue
+        ref = origin if origin.__module__.startswith('async_anywhere') else _colliding_module_name(origin)
+        if len(params) > 0:
+            # Type params as plain text: Sphinx has nothing to link PEP 695 ones to, and takes them for typing's own
+            ref = '{}\\ [{}]'.format(restify(ref, 'smart'), ', '.join(
+                p.__name__ if isinstance(p, (typing.TypeVar, typing.ParamSpec, typing.TypeVarTuple)) else restify(p, 'smart')
+                for p in params
+            ))
+        rv.append(ref)
 
     args[-1][:] = rv
+
+
+# Stdlib classes, by every name Sphinx may give them (their private modules' included), and their public ones
+_STDLIB_PUBLIC_NAMES = {
+    '_asyncio.Future': 'asyncio.Future',
+    'asyncio.futures.Future': 'asyncio.Future',
+    'asyncio.Future': 'asyncio.Future',
+    'concurrent.futures._base.Future': 'concurrent.futures.Future',
+    'concurrent.futures.Future': 'concurrent.futures.Future',
+    'asyncio.events.AbstractEventLoop': 'asyncio.AbstractEventLoop',
+}
+
+
+def qualify_stdlib_names(app, doctree):
+    # Every reference to these is shown and linked by its full public name, so the two Futures are never confused
+    for xref in list(doctree.findall(addnodes.pending_xref)):
+        target = _STDLIB_PUBLIC_NAMES.get(xref['reftarget'])
+        if target is None or xref.get('refdomain') != 'py':
+            continue
+        xref['reftarget'] = target
+        for text in list(xref.findall(nodes.Text)):
+            text.parent.replace(text, nodes.Text(target))
 
 
 def attrs_init_param_docs(app, what, name, obj, options, lines):  # noqa: PLR0917
@@ -109,6 +149,7 @@ def setup(app):
     app.connect('autodoc-process-bases', process_bases_hook)
     app.connect('autodoc-process-docstring', attrs_init_param_docs)
     app.connect('autodoc-process-docstring', executor_map_doc)
+    app.connect('doctree-read', qualify_stdlib_names)
     # Separate registrations of the same class: overriding one leaves the other as stock PyClasslike
     app.add_directive_to_domain('py', 'class', AbstractAwarePyClasslike, override=True)
     app.add_directive_to_domain('py', 'exception', AbstractAwarePyClasslike, override=True)

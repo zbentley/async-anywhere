@@ -5,8 +5,8 @@
 Stopping :py:class:`EventLoopExecutor`\ s
 -----------------------------------------
 
-An :py:class:`EventLoopExecutor` can be **stopped**, meaning that it's :py:class:`WaitableStateTracker` API is in the
-``Stopping`` or ``Shutdown`` :py:class:`State`.
+An :py:class:`EventLoopExecutor` can be **stopped**, meaning that it's :py:class:`.WaitableStateTracker` API is in the
+``Stopping`` or ``Shutdown`` :py:class:`.State`.
 
 Once an executor is stopped, attempts to submit new jobs will fail with an error. Waiting for jobs submitted just before
 it was stopped (that have not yet started running) will also fail with an error.
@@ -16,7 +16,7 @@ When is an executor stopped?
 
 Executors are stopped in these situations:
 
-- :py:func:`EventLoopExecutor.shutdown` is called by the user.
+- :py:meth:`EventLoopExecutor.shutdown` is called by the user.
 - The executor's :term:`main task` returns or raises an exception.
 - :py:func:`os.fork` is called: in this case, the executor will register as stopped in the child process, and will continue running as usual in the parent.
 - When the captive event loop used by the executor crashes (e.g. if user code inside the executor calls ``asyncio.get_event_loop().close()``, or if any unhandled loop-breaking error occurs).

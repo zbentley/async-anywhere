@@ -8,7 +8,7 @@
 .. warning::
 
     It is **never** safe to fork *within* an ``EventLoopExecutor``\ 's thread, for the same reasons that it is never
-    safe to fork within a running :py:class:`asyncio.Task` (which describes all :term:`code in an executor`).
+    safe to fork within a running :py:obj:`asyncio.Task` (which describes all :term:`code in an executor`).
 
     The only guaranteed-safe things you can do after forking inside an executor are:
 
@@ -33,10 +33,10 @@ user triggers garbage collection of an EventLoopExecutor), loggers used for asyn
 was never retrieved" warnings, and much more. For example, the following situations may still cause undesirable behavior
 in child processes during or after ``fork(2)``:
 
-- Discarding an incomplete :py:class:`asyncio.Task` (or a future which wraps a Task, like those returned by
-  :py:func:`EventLoopExecutor.submit`) may trigger asyncio logging like "Task exception was never retrieved". Python's
+- Discarding an incomplete :py:obj:`asyncio.Task` (or a future which wraps a Task, like those returned by
+  :py:meth:`EventLoopExecutor.submit`) may trigger asyncio logging like "Task exception was never retrieved". Python's
   logging functionality `is not fork-safe and may deadlock on IO stream locks <https://github.com/python/cpython/issues/84579>`_.
-- Calling destructors for async-runtime-related resources, like event loops or :py:class:`concurrent.futures.Future`\ s
+- Calling destructors for async-runtime-related resources, like event loops or :py:obj:`concurrent.futures.Future`\ s
   can rely on threading.Locks that are corrupted in ``fork(2)``\ ed child processes, leading to deadlocks.
 - During interpreter shutdown, async-runtime-related resources initialized before a fork may be cleaned up in unsafe
   or potentially-deadlocking ways.

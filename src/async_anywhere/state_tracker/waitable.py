@@ -13,6 +13,7 @@ _data = itemgetter(2)  # A transition's data, from its (old state, new state, da
 
 
 class WaitableStateTracker[T](StateTracker, ABC):
+    """TODO"""
     # Old state and data are None for the initial state, which no transition entered
     # Not a PEP 695 type statement, which Sphinx renders by its name: this one is transparent, so docs show the tuple
     _FutureType: TypeAlias = tuple[State | None, State, T]
@@ -45,6 +46,7 @@ class WaitableStateTracker[T](StateTracker, ABC):
     def wait_for_state(
         self, state: State, *states: State, ignore_current_state: bool = False, return_states: bool = False, **kwargs
     ) -> AwaitableFuture[T]:
+        """TODO"""
         # NB: the future returned here will be resolved once the StateTracker has passed through the given state, even
         # if it is no longer in that state. If an executor transitions twice in rapid succession, or a waiter is attached
         # and then not waited on until later, after the executor has passed through *states, it'll still resolve.

@@ -11,14 +11,14 @@ from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.exceptions import WouldBlock
 
 def AnyEventLoop() -> bool:
-    """Sentinel for :py:obj:`AwaitableFuture.prevent_blocking_wait_when`: raises :py:class:`WouldBlock` instead of
-    blocking if any event loop or Trio task is running."""
+    """Sentinel for the ``prevent_blocking_wait_when`` parameter of :py:meth:`AwaitableFuture.__init__`: raises
+    :py:class:`.WouldBlock` instead of blocking if any event loop or :doc:`Trio <trio:index>` task is running."""
     return asyncio._get_running_loop() is not None or TrioRuntime.in_task()
 
 
 def BlockingNotAllowed() -> bool:
-    """Sentinel for :py:obj:`AwaitableFuture.prevent_blocking_wait_when`: raises :py:class:`WouldBlock` instead of
-    blocking in all cases."""
+    """Sentinel for the ``prevent_blocking_wait_when`` parameter of :py:meth:`AwaitableFuture.__init__`: raises
+    :py:class:`.WouldBlock` instead of blocking in all cases."""
     return True
 
 # TODO better annotate: incorporate constant sentinels.

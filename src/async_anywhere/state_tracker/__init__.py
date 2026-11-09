@@ -21,14 +21,16 @@ class StateTracker(ABC):
     Users are intended to subclass StateTracker for their own use-cases. When subclassing StateTracker, users should
     declare one or more State objects as class-level fields, like this:
 
-    >>> class MyStateTracker(StateTracker):
-    >>>    InitialState = State(initial=True)
-    >>>    OtherState = State(sources=[InitialState])
-    >>>    ...
+    Example:
 
-    When this is done, instances of MyStateTracker will start with "inst.state == MyStateTracker.InitialState".
+        >>> class MyStateTracker(StateTracker):
+        >>>    InitialState = State(initial=True)
+        >>>    OtherState = State(sources=[InitialState])
+        >>>    ...
 
-    States must be declared together on one class; hey cannot be combined or layered across subclasses. States must be
+    When this is done, instances of MyStateTracker will start with ``inst.state == MyStateTracker.InitialState``.
+
+    States must be declared together on one class; they cannot be combined or layered across subclasses. States must be
     declared in one of the following locations:
 
     1. On a concrete StateTracker subclass, as explicit, literal class fields (not via descriptors or __class_getitem__).
@@ -65,9 +67,12 @@ class StateTracker(ABC):
 
     def __init__(self, lock: ContextManager | None = None) -> None:
         """
-        lock: held by each transition, and its _after_state_change(). The default is a fresh RLock, so
-            _after_state_change() can use the StateTracker again. Pass contextlib.nullcontext() to take no lock, and
-            only use the StateTracker from one thread at a time.
+
+        Args:
+            lock: context manager representing the lock that will be held by each transition, and its
+                _after_state_change(). The default is a fresh RLock, so _after_state_change() can use the StateTracker
+                again. Pass contextlib.nullcontext() to take no lock, and only use the StateTracker from one thread at
+                a time.
         """
         self._last_transition = self._initial_transition
         self._condition = RLock() if lock is None else lock

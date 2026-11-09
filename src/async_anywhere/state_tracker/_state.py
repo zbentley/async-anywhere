@@ -36,30 +36,30 @@ def _binding(name: str, obj):
 
 @attr.define(frozen=True, eq=False, repr=False, str=False, hash=False)
 class State:
-    """
-    The state of a StateTracker. Declare States as class variables on a class which extends StateTracker, and the
-    StateTracker will use them to model its internal state machine/graph.
-
-    States will be named according to what field they're assigned to in their StateTracker class; see TODO PROPERTY NAME link.
-
-    Parameters:
-        initial (bool, default False): declare a state as the initial/default state that a StateTracker will start in.
-            One and only one State in a StateTracker must be marked with "initial=True". If you need the initial state
-            to be customizable e.g. at StateTracker construction time, set an unreachable state with "initial=True" and
-            call transition() as appropriate in __init__. (TODO EXAMPLE)
-        destinations (another State, typing.Any, typing.Self, or an iterable of any of those): states which the
-            StateTracker can transition *to* from this State. If typing.Any is present, this state can transition to
-            any other state in the StateTracker, including itself. If typing.Self is present, this state can be
-            transitioned to itself (doing so will trigger a transition event (TODO link transition events)).
-        sources (another State, typing.Any, typing.Self, or an iterable of any of those): states which the StateTracker
-            can transition into this state *from*. Behaves the same as "destinations" otherwise.
-
-    A transition is allowed if it is listed either in "sources" or "destinations"; it doesn't need to be listed in both.
-
-    Redundant or duplicate entries in "sources" and "destinations" are ignored.
-
-    Note that a State is only ever equal to itself. States with the same parameters from two different StateTrackers
-    will not be treated as equivalent."""
+    # """
+    # The state of a StateTracker. Declare States as class variables on a class which extends StateTracker, and the
+    # StateTracker will use them to model its internal state machine/graph.
+    #
+    # States will be named according to what field they're assigned to in their StateTracker class; see TODO PROPERTY NAME link.
+    #
+    # Parameters:
+    #     initial (bool, default False): declare a state as the initial/default state that a StateTracker will start in.
+    #         One and only one State in a StateTracker must be marked with "initial=True". If you need the initial state
+    #         to be customizable e.g. at StateTracker construction time, set an unreachable state with "initial=True" and
+    #         call transition() as appropriate in __init__. (TODO EXAMPLE)
+    #     destinations (another State, typing.Any, typing.Self, or an iterable of any of those): states which the
+    #         StateTracker can transition *to* from this State. If typing.Any is present, this state can transition to
+    #         any other state in the StateTracker, including itself. If typing.Self is present, this state can be
+    #         transitioned to itself (doing so will trigger a transition event (TODO link transition events)).
+    #     sources (another State, typing.Any, typing.Self, or an iterable of any of those): states which the StateTracker
+    #         can transition into this state *from*. Behaves the same as "destinations" otherwise.
+    #
+    # A transition is allowed if it is listed either in "sources" or "destinations"; it doesn't need to be listed in both.
+    #
+    # Redundant or duplicate entries in "sources" and "destinations" are ignored.
+    #
+    # Note that a State is only ever equal to itself. States with the same parameters from two different StateTrackers
+    # will not be treated as equivalent."""
     # As declared, until StateTracker.__init_subclass__ replaces it with every State this one can transition to
     _destinations: Transition | Collection[Transition] = attr.field(
         default=(),
