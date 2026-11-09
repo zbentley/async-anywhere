@@ -4,7 +4,7 @@ from collections.abc import Callable, Collection
 from functools import cache
 from inspect import iscoroutinefunction
 from threading import Lock, RLock, Thread, current_thread
-from typing import final
+from typing import TypeAlias, Union, final
 from weakref import ref
 
 from async_anywhere._util.trio import TrioRuntime
@@ -24,7 +24,7 @@ def BlockingNotAllowed() -> bool:
 # TODO better annotate: incorporate constant sentinels.
 # TODO better annotate: refer to it elsewhere.
 # TODO better annotate: inline in docs.
-type BlockingEnvironments = Collection[asyncio.AbstractEventLoop | Thread | Callable[[], bool]]
+BlockingEnvironments: TypeAlias = Collection[Union[asyncio.AbstractEventLoop, Thread, Callable[[], bool]]]
 
 def validate_coroutine_function(_, attribute, value):
     if not iscoroutinefunction(value):

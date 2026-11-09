@@ -4,7 +4,7 @@ from concurrent.futures._base import CANCELLED_AND_NOTIFIED, FINISHED, PENDING, 
 from math import isinf
 from threading import Condition, Thread
 from time import monotonic
-from typing import Any, Awaitable, Callable, Self, Collection
+from typing import Any, Awaitable, Callable, Self, Collection, TypeVar
 
 from async_anywhere._util import AnyEventLoop, BlockingChecker, BlockingNotAllowed, futures_logger
 from async_anywhere._util.trio import TrioRuntime
@@ -12,6 +12,8 @@ from async_anywhere.futures import _fork_safety
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
 from async_anywhere.futures._trio import TrioAwaitableFuture
 from async_anywhere.state_tracker import State, StateTracker
+
+T = TypeVar("T")
 
 
 class _DoneCallbackToken:
@@ -22,7 +24,7 @@ class _ForkAllowedDoneCallbackToken(_DoneCallbackToken):
     __slots__ = ()
 
 
-class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T]):
+class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     r"""A future that can be waited on by synchronous *or* asynchronous code; acts like a hybrid of
     :py:obj:`concurrent.futures.Future` and :py:obj:`asyncio.Future`.
 

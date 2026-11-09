@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC
 from operator import itemgetter
-from typing import ContextManager, Literal, TypeAlias, overload
+from typing import ContextManager, Generic, Literal, TypeAlias, TypeVar, overload
 from weakref import WeakSet
 
 from async_anywhere.exceptions import StateTrackerError
@@ -10,13 +10,12 @@ from async_anywhere.futures import AwaitableFuture
 from async_anywhere.state_tracker import State, StateTracker
 
 _data = itemgetter(2)  # A transition's data, from its (old state, new state, data) triple
+T = TypeVar("T")
+# Old state and data are None for the initial state, which no transition entered
+_FutureType: TypeAlias = tuple[State | None, State, T]
 
-
-class WaitableStateTracker[T](StateTracker, ABC):
+class WaitableStateTracker(StateTracker, ABC, Generic[T]):
     """TODO"""
-    # Old state and data are None for the initial state, which no transition entered
-    # Not a PEP 695 type statement, which Sphinx renders by its name: this one is transparent, so docs show the tuple
-    _FutureType: TypeAlias = tuple[State | None, State, T]
     _waiters: dict[State, WeakSet[AwaitableFuture[T]]]
 
     __slots__ = ('_waiters',)

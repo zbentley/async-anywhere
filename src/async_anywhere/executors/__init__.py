@@ -22,8 +22,8 @@ from async_anywhere.state_tracker import State
 from async_anywhere.state_tracker.waitable import WaitableStateTracker
 
 # Not PEP 695 type params, which Sphinx mistakes for typing's own TypeVars and drops from docs. TODO: file Sphinx bug
-_P = ParamSpec("_P")
-_T = TypeVar("_T")
+P = ParamSpec("P")
+T = TypeVar("T")
 
 
 async def _wait_forever(_):
@@ -265,8 +265,8 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         return rv
 
     def submit(
-        self, func: Callable[_P, Coroutine[Any, Any, _T]], /, *args: _P.args, **kwargs: _P.kwargs
-    ) -> AwaitableFuture[_T]:
+        self, func: Callable[P, Coroutine[Any, Any, T]], /, *args: P.args, **kwargs: P.kwargs
+    ) -> AwaitableFuture[T]:
         r"""
         Submits a function to run on the executor's thread.
 
@@ -367,7 +367,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                 self._loop.call_soon_threadsafe(self._start, future, func, args, kwargs, name, context=context)
         return future
 
-    def bridge(self, func: Callable[_P, Coroutine[Any, Any, _T]]) -> Callable[_P, AwaitableFuture[_T]]:
+    def bridge(self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
         """
         Decorator version of :py:meth:`submit`, for convenience.
 

@@ -3,7 +3,7 @@ outlive any one executor: a database connection, for one. Only one of its execut
 at a time: a replacement is made at once, but runs nothing until the executor it replaces has finished."""
 from functools import partial, update_wrapper
 from inspect import iscoroutinefunction
-from typing import Any, Callable, Coroutine, final
+from typing import Any, Callable, Coroutine, ParamSpec, TypeVar, final
 
 from async_anywhere._util import BlockingChecker, LockProtected
 from async_anywhere.exceptions import EventLoopExecutorStopped
@@ -14,6 +14,8 @@ from async_anywhere.futures import AwaitableFuture
 # What shutdown() returns when there's no executor to stop: before the first get(), and in a forked process
 _NO_EXECUTOR = AwaitableFuture()
 _NO_EXECUTOR.set_result(None)
+P = ParamSpec("P")
+T = TypeVar("T")
 
 
 @final
@@ -85,7 +87,7 @@ class SingletonEventLoopExecutor:
             return _NO_EXECUTOR
         return executor.shutdown(wait, cancel_futures=cancel_futures)
 
-    def submit[**P, T](
+    def submit(
         self, fn: Callable[P, Coroutine[Any, Any, T]], /, *args: P.args, **kwargs: P.kwargs
     ) -> AwaitableFuture[T]:
         """As EventLoopExecutor.submit(), to get()'s executor; or, if that has stopped since get(), refusing the call, to
@@ -96,6 +98,6 @@ class SingletonEventLoopExecutor:
         except EventLoopExecutorStopped:
             return self.get().submit(fn, *args, **kwargs)
 
-    def bridge[**P, T](self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
+    def bridge(self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
         """As EventLoopExecutor.bridge(), its calls going through submit() above."""
         return update_wrapper(partial(self.submit, func), func)

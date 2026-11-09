@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import traceback
+from typing import Generic, TypeVar, Union
 
 import anyio
 import pytest
@@ -163,7 +164,10 @@ def settled(worker: EventLoopExecutor | Harness) -> AwaitableFuture:
     return done
 
 
-class running[W: EventLoopExecutor | Harness]:
+W = TypeVar("W", bound=Union[EventLoopExecutor, Harness])
+
+
+class running(Generic[W]):
     """`with running(cls, *args, **kwargs) as worker:` (or `async with`) constructs a worker (or harness), and on leaving
     stops it, interrupting, and waits for it to finish, its thread included."""
 

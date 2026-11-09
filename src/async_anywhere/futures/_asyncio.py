@@ -1,15 +1,16 @@
 import asyncio
 import asyncio.futures
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from async_anywhere.futures import AwaitableFuture
 
 _get_running_loop = asyncio._get_running_loop
 _convert_future_exc = asyncio.futures._convert_future_exc
+T = TypeVar("T")
 
 
-class AsyncioAwaitableFuture[T](asyncio.Future[T]):
+class AsyncioAwaitableFuture(asyncio.Future[T]):
     __slots__ = ('_source',)
 
     def __init__(self, source: AwaitableFuture[T], loop: asyncio.AbstractEventLoop):

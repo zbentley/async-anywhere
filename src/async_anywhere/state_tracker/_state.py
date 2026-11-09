@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, Iterable, Self, Collection
+from typing import Any, Iterable, Self, Collection, TypeAlias, Union
 
 import attr
 
 # NB: in this instance, we mean "the literal class object for the typing.Self type", not "the type of the invoking class".
-type Transition = State | type[Any] | type[Self]
+Transition: TypeAlias = Union["State", type[Any], type[Self]]
 
 
 def _structural_invariant(cls: type, cond: Any, msg: str):

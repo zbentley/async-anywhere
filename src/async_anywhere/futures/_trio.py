@@ -1,4 +1,4 @@
-from typing import Awaitable, TYPE_CHECKING
+from typing import Awaitable, TYPE_CHECKING, TypeVar
 
 import attr
 
@@ -9,9 +9,11 @@ if TYPE_CHECKING:
 
     from async_anywhere.futures import AwaitableFuture
 
+T = TypeVar("T")
+
 
 @attr.define(eq=False, repr=False)  # Identity equality and hashing, as for any future
-class TrioAwaitableFuture[T](Awaitable[T]):
+class TrioAwaitableFuture(Awaitable[T]):
     _source: AwaitableFuture[T] = attr.field()
     _token: _trio.lowlevel.TrioToken = attr.field()
 

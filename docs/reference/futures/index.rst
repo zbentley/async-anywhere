@@ -4,7 +4,7 @@
 .. automodule:: async_anywhere.futures
 
 .. toctree::
-    :maxdepth: 2
+    :maxdepth: 4
 
     awaitable
     chain
