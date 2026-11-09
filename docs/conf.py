@@ -67,7 +67,7 @@ def process_bases_hook(*args):
     for base in args[-1]:
         # Split, as a generic alias (Future[T]) passes for its origin class, so would lose its [T]
         origin, params = typing.get_origin(base) or base, typing.get_args(base)
-        if origin is typing.Generic:  # Never listed: PEP 695 classes get it implicitly
+        if origin in (typing.Generic, object):  # Never listed: PEP 695 classes get it implicitly
             continue
         ref = origin if origin.__module__.startswith('async_anywhere') else _colliding_module_name(origin)
         if len(params) > 0:
@@ -136,6 +136,9 @@ class AbstractAwarePyClasslike(PyClasslike):
             obj = None
         if inspect.isclass(obj) and (ABC in obj.__bases__ or inspect.isabstract(obj)):
             self.options['abstract'] = True
+        if len(self.content) > 0 and self.content[0].strip() == 'Bases:':  # Sphinx emits it even when no bases remain
+            self.content.trim_start(1)  # Not del: that also deletes from autodoc's whole-page line list
+            self.content_offset += 1
         return super().run()
 
 
