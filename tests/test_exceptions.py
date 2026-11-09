@@ -18,9 +18,9 @@ from async_anywhere.exceptions import (
     AsyncAnywhereException,
     CleanStop,
     StateTrackerError,
-    WorkerForked,
-    WorkerInterrupted,
-    WorkerStopped,
+    EventLoopExecutorForked,
+    EventLoopExecutorInterrupted,
+    EventLoopExecutorStopped,
     WouldBlock,
 )
 from async_anywhere.futures import AwaitableFuture
@@ -34,10 +34,10 @@ class Tracker(StateTracker):
 EXCEPTIONS = {
     "WouldBlock": lambda: WouldBlock(AwaitableFuture(), "a loop"),
     "StateTrackerError": lambda: StateTrackerError(Tracker(), "Could not transition to state", Tracker.Only),
-    "WorkerStopped": lambda: WorkerStopped("(idle) manually stopped", KeyError("why")),
+    "EventLoopExecutorStopped": lambda: EventLoopExecutorStopped("(idle) manually stopped", KeyError("why")),
     "CleanStop": lambda: CleanStop("(idle) expired"),
-    "WorkerForked": WorkerForked,
-    "WorkerInterrupted": lambda: WorkerInterrupted.from_cancellation(asyncio.CancelledError(), CleanStop("stopped")),
+    "EventLoopExecutorForked": EventLoopExecutorForked,
+    "EventLoopExecutorInterrupted": lambda: EventLoopExecutorInterrupted.from_cancellation(asyncio.CancelledError(), CleanStop("stopped")),
 }
 
 
@@ -54,7 +54,7 @@ def test_importing_it_imports_no_other_part_of_the_library():
 
 def test_only_exceptions_we_never_instantiate_are_marked_abstract_and_the_rest_are_tested_below():
     marked = {name for name in exceptions.__all__ if ABC in getattr(exceptions, name).__bases__}
-    assert marked == {"AsyncAnywhereException", "WorkerBroken"}
+    assert marked == {"AsyncAnywhereException", "EventLoopExecutorBroken"}
     assert set(exceptions.__all__) - marked == EXCEPTIONS.keys()
 
 

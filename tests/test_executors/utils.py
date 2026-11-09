@@ -92,7 +92,7 @@ class Harness:
         await self.runloop
 
 
-class Worker(Harness):
+class Works(Harness):
     @bridge
     async def work(self, seconds=0.0, result="done"):
         await asyncio.sleep(seconds)
@@ -111,7 +111,7 @@ class Worker(Harness):
 
 # tidy(), a call, and tidies(), which any task can await, clean up as they're cancelled: awaiting "release", which a
 # second cancellation would cut short, then marking "tidied" with how many times their task was asked to cancel
-class Tidy(Worker):
+class Tidy(Works):
     @bridge
     async def tidy(self):
         await self.tidies()
@@ -126,7 +126,7 @@ class Tidy(Worker):
             raise
 
 
-class BlocksLoop(Worker):
+class BlocksLoop(Works):
     @bridge
     async def blocks(self, after: AwaitableFuture | None = None):
         if after:
@@ -135,7 +135,7 @@ class BlocksLoop(Worker):
         self.reached("release").result(5)  # Blocking the worker's loop, synchronously, until the test releases it
 
 
-class SlowStop(Worker):
+class SlowStop(Works):
     async def _run(self):
         try:
             await self.runloop

@@ -8,14 +8,14 @@ import concurrent.futures
 import anyio
 import pytest
 
-from async_anywhere.exceptions import CleanStop, WorkerStopped
-from tests.test_executors.utils import Tidy, Worker, bridge, running
+from async_anywhere.exceptions import CleanStop, EventLoopExecutorStopped
+from tests.test_executors.utils import Tidy, Works, bridge, running
 
 
 pytestmark = pytest.mark.backends("asyncio", "uvloop", "trio")
 
 
-class Forwards(Worker):
+class Forwards(Works):
     @bridge
     async def forwards(self, call, *args):
         return await call(*args)  # Made on this worker's thread, from a job there
@@ -37,7 +37,7 @@ class Owner(Forwards):
             self.mark("inner stopped", await self.inner.shutdown(wait=False))
 
 
-async def test_a_worker_can_use_one_made_in_its_parent_task():
+async def test_an_executor_can_use_one_made_in_its_parent_task():
     async with running(Owner) as outer:
         inner = await outer.reached("made")
         assert await outer.forwards(inner.work, 0.01, "via the inner worker") == "via the inner worker"
@@ -65,7 +65,7 @@ async def test_cancelling_a_call_cancels_the_inner_call_it_awaits():
         assert await outer.forwards(inner.work) == "done"  # Both carry on
 
 
-async def test_interrupting_a_worker_cancels_the_inner_calls_its_jobs_await():
+async def test_interrupting_an_executor_cancels_the_inner_calls_its_jobs_await():
     async with running(Owner) as outer:
         inner = await outer.reached("made")
         inner.mark("release")  # Its cleanup need only happen
@@ -79,7 +79,7 @@ async def test_interrupting_a_worker_cancels_the_inner_calls_its_jobs_await():
 
 
 @pytest.mark.parametrize("how", ["stopped", "interrupted", "parent task returned"])
-async def test_a_worker_can_stop_one_it_owns_as_it_stops(how):
+async def test_an_executor_can_stop_one_it_owns_as_it_stops(how):
     async with running(Owner) as outer:
         inner = await outer.reached("made")
         if how == "parent task returned":
@@ -99,12 +99,12 @@ async def test_a_worker_can_stop_one_it_owns_as_it_stops(how):
 class Maker(Forwards):
     @bridge
     async def make(self):
-        return Worker()  # On this worker's thread, in a job
+        return Works()  # On this worker's thread, in a job
 
 
 class MakesInRun(Forwards):
     async def _run(self):
-        self.inner = Worker()  # Never stopped here: whoever it's handed out to must stop it
+        self.inner = Works()  # Never stopped here: whoever it's handed out to must stop it
         await self.runloop
 
     @bridge
@@ -114,7 +114,7 @@ class MakesInRun(Forwards):
 
 @pytest.mark.parametrize("cls, method", [(Maker, "make"), (MakesInRun, "made")], ids=["in a call", "in the parent task"])
 @pytest.mark.parametrize("outer_is", ["running", "stopped", "interrupted", "parent task returned"])
-async def test_a_worker_handed_out_by_the_one_that_made_it_can_be_used_from_anywhere(cls, method, outer_is):
+async def test_an_executor_handed_out_by_the_one_that_made_it_can_be_used_from_anywhere(cls, method, outer_is):
     async with running(cls) as outer:
         inner = await getattr(outer, method)()
         match outer_is:
@@ -127,7 +127,7 @@ async def test_a_worker_handed_out_by_the_one_that_made_it_can_be_used_from_anyw
                 await outer.shutdown(wait=False, cancel_futures=outer_is == "interrupted")
         if outer_is != "running":
             assert outer.state is outer.Shutdown and not outer._thread.is_alive()
-            with pytest.raises(WorkerStopped):
+            with pytest.raises(EventLoopExecutorStopped):
                 await outer.work()
 
         async def on_a_fresh_loop():

@@ -16,14 +16,14 @@ from datetime import timedelta
 import pytest
 
 from async_anywhere.executors import EventLoopExecutor, _fork_safety
-from async_anywhere.exceptions import CleanStop, WorkerStopped, WouldBlock
+from async_anywhere.exceptions import CleanStop, EventLoopExecutorStopped, WouldBlock
 from async_anywhere.futures import AwaitableFuture
 from tests.test_executors.utils import (
     TIMING_SENSITIVE,
     BlocksLoop,
     SlowStop,
     Tidy,
-    Worker,
+    Works,
     bridge,
     reason,
     running,
@@ -38,7 +38,7 @@ from tests.test_executors.utils import (
 IDLE = 0.05  # The idle timeout of the workers that expire
 
 
-class Expiring(Worker):
+class Expiring(Works):
     idle_timeout = IDLE  # Expiring with calls in flight trips an invariant check, which asyncio logs, failing the test
 
 
@@ -91,8 +91,8 @@ class BlockedAtFirst(Expiring):
 
 
 @TIMING_SENSITIVE
-async def test_calls_made_before_expiry_hold_it_off_though_the_loop_is_blocked(request, worker_loop):
-    if worker_loop == "uvloop":
+async def test_calls_made_before_expiry_hold_it_off_though_the_loop_is_blocked(request, executor_loop):
+    if executor_loop == "uvloop":
         request.applymarker(
             pytest.mark.xfail(
                 strict=True,
@@ -139,7 +139,7 @@ async def test_calls_during_expiry_cleanup_are_refused():
 # The parent task ending
 
 
-class StopsItself(Worker):
+class StopsItself(Works):
     async def _run(self):
         await self.runloop
         await stop_begun(self, cancel_futures=True)
@@ -148,25 +148,25 @@ class StopsItself(Worker):
 @pytest.mark.parametrize(
     "cls, end, kind, text, cause",
     [
-        (Worker, lambda runloop: runloop.set_result(None), CleanStop, "(interrupted) parent task returned", type(None)),
+        (Works, lambda runloop: runloop.set_result(None), CleanStop, "(interrupted) parent task returned", type(None)),
         (
-            Worker,
+            Works,
             lambda runloop: runloop.set_exception(ValueError("boom")),
-            WorkerStopped,
+            EventLoopExecutorStopped,
             "(interrupted) parent task raised ValueError('boom')",
             ValueError,
         ),
         (
             StopsItself,
             lambda runloop: runloop.set_result(None),
-            WorkerStopped,
+            EventLoopExecutorStopped,
             "(interrupted) manually stopped",
             type(None),
         ),
     ],
     ids=["returns", "raises", "stops itself"],
 )
-async def test_run_ending_stops_the_worker(cls, end, kind, text, cause):
+async def test_run_ending_stops_the_executor(cls, end, kind, text, cause):
     async with running(cls) as worker:
         call = worker.work(10)
         await worker.reached("work")
@@ -191,7 +191,7 @@ async def test_interrupt_cancels_calls_once_and_tells_callers_why():
         await settled(worker)  # Past whatever the worker does as the parent task ends, before it waits for the call
         worker.mark("release")
         stopped = await stopping
-        assert type(stopped) is WorkerStopped and stopped.args == ("(interrupted) manually stopped",)
+        assert type(stopped) is EventLoopExecutorStopped and stopped.args == ("(interrupted) manually stopped",)
         assert worker.reached("tidied").result_or_none() == 1  # Cancelled once: its cleanup wasn't cut short
         with pytest.raises(concurrent.futures.CancelledError) as raised:
             await call
@@ -199,11 +199,11 @@ async def test_interrupt_cancels_calls_once_and_tells_callers_why():
         assert not isinstance(error, asyncio.CancelledError)  # Which asyncio would take for this task being cancelled
         assert "tidy" in [frame.name for frame in traceback.extract_tb(error.__traceback__)]  # Where it was cancelled
         why = error.__cause__
-        assert type(why) is WorkerStopped and why.args == stopped.args and why is not stopped  # A copy
+        assert type(why) is EventLoopExecutorStopped and why.args == stopped.args and why is not stopped  # A copy
         assert why.__cause__ is None and stopped.__cause__ is None
 
 
-class RunAwaitsACall(Worker):
+class RunAwaitsACall(Works):
     async def _run(self):
         async def waits():
             try:
@@ -218,12 +218,12 @@ class RunAwaitsACall(Worker):
             await asyncio.wait([waiter])
 
 
-async def test_interrupted_calls_on_the_workers_thread_are_cancelled_as_usual():
+async def test_interrupted_calls_on_the_executors_thread_are_cancelled_as_usual():
     async with running(RunAwaitsACall) as worker:
         await worker.reached("work")
         await worker.shutdown(wait=False, cancel_futures=True)
         error = await worker.reached("raised")
-        assert isinstance(error, concurrent.futures.CancelledError) and type(error.__cause__) is WorkerStopped
+        assert isinstance(error, concurrent.futures.CancelledError) and type(error.__cause__) is EventLoopExecutorStopped
         assert not isinstance(error, asyncio.CancelledError)  # Not converted, as for other threads
 
 
@@ -262,7 +262,7 @@ def test_an_interrupt_cancels_calls_once_though_what_awaits_them_is_cancelled_to
             worker.reached("_run ended").result(2)
             settled(worker).result(2)  # Which then pass it on to the calls' jobs
             worker.mark("release")
-        assert all(isinstance(stop.result(2), WorkerStopped) for stop in stops)
+        assert all(isinstance(stop.result(2), EventLoopExecutorStopped) for stop in stops)
     tidied = [worker.reached("tidied", n).result_or_none() for worker in workers for n in range(1, calls + 1)]
     assert tidied == [1] * calls * 10 * scale
 
@@ -273,17 +273,17 @@ class LeavesACall(Tidy):
         await self.runloop
 
 
-async def test_calls_on_the_workers_thread_are_interrupted_like_any_other():
+async def test_calls_on_the_executors_thread_are_interrupted_like_any_other():
     async with running(LeavesACall) as worker:
         worker.mark("release")  # Its cleanup need only happen
         await worker.reached("tidy")
         await worker.shutdown(wait=False, cancel_futures=True)
         assert worker.reached("tidied").result_or_none() == 1
-        with pytest.raises(concurrent.futures.CancelledError, check=lambda error: isinstance(error.__cause__, WorkerStopped)):
+        with pytest.raises(concurrent.futures.CancelledError, check=lambda error: isinstance(error.__cause__, EventLoopExecutorStopped)):
             worker.left.result(1)  # Interrupted, and told why
 
 
-class Exits(Worker):
+class Exits(Works):
     @bridge
     async def exit(self):
         sys.exit(3)
@@ -299,7 +299,7 @@ class Exits(Worker):
 
 
 @pytest.mark.logs_asyncio_errors  # As the crashing job's exception is never retrieved
-async def test_a_crash_stops_the_worker_and_interrupts_calls_in_flight(caplog, thread_exceptions):
+async def test_a_crash_stops_the_executor_and_interrupts_calls_in_flight(caplog, thread_exceptions):
     async with running(Exits) as worker:
         slow = worker.slow()
         await worker.reached("slow")
@@ -308,7 +308,7 @@ async def test_a_crash_stops_the_worker_and_interrupts_calls_in_flight(caplog, t
         with pytest.raises(concurrent.futures.CancelledError) as raised:
             await slow
         why = raised.value.__cause__
-        assert why.args == ("(interrupted) the worker's event loop crashed",) and type(why.__cause__) is SystemExit
+        assert why.args == ("(interrupted) the executor's event loop crashed",) and type(why.__cause__) is SystemExit
         assert worker.cleaned_up  # Cancelled once, by the teardown
         await asyncio.to_thread(worker._thread.join, 1)
         frames = [frame.name for frame in traceback.extract_tb(exiting.value.__traceback__)]
@@ -325,7 +325,7 @@ class RunCrashes(Exits):
 
 
 @pytest.mark.logs_asyncio_errors  # Likewise, for the parent task's
-async def test_a_crash_in_run_stops_the_worker_and_interrupts_calls_in_flight(thread_exceptions):
+async def test_a_crash_in_run_stops_the_executor_and_interrupts_calls_in_flight(thread_exceptions):
     async with running(RunCrashes) as worker:
         call = worker.slow()
         await worker.reached("slow")
@@ -333,7 +333,7 @@ async def test_a_crash_in_run_stops_the_worker_and_interrupts_calls_in_flight(th
         with pytest.raises(concurrent.futures.CancelledError) as raised:
             await call
         why = raised.value.__cause__
-        assert why.args == ("(interrupted) the worker's event loop crashed",)
+        assert why.args == ("(interrupted) the executor's event loop crashed",)
         assert type(why.__cause__) is KeyboardInterrupt
         assert worker.cleaned_up  # Cancelled once, by the teardown
     assert [type(error) for error in thread_exceptions()] == [KeyboardInterrupt]  # Raised again on its thread
@@ -348,7 +348,7 @@ async def test_interrupting_during_expiry_cleanup_cancels_run_again():
         assert not worker.reached("cleaned up").done()  # Cut short
 
 
-class Endures(Worker):
+class Endures(Works):
     """Its _run() and calls carry on through their first cancellation, ending at their second."""
 
     def __init__(self):
@@ -427,7 +427,7 @@ async def test_runs_own_tasks_are_left_to_it(interrupt):
         assert worker.reached("tidied").result_or_none() == 1
 
 
-class Retries(Worker):
+class Retries(Works):
     @bridge
     async def retry_forever(self):
         while True:
@@ -459,7 +459,7 @@ async def test_interrupt_isnt_lost_to_a_timeout_inside_the_call():
 
 
 async def test_drain_refuses_new_calls_and_lets_calls_in_flight_finish():
-    async with running(Worker) as worker:
+    async with running(Works) as worker:
         call = worker.waits_for(release := AwaitableFuture())
         await worker.reached("waits_for")
         stopped = await asyncio.wait_for(stop_begun(worker), 1)  # Only until the stop began
@@ -472,7 +472,7 @@ async def test_drain_refuses_new_calls_and_lets_calls_in_flight_finish():
         assert await worker.reached("shutdown") == (True, worker.Shutdown, True)
 
 
-class CallsThenStops(Worker):
+class CallsThenStops(Works):
     async def _run(self):
         self.call = self.work(0.01, "finished")
         await stop_begun(self)
@@ -480,7 +480,7 @@ class CallsThenStops(Worker):
 
 async def test_calls_made_just_before_a_drain_finish(scale):
     for _ in range(10 * scale):
-        async with running(Worker) as worker:
+        async with running(Works) as worker:
             call = worker.work(0.01, "finished")
             stopped = await worker.shutdown(wait=False)  # Queued behind the call
             assert stopped.args == ("(waiting for running jobs) manually stopped",)
@@ -517,9 +517,9 @@ async def test_calls_made_after_a_stop_is_queued_are_refused_once_it_begins():
         await blocking
 
 
-async def test_draining_caller_gets_why_when_another_stop_finishes_the_worker(scale):
+async def test_draining_caller_gets_why_when_another_stop_finishes_the_executor(scale):
     for _ in range(10 * scale):
-        async with running(Worker) as worker:
+        async with running(Works) as worker:
             call = worker.work(5)
             await worker.reached("work")
             drain = asyncio.ensure_future(worker.shutdown(wait=False))
@@ -530,7 +530,7 @@ async def test_draining_caller_gets_why_when_another_stop_finishes_the_worker(sc
                 await call
 
 
-class ReturnsWhenStopped(Worker):
+class ReturnsWhenStopped(Works):
     async def _run(self):
         await self.wait_for_state(self.Stopping)  # Returns as soon as the worker stops, rather than waiting to be cancelled
 
@@ -546,7 +546,7 @@ async def test_a_drain_outlasts_run_returning():
         assert await call == "finished"  # Not interrupted, as _run() ended after the stop, not of its own accord
 
 
-class RunCalls(Worker):
+class RunCalls(Works):
     async def _run(self):
         self.call = self.work(0.1)
         await self.call
@@ -579,7 +579,7 @@ async def test_tasks_calls_leave_running_dont_hold_anything_up():
 # shutdown()
 
 
-class Stops(Worker):
+class Stops(Works):
     @bridge
     async def stop_waiting(self):
         self.shutdown()  # wait=True, on the worker's own thread
@@ -596,7 +596,7 @@ class Stops(Worker):
         return stopped
 
 
-async def test_shutdown_cant_wait_on_the_workers_own_thread():
+async def test_shutdown_cant_wait_on_the_executors_own_thread():
     async with running(Stops) as worker:
         with pytest.raises(WouldBlock, match=r"Waiting for <bound method EventLoopExecutor\.shutdown .* would deadlock in <Thread"):
             await worker.stop_waiting()
@@ -624,8 +624,8 @@ async def test_draining_from_inside_a_call_returns_at_once_and_lets_calls_finish
         assert await other == "finished"
 
 
-async def test_shutdown_waits_for_the_worker_to_finish_then_returns_its_future():
-    async with running(Worker) as worker:
+async def test_shutdown_waits_for_the_executor_to_finish_then_returns_its_future():
+    async with running(Works) as worker:
         shutdown = await asyncio.to_thread(worker.shutdown)  # wait=True, which blocks: so on a plain thread
         assert worker.state is worker.Shutdown and shutdown.done()
         stopped = shutdown.result()
@@ -664,7 +664,7 @@ async def test_waiting_for_stop_doesnt_block_the_callers_loop():
 
 async def test_stop_futures_can_be_waited_on_anywhere_and_not_cancelled():
     # The teardown fails the test if asyncio logs about shielded futures, or what was never retrieved
-    async with running(Worker) as worker:
+    async with running(Works) as worker:
         stopping = worker.wait_for_state(worker.Stopping)
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(stopping, 0.05)  # Gives up, which mustn't cancel it
@@ -700,7 +700,7 @@ async def test_cancelling_a_call_cancels_its_job_though_a_callback_added_before_
 
 
 @pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="Interrupts the main thread with signal.pthread_kill()")
-def test_a_worker_interrupted_as_its_made_is_stopped_once_it_has_started():
+def test_an_executor_interrupted_as_its_made_is_stopped_once_it_has_started():
     main, name = threading.main_thread().ident, "interrupted-as-its-made"
 
     class InterruptsItsMaker(asyncio.SelectorEventLoop):
@@ -713,15 +713,15 @@ def test_a_worker_interrupted_as_its_made_is_stopped_once_it_has_started():
                 time.sleep(0.1)
             return super().run_until_complete(future)
 
-    before = set(_fork_safety.workers.instances)
+    before = set(_fork_safety.executors.instances)
     with pytest.raises(KeyboardInterrupt):
         EventLoopExecutor(loop_factory=InterruptsItsMaker, logger=logging.getLogger(name))
-    [worker] = set(_fork_safety.workers.instances) - before
+    [worker] = set(_fork_safety.executors.instances) - before
     assert type(worker.wait_for_state(worker.Shutdown).result(2)) is CleanStop  # Rather than left running unreachable
 
 
 async def test_giving_up_waiting_on_stop_leaves_other_waiters_alone():
-    async with running(Worker) as worker:
+    async with running(Works) as worker:
         worker.waits_for(release := AwaitableFuture())  # Holding up the stops below, which drain it
 
         async def wait():
@@ -739,7 +739,7 @@ async def test_giving_up_waiting_on_stop_leaves_other_waiters_alone():
 async def test_a_call_from_a_handler_logging_the_stop_is_refused_rather_than_deadlocking(caplog):
     refused = []
 
-    class CallsTheWorker(logging.Handler):
+    class CallsTheExecutor(logging.Handler):
         def emit(self, record):
             # Under the lock its transition holds: if that's not reentrant, this times out, rather than deadlocking
             if worker._condition.acquire(timeout=1):
@@ -750,9 +750,9 @@ async def test_a_call_from_a_handler_logging_the_stop_is_refused_rather_than_dea
                 finally:
                     worker._condition.release()
 
-    async with running(Worker) as worker:
+    async with running(Works) as worker:
         caplog.set_level(logging.INFO, logger=worker.logger.name)
-        worker.logger.addHandler(handler := CallsTheWorker())
+        worker.logger.addHandler(handler := CallsTheExecutor())
         try:
             stopped = await worker.shutdown(wait=False)
         finally:
@@ -763,7 +763,7 @@ async def test_a_call_from_a_handler_logging_the_stop_is_refused_rather_than_dea
 # Teardown
 
 
-class LeavesWork(Worker):
+class LeavesWork(Works):
     def __init__(self):
         self.left = []
         super().__init__()
@@ -832,7 +832,7 @@ class LeavesWork(Worker):
         ),
     ],
 )
-async def test_work_left_running_is_cancelled_then_abandoned(kind, left, caplog, request, worker_loop, thread_exceptions):
+async def test_work_left_running_is_cancelled_then_abandoned(kind, left, caplog, request, executor_loop, thread_exceptions):
     async with running(LeavesWork) as worker:
         await worker.leave(kind)
         started = time.monotonic()
@@ -840,7 +840,7 @@ async def test_work_left_running_is_cancelled_then_abandoned(kind, left, caplog,
         assert time.monotonic() - started < 0.5
         assert worker.left == left
         worker.mark("release")  # Ending what the executor's thread was left running
-    if uvloop_executor := kind == "executor" and worker_loop == "uvloop":
+    if uvloop_executor := kind == "executor" and executor_loop == "uvloop":
         # uvloop's executor shutdown ignores its timeout, so is abandoned (as a stubborn task is) until the thread ends,
         # when it reports to its loop, though it has closed
         request.applymarker(pytest.mark.logs_asyncio_errors)

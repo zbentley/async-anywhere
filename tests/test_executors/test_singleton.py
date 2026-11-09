@@ -15,7 +15,7 @@ import weakref
 
 import pytest
 
-from async_anywhere.exceptions import CleanStop, WorkerStopped, WouldBlock
+from async_anywhere.exceptions import CleanStop, EventLoopExecutorStopped, WouldBlock
 from async_anywhere.executors import EventLoopExecutor, _fork_safety
 from async_anywhere.executors.singleton import SingletonEventLoopExecutor
 from async_anywhere.futures import AwaitableFuture
@@ -57,18 +57,18 @@ def cleans_up_until(release: AwaitableFuture, ran: list | None = None):
     return main
 
 
-# Workers
+# Executors
 
 
 @pytest.mark.parametrize("lazy", [True, False])
-def test_makes_its_first_worker_on_the_first_get_unless_lazy(lazy):
+def test_makes_its_first_executor_on_the_first_get_unless_lazy(lazy):
     with running_singleton(lazy=lazy) as singleton:
         assert (singleton.shutdown().result(0) is None) is lazy  # Stopping the worker made at once, if any
         worker = singleton.get()
         assert worker.state is worker.Running and singleton.get() is worker
 
 
-def test_replaces_a_worker_that_stopped_of_its_own_accord():
+def test_replaces_an_executor_that_stopped_of_its_own_accord():
     with running_singleton(idle_timeout=0.05) as singleton:
         first = singleton.get()
         why = first.wait_for_state(first.Shutdown).result(5)
@@ -77,7 +77,7 @@ def test_replaces_a_worker_that_stopped_of_its_own_accord():
         assert singleton.get() is not first
 
 
-def test_a_replacement_runs_nothing_until_the_worker_it_replaces_has_finished():
+def test_a_replacement_runs_nothing_until_the_executor_it_replaces_has_finished():
     release, first, seen = AwaitableFuture(), None, []
 
     def saw(what):  # And how far along the first worker was, as it ran
@@ -92,7 +92,7 @@ def test_a_replacement_runs_nothing_until_the_worker_it_replaces_has_finished():
         saw("call")
 
     # Not interrupting first again as it's replaced, which would cut its cleanup short
-    with running_singleton(main=main, interrupt_stopping_workers=False) as singleton:
+    with running_singleton(main=main, cancel_futures_on_stopping_executors=False) as singleton:
         first = singleton.get()
         first.shutdown(wait=False)  # Its main cleaning up until released
         first.wait_for_state(first.Stopping).result(5)
@@ -113,7 +113,7 @@ def test_a_replacements_idle_countdown_starts_once_it_runs():
             began.set_result(time.monotonic())
         await cleans_up_until(release)(worker)
 
-    with running_singleton(main=main, idle_timeout=timeout, interrupt_stopping_workers=False) as singleton:
+    with running_singleton(main=main, idle_timeout=timeout, cancel_futures_on_stopping_executors=False) as singleton:
         first = singleton.get()
         first.shutdown(wait=False)
         first.wait_for_state(first.Stopping).result(5)
@@ -126,8 +126,8 @@ def test_a_replacements_idle_countdown_starts_once_it_runs():
 
 
 @pytest.mark.parametrize("waits_for", ["a call", "a state"])
-def test_a_stopping_workers_calls_go_to_its_replacement_but_cant_wait_for_it_there(waits_for):
-    with running_singleton(interrupt_stopping_workers=False) as singleton:
+def test_a_stopping_executors_calls_go_to_its_replacement_but_cant_wait_for_it_there(waits_for):
+    with running_singleton(cancel_futures_on_stopping_executors=False) as singleton:
         started, go, made = AwaitableFuture(), AwaitableFuture(), []
 
         async def drains():
@@ -150,7 +150,7 @@ def test_a_stopping_workers_calls_go_to_its_replacement_but_cant_wait_for_it_the
         assert singleton.get() is not first
 
 
-def test_workers_it_has_replaced_are_let_go():
+def test_executors_it_has_replaced_are_let_go():
     with running_singleton() as singleton:
         replaced = []
         for _ in range(3):
@@ -163,7 +163,7 @@ def test_workers_it_has_replaced_are_let_go():
         assert [ref() is None for ref in replaced] == [True, True, False]  # The last kept, until get() replaces it
 
 
-def test_callbacks_on_a_workers_thread_as_it_shuts_down_cant_wait_for_its_replacement():
+def test_callbacks_on_an_executors_thread_as_it_shuts_down_cant_wait_for_its_replacement():
     with running_singleton() as singleton:
         first, seen = singleton.get(), AwaitableFuture()
 
@@ -182,7 +182,7 @@ def test_callbacks_on_a_workers_thread_as_it_shuts_down_cant_wait_for_its_replac
 
 
 @pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="Interrupts the main thread with signal.pthread_kill()")
-def test_a_worker_whose_get_was_interrupted_as_it_was_made_runs_nothing():
+def test_an_executor_whose_get_was_interrupted_as_it_was_made_runs_nothing():
     main_ident, release, ran = threading.main_thread().ident, AwaitableFuture(), []
 
     class InterruptsItsMaker(asyncio.SelectorEventLoop):
@@ -210,15 +210,15 @@ def test_a_worker_whose_get_was_interrupted_as_it_was_made_runs_nothing():
         return InterruptsItsMaker() if len(made) == 2 else asyncio.new_event_loop()
 
     with running_singleton(
-        main=cleans_up_until(release, ran), loop_factory=loop_factory, interrupt_stopping_workers=False
+        main=cleans_up_until(release, ran), loop_factory=loop_factory, cancel_futures_on_stopping_executors=False
     ) as singleton:
         first = singleton.get()
         first.shutdown(wait=False)  # Its main cleaning up until released
         first.wait_for_state(first.Stopping).result(5)
-        before = set(_fork_safety.workers.instances)
+        before = set(_fork_safety.executors.instances)
         with pytest.raises(KeyboardInterrupt):
             singleton.get()
-        [interrupted] = set(_fork_safety.workers.instances) - before
+        [interrupted] = set(_fork_safety.executors.instances) - before
         third = singleton.get()  # Waiting for first too, as the interrupted one does
         release.set_result(None)
         interrupted.wait_for_state(interrupted.Shutdown).result(5)
@@ -227,7 +227,7 @@ def test_a_worker_whose_get_was_interrupted_as_it_was_made_runs_nothing():
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
-def test_a_forked_process_makes_a_worker_of_its_own():
+def test_a_forked_process_makes_an_executor_of_its_own():
     with running_singleton(lazy=False) as singleton:
         inherited = singleton.get()
         with forked() as f:
@@ -245,7 +245,7 @@ def test_a_forked_process_can_use_it_though_a_thread_that_isnt_there_held_its_lo
         holding, release = AwaitableFuture(), AwaitableFuture()
 
         def hold():
-            with singleton._worker:  # Held as the process forks
+            with singleton._wrapped_executor:  # Held as the process forks
                 holding.set_result(None)
                 release.result(10)
 
@@ -265,12 +265,12 @@ def test_a_forked_process_can_use_it_though_a_thread_that_isnt_there_held_its_lo
 # shutdown()
 
 
-def test_shutdown_without_a_worker_returns_at_once():
+def test_shutdown_without_an_executor_returns_at_once():
     stopped = SingletonEventLoopExecutor().shutdown()
     assert stopped.done() and stopped.result() is None
 
 
-def test_shutdown_waits_for_the_worker_to_shut_down():
+def test_shutdown_waits_for_the_executor_to_shut_down():
     with running_singleton(lazy=False) as singleton:
         worker = singleton.get()
         shutdown = singleton.shutdown()
@@ -280,7 +280,7 @@ def test_shutdown_waits_for_the_worker_to_shut_down():
         assert why is worker.wait_for_state(worker.Shutdown).result(0)
 
 
-def test_after_shutdown_the_next_call_makes_a_new_worker():
+def test_after_shutdown_the_next_call_makes_a_new_executor():
     with running_singleton(lazy=False) as singleton:
         first = singleton.get()
         singleton.shutdown()
@@ -311,10 +311,10 @@ def test_shutdown_cancelling_futures_interrupts_calls_in_flight():
         why = singleton.shutdown(cancel_futures=True).result()
         with pytest.raises(concurrent.futures.CancelledError):
             call.result(5)
-        assert type(why) is WorkerStopped and why.args == ("(interrupted) manually stopped",)
+        assert type(why) is EventLoopExecutorStopped and why.args == ("(interrupted) manually stopped",)
 
 
-def test_shutdown_cant_wait_on_the_workers_own_thread():
+def test_shutdown_cant_wait_on_the_executors_own_thread():
     with running_singleton() as singleton:
 
         async def stop_waiting():
@@ -326,7 +326,7 @@ def test_shutdown_cant_wait_on_the_workers_own_thread():
         assert worker.state is worker.Running and singleton.get() is worker  # Refusing to wait stopped nothing
 
 
-def test_shutdowns_future_refuses_blocking_waits_on_the_workers_own_loop():
+def test_shutdowns_future_refuses_blocking_waits_on_the_executors_own_loop():
     with running_singleton() as singleton:
 
         async def stop_then_wait():
@@ -338,7 +338,7 @@ def test_shutdowns_future_refuses_blocking_waits_on_the_workers_own_loop():
         worker.wait_for_state(worker.Shutdown).result(5)  # The stop went ahead
 
 
-def test_shutdown_on_a_worker_it_has_replaced_stops_that_one_and_makes_none():
+def test_shutdown_on_an_executor_it_has_replaced_stops_that_one_and_makes_none():
     release, go, called = AwaitableFuture(), AwaitableFuture(), AwaitableFuture()
 
     async def main(worker):
@@ -350,7 +350,7 @@ def test_shutdown_on_a_worker_it_has_replaced_stops_that_one_and_makes_none():
             await release
             raise
 
-    with running_singleton(main=main, interrupt_stopping_workers=False) as singleton:
+    with running_singleton(main=main, cancel_futures_on_stopping_executors=False) as singleton:
         first = singleton.get()
         first.shutdown(wait=False)  # Its main cleaning up until released
         first.wait_for_state(first.Stopping).result(5)
@@ -363,10 +363,10 @@ def test_shutdown_on_a_worker_it_has_replaced_stops_that_one_and_makes_none():
         assert singleton.get() is second and second.state is second.Running  # Never stopped, nor replaced
 
 
-def test_shutdown_while_replacing_a_worker_stops_the_replacement_after_calls_made_to_it():
+def test_shutdown_while_replacing_an_executor_stops_the_replacement_after_calls_made_to_it():
     release = AwaitableFuture()
 
-    with running_singleton(main=cleans_up_until(release), interrupt_stopping_workers=False) as singleton:
+    with running_singleton(main=cleans_up_until(release), cancel_futures_on_stopping_executors=False) as singleton:
         first = singleton.get()
         first.shutdown(wait=False)
         first.wait_for_state(first.Stopping).result(5)

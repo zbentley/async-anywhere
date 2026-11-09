@@ -46,8 +46,8 @@ class WaitableStateTracker[T](StateTracker, ABC):
         self, state: State, *states: State, ignore_current_state: bool = False, return_states: bool = False, **kwargs
     ) -> AwaitableFuture[T]:
         # NB: the future returned here will be resolved once the StateTracker has passed through the given state, even
-        # if it is no longer in that state. If a worker transitions twice in rapid succession, or a waiter is attached
-        # and then not waited on until later, after the worker has passed through *states, it'll still resolve.
+        # if it is no longer in that state. If an executor transitions twice in rapid succession, or a waiter is attached
+        # and then not waited on until later, after the executor has passed through *states, it'll still resolve.
         # NB: ignore_current_state=True always waits, for the next transition into *states, even if already in one.
         # NB: it resolves with that transition's data (None for the initial state); with return_states=True, with its
         # whole (old state, new state, data) triple.

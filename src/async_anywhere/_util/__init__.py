@@ -111,7 +111,7 @@ class BlockingChecker:
         return new
 
     def add(self, environment: asyncio.AbstractEventLoop | Thread | Callable[[], bool]):
-        # Dropping what's gone, as a SingletonEventLoopExecutor's checker gets a thread for every worker it makes
+        # Dropping what's gone, as a SingletonEventLoopExecutor's checker gets a thread for every executor it makes
         kept = [env for env in self._environments if not isinstance(env, ref) or env() is not None]
         self._environments = (*kept, *BlockingChecker._weakened((environment,)))
 

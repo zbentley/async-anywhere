@@ -155,7 +155,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         # must remain a superset of concurrent.future.Future's contract.
         StateTracker.__init__(self, lock=Condition())
         # Not making a BlockingChecker for None (most futures) saves its call: these are made on hot paths
-        # Or a checker made already, passed in, as a worker's are
+        # Or a checker made already, passed in, as an executor's are
         if prevent_blocking_wait_when is None or isinstance(prevent_blocking_wait_when, BlockingChecker):
             self._blocking_checker = prevent_blocking_wait_when
         elif len(prevent_blocking_wait_when) == 0:

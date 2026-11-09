@@ -25,10 +25,10 @@ __all__ = [
     "AsyncAnywhereException",
     "CleanStop",
     "StateTrackerError",
-    "WorkerBroken",
-    "WorkerForked",
-    "WorkerInterrupted",
-    "WorkerStopped",
+    "EventLoopExecutorBroken",
+    "EventLoopExecutorForked",
+    "EventLoopExecutorInterrupted",
+    "EventLoopExecutorStopped",
     "WouldBlock",
 ]
 
@@ -130,7 +130,7 @@ class StateTrackerError(AsyncAnywhereException, asyncio.InvalidStateError, concu
 # Executors
 
 
-class WorkerStopped(AsyncAnywhereException, Exception):
+class EventLoopExecutorStopped(AsyncAnywhereException, Exception):
     """
     Indicates that an :py:class:`EventLoopExecutor` has :ref:`stopped <stopping>`, and why.
 
@@ -142,15 +142,15 @@ class WorkerStopped(AsyncAnywhereException, Exception):
         self.__cause__ = cause
 
 
-class CleanStop(WorkerStopped):
+class CleanStop(EventLoopExecutorStopped):
     r"""Indicates that an :py:class:`EventLoopExecutor` stopped without interrupting any :term:`job`\ s (the
     :term:`main task` is always interrupted regardless)."""
 
-class WorkerBroken(WorkerStopped, ABC):
+class EventLoopExecutorBroken(EventLoopExecutorStopped, ABC):
     """Indicates that an :py:class:`EventLoopExecutor` cannot perform the requested action(s) because it was stopped
     due to an internal error or unsupported state."""
 
-class WorkerForked(WorkerBroken):
+class EventLoopExecutorForked(EventLoopExecutorBroken):
     """Indicates that an :py:class:`EventLoopExecutor` cannot perform the requested action(s) because it was created in
     a parent process and cannot be used in a forked child. See
     :ref:`fork_safety` for more information."""
@@ -160,12 +160,12 @@ class WorkerForked(WorkerBroken):
         super().__init__(summary or f"forked into process {os.getpid()}", cause)
 
 
-class WorkerInterrupted(AsyncAnywhereException, concurrent.futures.CancelledError):
+class EventLoopExecutorInterrupted(AsyncAnywhereException, concurrent.futures.CancelledError):
     r"""Raised from attempts to wait on an :py:class:`EventLoopExecutor`'s :term:`job` that has been cancelled due to
-    a worker stop condition that interrupts running work (e.g. ``EventLoopExecutor.shutdown(cancel_futures=True)``)."""
+    an executor stop condition that interrupts running work (e.g. ``EventLoopExecutor.shutdown(cancel_futures=True)``)."""
 
     @classmethod
-    def from_cancellation(cls, cancelled: BaseException, stopped: WorkerStopped) -> Self:
+    def from_cancellation(cls, cancelled: BaseException, stopped: EventLoopExecutorStopped) -> Self:
         """:meta private:"""
         interrupted = cls(*cancelled.args).with_traceback(cancelled.__traceback__)  # Ending where the job was cancelled
         interrupted.__cause__ = stopped

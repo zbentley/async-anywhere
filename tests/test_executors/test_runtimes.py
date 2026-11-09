@@ -1,6 +1,6 @@
 """EventLoopExecutors with async libraries other than asyncio: callers on trio, or using anyio's API on any of its
 backends, and parent tasks using anyio, or trio, run as a guest on the worker's loop (see TrioGuest), which bridged
-functions can hand trio code to. The worker's own loop is asyncio's, or uvloop's: see worker_loop()."""
+functions can hand trio code to. The worker's own loop is asyncio's, or uvloop's: see executor_loop()."""
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +11,7 @@ import anyio
 import pytest
 import trio
 
-from async_anywhere.exceptions import CleanStop, WorkerStopped
+from async_anywhere.exceptions import CleanStop, EventLoopExecutorStopped
 from async_anywhere.futures import AwaitableFuture
 from tests.test_executors.utils import Tidy, bridge, running
 
@@ -100,7 +100,7 @@ async def test_interrupted_calls_raise_why_rather_than_cancelling_their_callers(
         error = await raised
         assert isinstance(error, concurrent.futures.CancelledError)
         assert not isinstance(error, anyio.get_cancelled_exc_class())  # Not the caller's own cancellation
-        assert type(error.__cause__) is WorkerStopped
+        assert type(error.__cause__) is EventLoopExecutorStopped
 
 
 async def test_giving_up_waiting_on_stop_cancels_nothing_with_any_library():
@@ -264,11 +264,11 @@ async def test_parent_tasks_can_run_trio_as_a_guest():
     "end, kind, text",
     [
         (lambda: None, CleanStop, "(idle) parent task returned"),
-        (lambda: 1 / 0, WorkerStopped, "(idle) parent task raised ZeroDivisionError('division by zero')"),
+        (lambda: 1 / 0, EventLoopExecutorStopped, "(idle) parent task raised ZeroDivisionError('division by zero')"),
     ],
     ids=["returns", "raises"],
 )
-async def test_a_trio_guest_ending_stops_the_worker(end, kind, text):
+async def test_a_trio_guest_ending_stops_the_executor(end, kind, text):
     async def trio_main(worker):
         await trio.sleep(0.01)
         end()
@@ -330,4 +330,4 @@ async def test_interrupting_cancels_the_trio_code_calls_handed_over():
         assert marks["cleaned up"].done()  # Before the worker finished
         with pytest.raises(concurrent.futures.CancelledError) as raised:
             await call
-        assert type(raised.value.__cause__) is WorkerStopped
+        assert type(raised.value.__cause__) is EventLoopExecutorStopped
