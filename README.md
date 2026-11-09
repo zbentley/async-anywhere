@@ -11,7 +11,7 @@ If you've run up against the limits of what `asgiref` supports, are struggling w
 It includes:
 
 - `AwaitableFuture`, a `concurrent.futures.Future` which can be blocked on or `await`ed on from any number of event loops or threads. It supports configurable cancellation behavior, `fork(2)` safety, lock-free operation on many paths that the stdlib serializes, and more.
-- `EventLoopExecutor`, a `concurrent.futures.Executor` which runs **`async`** code on a thread, and whose results can be waited on from anywhere. It supports idle expiration, calling into itself from within its captive thread, `fork(2)` safety, task interruption, controlled shutdown, "parent" functions which own the event loop, and more.
+- `EventLoopExecutor`, a `concurrent.futures.Executor` which runs **`async`** code on a thread, and whose results can be waited on from anywhere. It supports idle expiration, calling into itself from within its captive thread, `fork(2)` safety, task cancellation, controlled shutdown, "parent" functions which own the event loop, and more.
 - `WaitableStateTracker`, a "state machine lite" which allows a class to transition between one of several declared states, and allows other code to wait for the tracker to enter one or more states in an `async`- and thread-agnostic way.
 - Several other tools and utilities related to Python concurrency management.
 

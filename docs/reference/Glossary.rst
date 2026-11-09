@@ -32,11 +32,10 @@ Glossary
             inherit context from the executor's captive thread, and the presence of such background-threaded work may
             block the :ref:`executor's shutdown process <stopping>`.
 
-    interrupt
     cancel
         (as pertains to :term:`code in an executor`)
 
-        Call ``.cancel()`` on an asyncio.Task running in an executor. See :ref:`interruption` for details.
+        Call ``.cancel()`` on an asyncio.Task running in an executor. See :ref:`cancellation` for details.
 
     complete
     completed

@@ -27,7 +27,7 @@ __all__ = [
     "StateTrackerError",
     "EventLoopExecutorBroken",
     "EventLoopExecutorForked",
-    "EventLoopExecutorInterrupted",
+    "JobCancelledByExecutorShutdown",
     "EventLoopExecutorStopped",
     "WouldBlock",
 ]
@@ -143,8 +143,8 @@ class EventLoopExecutorStopped(AsyncAnywhereException, Exception):
 
 
 class CleanStop(EventLoopExecutorStopped):
-    r"""Indicates that an :py:class:`.EventLoopExecutor` stopped without interrupting any :term:`job`\ s (the
-    :term:`main task` is always interrupted regardless)."""
+    r"""Indicates that an :py:class:`.EventLoopExecutor` stopped without :ref:`cancelling <cancellation>` any :term:`job`\ s (the
+    :term:`main task` is always cancelled regardless)."""
 
 class EventLoopExecutorBroken(EventLoopExecutorStopped, ABC):
     """Indicates that an :py:class:`.EventLoopExecutor` cannot perform the requested action(s) because it was stopped
@@ -160,9 +160,9 @@ class EventLoopExecutorForked(EventLoopExecutorBroken):
         super().__init__(summary or f"forked into process {os.getpid()}", cause)
 
 
-class EventLoopExecutorInterrupted(AsyncAnywhereException, concurrent.futures.CancelledError):
-    r"""Raised from attempts to wait on an :py:class:`.EventLoopExecutor`'s :term:`job` that has been cancelled due to
-    an executor stop condition that interrupts running work (e.g. ``EventLoopExecutor.shutdown(cancel_futures=True)``)."""
+class JobCancelledByExecutorShutdown(AsyncAnywhereException, concurrent.futures.CancelledError):
+    r"""Raised from attempts to wait on an :py:class:`.EventLoopExecutor`'s :term:`job` that has been :ref:`cancelled <cancellation>` due to
+    an executor stop condition that cancels running work (e.g. ``EventLoopExecutor.shutdown(cancel_futures=True)``)."""
 
     @classmethod
     def from_cancellation(cls, cancelled: BaseException, stopped: EventLoopExecutorStopped) -> Self:

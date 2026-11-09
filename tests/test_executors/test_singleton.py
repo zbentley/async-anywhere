@@ -311,7 +311,7 @@ def test_shutdown_cancelling_futures_interrupts_calls_in_flight():
         why = singleton.shutdown(cancel_futures=True).result()
         with pytest.raises(concurrent.futures.CancelledError):
             call.result(5)
-        assert type(why) is EventLoopExecutorStopped and why.args == ("(interrupted) manually stopped",)
+        assert type(why) is EventLoopExecutorStopped and why.__cause__ is None
 
 
 def test_shutdown_cant_wait_on_the_executors_own_thread():

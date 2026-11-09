@@ -14,7 +14,7 @@ from attrs import Factory, define, field, setters, validators
 from sniffio import current_async_library_cvar
 
 from async_anywhere._util import BlockingChecker, validate_coroutine_function, Toggleable
-from async_anywhere.exceptions import CleanStop, EventLoopExecutorBroken, EventLoopExecutorInterrupted, EventLoopExecutorStopped, EventLoopExecutorForked
+from async_anywhere.exceptions import CleanStop, EventLoopExecutorBroken, JobCancelledByExecutorShutdown, EventLoopExecutorStopped, EventLoopExecutorForked
 from async_anywhere.executors import _fork_safety
 from async_anywhere.executors._timer import Timer
 from async_anywhere.futures import AwaitableFuture
@@ -59,10 +59,10 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
     Running :term:`job`\ s on an executor produces :py:class:`.AwaitableFuture`\ s which can be waited or ``await``\ ed on from any
     thread or event loop. The caller and the executor itself may
-    :ref:`interrupt <interruption>` (cancel) those jobs.
+    :ref:`cancel <cancellation>` those jobs.
 
     An executor runs until :ref:`stopped <stopping>`, after which it will not accept new
-    jobs. In-progress jobs and the :term:`main task` may be interrupted, or may continue running, depending on how a stop was triggered.
+    jobs. In-progress jobs and the :term:`main task` may be cancelled, or may continue running, depending on how a stop was triggered.
 
     Note:
         Every method in an Executor's public API can be called (and its result waited for, if it returns a future) from
@@ -120,8 +120,8 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
         -  If you need an executor which starts lazily and/or restarts its thread after stop, see :py:class:`.SingletonEventLoopExecutor`.
         - For details about how and when an executor is stopped, see :ref:`stopping`
-        - For details about how and when :term:`code in an executor` is interrupted, see
-          :ref:`interruption`
+        - For details about how and when :term:`code in an executor` is cancelled, see
+          :ref:`cancellation`
         - Executors can be used in code that calls :py:func:`os.fork`. Attempts to use an executor or interact with any
           jobs it is running or futures it has produced in a process other than the one that created it will fail immediately
           with an error. Additional care is needed when using executors with forking code, see
@@ -302,9 +302,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             choose to ignore or refuse cancellation.
 
         Note:
-            The asyncio.task running "func" may be :term:`interrupt`\ ed (cancelled) in response to executor failures
+            The asyncio.task running "func" may be cancelled in response to executor failures
             or user calls to :py:meth:`EventLoopExecutor.shutdown(cancel_futures=True) <shutdown>`. For more details, see
-            :ref:`interruption`.
+            :ref:`cancellation`.
 
         Warning:
             Avoid blocking the executor's event loop: this is "supported" insofar as its semantics are documented and
@@ -462,7 +462,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                     default is necessary for compatibility with stdlib functions that interact with
                     :py:obj:`concurrent.futures.Executor`, so it's important to be mindful.
             cancel_futures (bool): If True, :term:`job`\ s running on the executor and its :term:`main task`
-                will be interrupted by cancelling the :py:obj:`asyncio.Task`\ s that contain them. If
+                will be :ref:`cancelled <cancellation>` (by calling ``.cancel()`` on the :py:obj:`asyncio.Task`\ s that contain them). If
                 False, jobs will not be cancelled, but the main task
                 `will` be cancelled if it has not already been cancelled for any reason.
 
@@ -594,11 +594,11 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             case "stopped":
                 reason = "(waiting for running jobs) manually stopped" if len(self._calls) > 0 else "(idle) manually stopped"
             case "main task returned":
-                reason = f"({'interrupted' if len(self._calls) > 0 else 'idle'}) main task returned"
+                reason = f"({'tasks cancelled' if len(self._calls) > 0 else 'idle'}) main task returned"
         return self._try_transition(self.Stopping, CleanStop(reason))
 
     def _unclean_stop(self, reason: str, cause: BaseException | None = None) -> bool:
-        why = EventLoopExecutorStopped(f"({'interrupted' if len(self._calls) > 0 else 'idle'}) {reason}", cause)
+        why = EventLoopExecutorStopped(f"({'tasks cancelled' if len(self._calls) > 0 else 'idle'}) {reason}", cause)
         return self._try_transition(self.Stopping, why)
 
     def _after_fork_in_child(self):
@@ -706,10 +706,10 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
     async def _job(self, func, args, kwargs, future: AwaitableFuture):
         """
-        Runs a call on the executor's event loop. All calls are submitted by _start().
+        Runs a job on the executor's event loop. All jobs are submitted by _start().
         Only raises in the thread on a crash (e.g. a cancel race or a broken event loop); all errors from user code are
         forwarded back to the user if the user is still accepting responses (that is, the waiting future hasn't been
-        cancelled or aborted with an interrupt error).
+        cancelled or failed with a JobCancelledByExecutorShutdown).
         """
 
         # We're a little precious about performance in this method since it's on the hot path:
@@ -728,7 +728,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # so, this job's waiters get an error indicating where the job was cancelled, with exception-chain-context
             # about why the executor stopped.
             if self._interrupted and task.cancelling():
-                error = EventLoopExecutorInterrupted.from_cancellation(ex, self._last_transition[2].copy())
+                error = JobCancelledByExecutorShutdown.from_cancellation(ex, self._last_transition[2].copy())
             else:
                 error = ex
             # If we can't report it to the user, crash the task so Python's logger reports the failure

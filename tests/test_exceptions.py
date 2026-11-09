@@ -19,7 +19,7 @@ from async_anywhere.exceptions import (
     CleanStop,
     StateTrackerError,
     EventLoopExecutorForked,
-    EventLoopExecutorInterrupted,
+    JobCancelledByExecutorShutdown,
     EventLoopExecutorStopped,
     WouldBlock,
 )
@@ -37,7 +37,7 @@ EXCEPTIONS = {
     "EventLoopExecutorStopped": lambda: EventLoopExecutorStopped("(idle) manually stopped", KeyError("why")),
     "CleanStop": lambda: CleanStop("(idle) expired"),
     "EventLoopExecutorForked": EventLoopExecutorForked,
-    "EventLoopExecutorInterrupted": lambda: EventLoopExecutorInterrupted.from_cancellation(asyncio.CancelledError(), CleanStop("stopped")),
+    "JobCancelledByExecutorShutdown": lambda: JobCancelledByExecutorShutdown.from_cancellation(asyncio.CancelledError(), CleanStop("stopped")),
 }
 
 

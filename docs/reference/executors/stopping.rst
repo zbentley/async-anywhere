@@ -29,7 +29,7 @@ When an executor is stopped, the following behavior happens:
 
 #. Immediately upon being stopped, new jobs can no longer be submitted to the executor.
 #. The executor is put into the ``Stopping`` State.
-#. The executor's captive event loop then waits for all :term:`job`\ s to complete. Jobs and the :term:`main task` can receive :term:`interrupt`\ s during this phase: see :ref:`interruption`.
+#. The executor's captive event loop then waits for all :term:`job`\ s to complete. Jobs and the :term:`main task` can receive cancellations during this phase: see :ref:`cancellation`.
      - This step is skipped when an executor is stopped due to ``os.fork()``, in the child process.
 #. Once those jobs have completed, if the :term:`main task` is still running, and has not been cancelled, ``asyncio.Task.cancel()`` is called on it.
     - This step is skipped when an executor is stopped due to ``os.fork()``, in the child process.

@@ -16,7 +16,7 @@ from datetime import timedelta
 import pytest
 
 from async_anywhere.executors import EventLoopExecutor, _fork_safety
-from async_anywhere.exceptions import CleanStop, EventLoopExecutorStopped, WouldBlock
+from async_anywhere.exceptions import CleanStop, EventLoopExecutorStopped, JobCancelledByExecutorShutdown, WouldBlock
 from async_anywhere.futures import AwaitableFuture
 from tests.test_executors.utils import (
     TIMING_SENSITIVE,
@@ -146,35 +146,23 @@ class StopsItself(Works):
 
 
 @pytest.mark.parametrize(
-    "cls, end, kind, text, cause",
+    "cls, end, kind, cause",
     [
-        (Works, lambda runloop: runloop.set_result(None), CleanStop, "(interrupted) main task returned", type(None)),
-        (
-            Works,
-            lambda runloop: runloop.set_exception(ValueError("boom")),
-            EventLoopExecutorStopped,
-            "(interrupted) main task raised ValueError('boom')",
-            ValueError,
-        ),
-        (
-            StopsItself,
-            lambda runloop: runloop.set_result(None),
-            EventLoopExecutorStopped,
-            "(interrupted) manually stopped",
-            type(None),
-        ),
+        (Works, lambda runloop: runloop.set_result(None), CleanStop, type(None)),
+        (Works, lambda runloop: runloop.set_exception(ValueError("boom")), EventLoopExecutorStopped, ValueError),
+        (StopsItself, lambda runloop: runloop.set_result(None), EventLoopExecutorStopped, type(None)),
     ],
     ids=["returns", "raises", "stops itself"],
 )
-async def test_run_ending_stops_the_executor(cls, end, kind, text, cause):
+async def test_run_ending_stops_the_executor(cls, end, kind, cause):
     async with running(cls) as worker:
         call = worker.work(10)
         await worker.reached("work")
         end(worker.runloop)
-        with pytest.raises(concurrent.futures.CancelledError) as raised:
+        with pytest.raises(JobCancelledByExecutorShutdown) as raised:
             await call  # In flight as _run() ends, so interrupted
         stopped = await worker.wait_for_state(worker.Shutdown)  # Of its own accord
-        assert type(stopped) is kind and stopped.args == (text,)
+        assert type(stopped) is kind
         why = raised.value.__cause__  # Why the worker stopped, raised from what stopped it, if anything did
         assert type(why) is kind and why.args == stopped.args and type(why.__cause__) is cause
 
@@ -191,9 +179,9 @@ async def test_interrupt_cancels_calls_once_and_tells_callers_why():
         await settled(worker)  # Past whatever the worker does as the parent task ends, before it waits for the call
         worker.mark("release")
         stopped = await stopping
-        assert type(stopped) is EventLoopExecutorStopped and stopped.args == ("(interrupted) manually stopped",)
+        assert type(stopped) is EventLoopExecutorStopped and stopped.__cause__ is None
         assert worker.reached("tidied").result_or_none() == 1  # Cancelled once: its cleanup wasn't cut short
-        with pytest.raises(concurrent.futures.CancelledError) as raised:
+        with pytest.raises(JobCancelledByExecutorShutdown) as raised:
             await call
         error = raised.value
         assert not isinstance(error, asyncio.CancelledError)  # Which asyncio would take for this task being cancelled
@@ -308,7 +296,7 @@ async def test_a_crash_stops_the_executor_and_interrupts_calls_in_flight(caplog,
         with pytest.raises(concurrent.futures.CancelledError) as raised:
             await slow
         why = raised.value.__cause__
-        assert why.args == ("(interrupted) the executor's event loop crashed",) and type(why.__cause__) is SystemExit
+        assert type(why) is EventLoopExecutorStopped and type(why.__cause__) is SystemExit
         assert worker.cleaned_up  # Cancelled once, by the teardown
         await asyncio.to_thread(worker._thread.join, 1)
         frames = [frame.name for frame in traceback.extract_tb(exiting.value.__traceback__)]
@@ -333,8 +321,7 @@ async def test_a_crash_in_run_stops_the_executor_and_interrupts_calls_in_flight(
         with pytest.raises(concurrent.futures.CancelledError) as raised:
             await call
         why = raised.value.__cause__
-        assert why.args == ("(interrupted) the executor's event loop crashed",)
-        assert type(why.__cause__) is KeyboardInterrupt
+        assert type(why) is EventLoopExecutorStopped and type(why.__cause__) is KeyboardInterrupt
         assert worker.cleaned_up  # Cancelled once, by the teardown
     assert [type(error) for error in thread_exceptions()] == [KeyboardInterrupt]  # Raised again on its thread
 
@@ -611,7 +598,8 @@ async def test_interrupting_from_inside_a_call_cancels_it_too():
             await worker.stop_interrupting()
         with pytest.raises(concurrent.futures.CancelledError):
             await other
-        assert reason(worker) == "(interrupted) manually stopped"
+        stopped = worker.wait_for_state(worker.Stopping, worker.Shutdown).result()
+        assert type(stopped) is EventLoopExecutorStopped and stopped.__cause__ is None
 
 
 async def test_draining_from_inside_a_call_returns_at_once_and_lets_calls_finish():

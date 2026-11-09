@@ -9,7 +9,7 @@ which accept asynchronous Python jobs, and run those jobs on an isolated, captiv
 
     EventLoopExecutor
     SingletonEventLoopExecutor
-    interruption
+    cancellation
     stopping
     fork_safety
 

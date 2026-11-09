@@ -326,7 +326,7 @@ async def test_interrupting_cancels_the_trio_code_calls_handed_over():
         call = worker.bridge(guest.run)(tidies, marks)
         await marks["started"]
         stopped = await worker.shutdown(wait=False, cancel_futures=True)
-        assert stopped.args == ("(interrupted) manually stopped",)
+        assert type(stopped) is EventLoopExecutorStopped and stopped.__cause__ is None
         assert marks["cleaned up"].done()  # Before the worker finished
         with pytest.raises(concurrent.futures.CancelledError) as raised:
             await call
