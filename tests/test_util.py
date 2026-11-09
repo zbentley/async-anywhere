@@ -60,7 +60,7 @@ def test_only_coroutine_functions_are_valid():
 def test_blocking_checkers_and_their_copies_dont_share_later_adds():
     here = threading.current_thread()
     checker = BlockingChecker()
-    copied = checker.copy([AnyEventLoop])  # Outside any loop, here: so refusing nothing
+    copied = checker.copy(add=[AnyEventLoop])  # Outside any loop, here: so refusing nothing
     checker.add(here)
     copied.check("future")
     with pytest.raises(WouldBlock, match="'future' would deadlock"):

@@ -86,19 +86,21 @@ class AsyncAnywhereException(ABC, Exception):
 # Futures
 
 class WouldBlock(AsyncAnywhereException, RuntimeError):
-    """Raised when synchronously waiting for an :py:class:`AwaitableFuture` with ``.result()`` or ``.exception()``
-    would block (that is, when a future is not done and a nonzero timeout is passed to those methods).
+    """Raised when synchronously waiting for an action performed by ``async_anywhere`` would block in an environment
+    where blocking is not allowed.
 
-    The behavior of when and where this exception will be raised can be controlled via :py:attr:`AwaitableFuture.prevent_blocking_wait_when` parameter.
+    For example, this is raised from :py:func:`AwaitableFuture.result` when that method needs to synchronously wait for
+    a future to complete from a thread or event loop that the user marked as forbidden for blocking waits via the
+    :py:attr:`AwaitableFuture.prevent_blocking_wait_when` parameter.
     """
-    def __init__(self, future, culprit) -> None:
+    def __init__(self, subject, environment) -> None:
         """:meta private:"""
         # A thread or loop, or else AnyEventLoop or BlockingNotAllowed, from _util: named as users find them
-        if getattr(culprit, "__module__", None) == "async_anywhere._util":  # Instances of builtins have none
-            culprit = f"AwaitableFuture.{culprit.__name__}"
+        if getattr(environment, "__module__", None) == "async_anywhere._util":  # Instances of builtins have none
+            environment = f"- AwaitableFuture.{environment.__name__}"
         else:
-            culprit = repr(culprit)
-        super().__init__(f"Waiting for {future!r} would deadlock: refused by {culprit}")
+            environment = f"in {environment!r}"
+        super().__init__(f"Waiting for {subject!r} would deadlock {environment} (configured via prevent_blocking_wait_when)")
 
 
 # State trackers

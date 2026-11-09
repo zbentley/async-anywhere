@@ -78,9 +78,9 @@ class Harness:
         self.worker = worker  # Before the constructor returns it, as _run() may want it at once
         # Before anything else on its loop could stop it. Kept, as the worker holds what waits for its states weakly.
         self._stops = worker.wait_for_state(worker.Stopping, worker.Shutdown), worker.wait_for_state(worker.Shutdown)
-        self._stops[0].add_done_callback(lambda _: self.mark("stopped", (worker.is_current_worker(), worker.state)))
+        self._stops[0].add_done_callback(lambda _: self.mark("stopped", (worker.is_current_executor(), worker.state)))
         self._stops[1].add_done_callback(
-            lambda _: self.mark("shutdown", (worker.is_current_worker(), worker.state, worker._loop.is_closed()))
+            lambda _: self.mark("shutdown", (worker.is_current_executor(), worker.state, worker._loop.is_closed()))
         )
         self.mark("_run")  # Which then runs on to its first await before the worker's loop does anything else
         try:

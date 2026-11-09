@@ -41,10 +41,11 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     - Significantly improved performance and reduced locking compared to :py:class:`concurrent.futures.Future`.
     - Fork-safety: documented and configurable semantics regarding the behavior of incomplete ``AwaitableFuture``
       objects in the presence of :py:func:`os.fork`; see :ref:`future_fork_safety`.
-    - Several other convenience methods to save code for common future-related tasks.
     - :term:`Completing` an ``AwaitableFuture`` on a running event loop's thread also completes any
       :py:class:`asyncio.Future`-like objects that are linked to it at once, rather than in a later loop tick (which is
       what :py:func:`asyncio.wrap_future` does).
+    - Several other convenience methods to save code for common future-related tasks (including lock-free accessors and
+      mutators, improved tools for observing future state, and more).
 
     """
 
@@ -179,11 +180,6 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         outcome = "" if data is None else f"[{type(data).__name__}]"
         return f"<{type(self).__qualname__} at {id(self):#x} {state.name}{outcome}>"
 
-    @property
-    def _state(self) -> str:
-        # What concurrent.futures.wait() and as_completed() read, under _condition, on every future they're given
-        return self._CF_STATES[self.state]
-
     def _after_state_change(self, old_state: State, new_state: State, data: Any):
         # Under _condition, so concurrent.futures.wait() and as_completed(), which add their waiters under it, miss nothing
         if new_state is self.Running:
@@ -297,29 +293,6 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             raise asyncio.CancelledError
         return self.result()
         yield  # A generator, for __await__ to return, that finishes at once
-
-    # Lock-free reads of its state: it only ever moves forward, and a finished one's outcome never changes
-
-    def done(self) -> bool:
-        """Returns True if this future has :term:`completed`, False otherwise.
-
-        Takes out no locks.
-        """
-        return self._last_transition[1].terminal
-
-    def cancelled(self) -> bool:
-        """Returns True if this future was :term:`completed` by being cancelled False otherwise.
-
-        Takes out no locks.
-        """
-        return self._last_transition[1] is self.Cancelled
-
-    def running(self) -> bool:
-        """Returns True if this future has *not* :term:`completed`, False otherwise.
-
-        Takes out no locks.
-        """
-        return self.state is self.Running
 
     def cancel(self) -> bool:
         """
@@ -538,6 +511,9 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
                 del self._done_callbacks[token]
             return len(tokens)
 
+    # NB: named to match the method on concurrent.futures.Future, even though this class never calls into that
+    # superclass's code, it's a useful belt-and-suspenders way to intercept any stdlib/other code that wants to call
+    # _private methods on concurrent Futures (see also: AwaitableFuture._state).
     def _invoke_callbacks(self):
         # Not under _condition, so that a fork never leaves the copy of a pending future's held: see _fork_safety
         _fork_safety.futures.ensure_unregistered(self)
@@ -555,21 +531,6 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         callbacks = [k for k in self._done_callbacks.keys() if not isinstance(k, _ForkAllowedDoneCallbackToken)]
         for tok in callbacks:
             del self._done_callbacks[tok]
-
-    # For executors
-
-    def set_running_or_notify_cancel(self) -> bool:
-        """
-        See :py:func:`concurrent.futures.Future.set_running_or_notify_cancel`.
-
-        This function should generally not be called by user code, and is intended for stdlib-only internal use.
-        """
-        # cancel() has notified concurrent.futures' waiters already: so this just refuses a cancelled future, each time
-        with self._condition:
-            if self.cancelled():
-                return False
-            self._transition(self.Running)  # Refused once it's running or finished
-        return True
 
     def set_result(self, result: T):
         """
@@ -689,7 +650,6 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         except concurrent.futures.InvalidStateError:
             return False
 
-
     def exception_or_none(self) -> BaseException | None:
         """Returns this future's exception if it failed with an error.
 
@@ -699,7 +659,6 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         """
         _, state, data = self._last_transition
         return data if state is self.Failed else None
-
 
     def result_or_none(self) -> T | None:
         """Returns the result of this future if it is done.
@@ -714,3 +673,52 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         """
         _, state, data = self._last_transition
         return data if state is self.Succeeded else None
+
+    def done(self) -> bool:
+        """Returns True if this future has :term:`completed`, False otherwise.
+
+        Takes out no locks.
+        """
+        return self._last_transition[1].terminal
+
+    def cancelled(self) -> bool:
+        """Returns True if this future was :term:`completed` by being cancelled False otherwise.
+
+        Takes out no locks.
+        """
+        return self._last_transition[1] is self.Cancelled
+
+    # For Executor API compliance
+    @property
+    def _state(self) -> str:
+        # What concurrent.futures.wait() and as_completed() read, under _condition, on every future they're given
+        return self._CF_STATES[self.state]
+
+    # For Executor API compliance
+    def running(self) -> bool:
+        """
+        Returns True if this future has *not* :term:`completed`, False otherwise.
+
+        Takes out no locks.
+
+        :meta private:
+
+        Warning:
+            This method exists to satisfy part of the concurrent.futures.Executor/as_completed/wait API and should NOT
+            be called by user code.
+        """
+        return self.state is self.Running
+
+    # For Executor API compliance
+    def set_running_or_notify_cancel(self) -> bool:
+        """
+        See :py:func:`concurrent.futures.Future.set_running_or_notify_cancel`.
+
+        This function should generally not be called by user code, and is intended for stdlib-only internal use.
+        """
+        # cancel() has notified concurrent.futures' waiters already: so this just refuses a cancelled future, each time
+        with self._condition:
+            if self.cancelled():
+                return False
+            self._transition(self.Running)  # Refused once it's running or finished
+        return True

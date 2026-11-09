@@ -16,7 +16,7 @@ from datetime import timedelta
 import pytest
 
 from async_anywhere.executors import EventLoopExecutor, _fork_safety
-from async_anywhere.exceptions import CleanStop, WorkerStopped
+from async_anywhere.exceptions import CleanStop, WorkerStopped, WouldBlock
 from async_anywhere.futures import AwaitableFuture
 from tests.test_executors.utils import (
     TIMING_SENSITIVE,
@@ -598,7 +598,7 @@ class Stops(Worker):
 
 async def test_shutdown_cant_wait_on_the_workers_own_thread():
     async with running(Stops) as worker:
-        with pytest.raises(RuntimeError, match="would wait for itself"):
+        with pytest.raises(WouldBlock, match=r"Waiting for <bound method EventLoopExecutor\.shutdown .* would deadlock in <Thread"):
             await worker.stop_waiting()
         assert worker.state is worker.Running
 
@@ -860,7 +860,7 @@ def test_submission_the_loop_never_runs_fails_instead_of_hanging(monkeypatch):
         # made just before the stop, which the loop then never ran, would be. (Past bridge()'s refusing calls once the
         # worker has stopped.) Only on the worker's own thread, as it finishes: not in a forked process, whose copy's loop
         # has closed.
-        if worker.is_current_worker():
+        if worker.is_current_executor():
             with worker._condition:
                 late.append(future := AwaitableFuture(prevent_blocking_wait_when=(worker._loop,)))
                 worker._submitted[future] = None

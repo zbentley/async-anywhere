@@ -108,7 +108,7 @@ class Forks(Worker):
                     await work()  # Made and run on the worker's thread, as its forking thread is that here
                 assert self.state is self.other.state is self.Shutdown
                 assert in_flight and all(future.done() for future in in_flight)  # This call's own, for one
-                assert self.is_current_worker() and self._forked  # Still the worker's thread here, as this one was it
+                assert self.is_current_executor() and self._forked  # Still the worker's thread here, as this one was it
                 assert not self.reached("stopped").done() and not self.reached("shutdown").done()
         return f
 

@@ -321,7 +321,7 @@ def test_shutdown_cant_wait_on_the_workers_own_thread():
             singleton.shutdown()  # wait=True
 
         worker = singleton.get()
-        with pytest.raises(RuntimeError, match="would wait for itself"):
+        with pytest.raises(WouldBlock, match=r"Waiting for <bound method EventLoopExecutor\.shutdown .* would deadlock in <Thread"):
             singleton.submit(stop_waiting).result(5)
         assert worker.state is worker.Running and singleton.get() is worker  # Refusing to wait stopped nothing
 

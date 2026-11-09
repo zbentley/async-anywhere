@@ -1,3 +1,6 @@
+``EventLoopExecutor``
+=====================
+
 .. autoclass:: async_anywhere.executors.EventLoopExecutor
    :members:
    :exclude-members: __init__, __weakref__, __new__

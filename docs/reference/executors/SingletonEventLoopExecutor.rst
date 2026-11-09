@@ -1,3 +1,5 @@
-.. autoclass:: async_anywhere.executors.singleton.SingletonEventLoopExecutor
+``SingletonEventLoopExecutor``
+==============================
+
+.. automodule:: async_anywhere.executors.singleton
     :members:
-    :exclude-members: __init__, __weakref__, __new__

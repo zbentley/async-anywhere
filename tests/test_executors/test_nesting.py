@@ -44,7 +44,7 @@ async def test_a_worker_can_use_one_made_in_its_parent_task():
 
         @inner.bridge
         async def where():
-            return inner.is_current_worker(), outer.is_current_worker()
+            return inner.is_current_executor(), outer.is_current_executor()
 
         @inner.bridge
         async def calls_back():
