@@ -2,4 +2,10 @@
 ==========================
 
 .. automodule:: async_anywhere.futures
-    :members:
+
+.. toctree::
+    :maxdepth: 2
+
+    awaitable
+    chain
+    fork_safety

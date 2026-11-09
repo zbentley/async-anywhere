@@ -2,11 +2,11 @@ import asyncio
 import concurrent.futures
 from concurrent.futures._base import CANCELLED_AND_NOTIFIED, FINISHED, PENDING, RUNNING
 from math import isinf
-from threading import Condition
+from threading import Condition, Thread
 from time import monotonic
-from typing import Any, Awaitable, Callable, Self
+from typing import Any, Awaitable, Callable, Self, Collection
 
-from async_anywhere._util import AnyEventLoop, BlockingChecker, BlockingEnvironments, BlockingNotAllowed, futures_logger
+from async_anywhere._util import AnyEventLoop, BlockingChecker, BlockingNotAllowed, futures_logger
 from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.futures import _fork_safety
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
@@ -37,39 +37,14 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
       complete it) into an error. See the ``prevent_blocking_wait_when`` constructor parameter for more information.
     - Unified and configurable cancellation behavior across asynchronous and synchronous waiters. This
       improves on the underspecified and inconsistent semantics regarding cancellation of
-      :py:class:`concurrent.futures.Future` and :py:class:`asyncio.Future`.
+      linked :py:class:`concurrent.futures.Future`\ s and :py:class:`asyncio.Future`\ s.
     - Significantly improved performance and reduced locking compared to :py:class:`concurrent.futures.Future`.
     - Fork-safety: documented and configurable semantics regarding the behavior of incomplete ``AwaitableFuture``
-      objects in the presence of :py:func:`os.fork`; see below.
+      objects in the presence of :py:func:`os.fork`; see :ref:`future_fork_safety`.
     - Several other convenience methods to save code for common future-related tasks.
     - :term:`Completing` an ``AwaitableFuture`` on a running event loop's thread also completes any
       :py:class:`asyncio.Future`-like objects that are linked to it at once, rather than in a later loop tick (which is
       what :py:func:`asyncio.wrap_future` does).
-
-    Fork Safety:
-    ^^^^^^^^^^^^
-
-    Stdlib Future-like primitives have several problems related to ``fork(2)``:
-
-    - In child processes created by :py:func:`os.fork`, :py:class:`concurrent.futures.Future`\ s can easily become
-      deadlocked and/or corrupt all future calls to :py:func:`concurrent.futures.wait` or
-      :py:func:`concurrent.futures.as_completed`.
-    - Neither :py:class:`asyncio.Future` nor any other awaitable primitive allows waits to occur on the far side of a
-      forked process boundary.
-    - Done callbacks added via ``add_done_callback`` can run twice (once in the parent and once in the child) when
-      when added to futures that are interacted with on both sides of a ``fork(2)``.
-
-    This class addresses all of those issues:
-
-    - ``AwaitableFuture``\ s will never deadlock or break ``concurrent.futures`` code after fork.
-    - ``AwaitableFuture``\ s can be blocked on or ``await``\ ed from any process. However, results aren't
-      transmitted across process boundaries, so, depending on what you're using futures for, results may never
-      arrive. Still, a cancellable ``await`` or time-outable blocking wait are much preferable to an uninterruptible
-      deadlock after ``fork(2)`` caused by ``concurrent.futures.Future``\ 's internal condition lock corruption.
-    - ``AwaitableFuture``\ s can be configured to cancel themselves immediately when forked into a child process,
-      to prevent easy-to-make mistakes.
-    - :py:func:`AwaitableFuture.add_done_callback` can configure callbacks to always (or never) run in forked child
-      processes.
 
     """
 
@@ -103,7 +78,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         self,
         *,
         # TODO fix doc type hint
-        prevent_blocking_wait_when: BlockingEnvironments | None = None,
+        prevent_blocking_wait_when: Collection[asyncio.AbstractEventLoop | Thread] | None = None,
         ignore_cancel: bool = False,
         cancel_pending_in_forked_child: bool = False,
         transform_result: Callable[[Any], T] | None = None,
@@ -154,7 +129,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             cancel_pending_in_forked_child: if True, this future will automatically be cancelled in any child
                 process created by :py:func:`os.fork` if it is not yet :term:`completed`. If False, this future can
                 still be safely waited on after a fork, in the child process (though it may never complete, depending on
-                what you are using it for).
+                what you are using it for). See :ref:`future_fork_safety`.
             transform_result: a callable which will be called with the arguments of :py:func:`set_result`, whenever
                 ``set_result`` is called. The value returned from that call will be stored as the future's result.
 
@@ -463,7 +438,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         r"""
         Adds a callback which will be called when this future :term:`complete`\ s, and which is called immediately, here,
         if it already has. Like :py:func:`concurrent.futures.Future.add_done_callback`, but with some additional
-        behavior: fork awareness, identifier return tokens, and improved exception semantics.
+        behavior: :ref:`fork awareness <future_fork_safety>`, identifier return tokens, and improved exception semantics.
 
         Args:
             fn: The function to be called. Must accept one argument, which will always be the invocant.
@@ -490,7 +465,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
                 :py:func:`os.fork`\ ed off of the one that created this ``AwaitableFuture``. Depending on how this
                 future is used across processes, and on the value of the ``cancel_pending_in_forked_child`` constructor
                 parameter, this may cause a done callback to run more than once (which doesn't mean "twice"!).
-                Defaults to False.
+                Defaults to False. See :ref:`future_fork_safety`.
             raise_if_failed_immediately: When done callbacks on ``AwaitableFuture``\ s and
                 ``concurrent.futures.Future``\ s raise :py:class:`Exception`\ s, those exceptions are not raised to
                 any calling code and are logged to the console. If this parameter is True and ``add_done_callback`` is

@@ -21,6 +21,7 @@ API
 
     *
     executors/index
+    futures/index
 
 .. |attrs| replace:: ``attrs``
 .. _attrs: https://www.attrs.org/en/stable/

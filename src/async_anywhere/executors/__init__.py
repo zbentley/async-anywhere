@@ -7,20 +7,19 @@ from datetime import timedelta
 from functools import cached_property, partial, update_wrapper
 from inspect import isawaitable
 from threading import Thread, current_thread, main_thread, RLock
-from typing import Any, Callable, ClassVar, Coroutine, Literal, ParamSpec, TypeVar, final, overload
+from typing import Any, Callable, ClassVar, Coroutine, Literal, ParamSpec, TypeVar, final, Collection
 from weakref import WeakKeyDictionary
 
-from sniffio import current_async_library_cvar
 from attrs import Factory, define, field, setters, validators
+from sniffio import current_async_library_cvar
 
-from async_anywhere._util import BlockingChecker, BlockingEnvironments, validate_coroutine_function
+from async_anywhere._util import BlockingChecker, validate_coroutine_function
 from async_anywhere.exceptions import CleanStop, WorkerBroken, WorkerInterrupted, WorkerStopped, WorkerForked
 from async_anywhere.executors import _fork_safety
 from async_anywhere.executors._timer import Timer
 from async_anywhere.futures import AwaitableFuture
 from async_anywhere.state_tracker import State
 from async_anywhere.state_tracker.waitable import WaitableStateTracker
-
 
 # Not PEP 695 type params, which Sphinx mistakes for typing's own TypeVars and drops from docs. TODO: file Sphinx bug
 _P = ParamSpec("_P")
@@ -390,7 +389,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         return self._thread is main_thread()
 
     def wait_for_state(
-        self, state: State, *states: State, prevent_blocking_wait_when: BlockingEnvironments | None = None, **kwargs
+        self, state: State, *states: State, prevent_blocking_wait_when: Collection[asyncio.AbstractEventLoop | Thread] | None = None, **kwargs
     ):
         """Behaves identically to :py:func:`WaitableStateTracker.wait_for_state`, with the added invariant that
         attempting to block on the returned :py:class:`AwaitableFuture` from within the executor's own event
