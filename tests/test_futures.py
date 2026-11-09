@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+import traceback
 import weakref
 
 import anyio
@@ -316,6 +317,15 @@ def test_what_it_raises_doesnt_hold_it(method, finish, raises):
         assert freed() is None and raised.value is not None
     finally:
         gc.enable()
+
+
+@pytest.mark.parametrize("method", ["result", "raise_if_failed"])
+def test_raising_its_exception_again_restarts_from_the_traceback_it_was_set_with(method):
+    with pytest.raises(ValueError) as original:
+        raise ValueError
+    (future := AwaitableFuture()).set_exception(original.value)
+    first, again = (traceback.extract_tb(pytest.raises(ValueError, getattr(future, method)).tb) for _ in range(2))
+    assert len(first) == len(again) and again[-1].line == "raise ValueError"
 
 
 @pytest.mark.parametrize("method", ["result", "exception"])

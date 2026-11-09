@@ -71,9 +71,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         '_cancel_pending_in_forked_child',
         '_transform_result',
         '_completed_at',
-        # Its done callbacks by token, in the order added (those with a ForkAllowedDoneCallbackToken run in a forked
-        # process), dropped once they've run, and concurrent.futures.wait()'s and as_completed()'s waiters: both changed
-        # only under _condition
+        '_exception_tb', # See set_exception()
         '_done_callbacks',
         '_waiters',
     )
@@ -169,6 +167,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         self._transform_result = transform_result
         self._completed_at: float | None = None
         self._done_callbacks: dict[_DoneCallbackToken, Callable[[Self], Any]] = {}
+        self._exception_tb = None
 
         # Mutated only by code in concurrent.futures.wait() and .as_completed(). Contains opaque objects installed and
         # removed by those methods.
@@ -328,7 +327,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
             match state:
                 case self.Succeeded if expect_success: return data
                 case self.Succeeded: return None
-                case self.Failed if expect_success: raise data
+                case self.Failed if expect_success: raise data.with_traceback(self._exception_tb)
                 case self.Failed: return data
                 case self.Cancelled: raise concurrent.futures.CancelledError
             if self._blocking_checker is not None and (timeout is None or timeout > 0):  # Else it only polls
@@ -589,7 +588,17 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
             Not meaningful/reserved for future use.
 
         """
-        self._transition(self.Failed, exception)
+        # Raising an exception that already has a traceback adds that raise's frames to it, rather than replacing it.
+        # Because of that, every raise from a failed future adds its frames to its one exception, forever.
+        # A failed future awaited by many tasks, or polled or retried in a loop, ends up with a miles-long traceback
+        # and a ton of memory bloat as a result. concurrent.futures.Future has this problem in the stdlib, though
+        # asyncio.Future/Task do not.
+        # To avoid that condition, we store and always re-raise from the original traceback that was recieved by
+        # set_exception().
+        with self._condition: # Recursive lock, so _transition works within it
+            if not self._last_transition[1].terminal:
+                self._exception_tb = exception.__traceback__
+            self._transition(self.Failed, exception)
         self._invoke_callbacks()
 
     def raise_if_failed(self):
@@ -602,7 +611,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         Takes out no locks.
         """
         if error := self.exception_or_none():
-            raise error
+            raise error.with_traceback(self._exception_tb)
         if self.state is self.Cancelled:
             raise concurrent.futures.CancelledError
 
