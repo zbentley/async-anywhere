@@ -39,3 +39,15 @@ Glossary
         (as pertains to :term:`code in an executor`)
 
         Call ``.cancel()`` on an asyncio.Task running in an executor. See :ref:`interruption` for details.
+
+    complete
+    completed
+    completing
+        (as pertains to :py:class:`AwaitableFuture`, :py:class:`asyncio.Future`, :py:class:`asyncio.task`, or :py:class:`concurrent.futures.Future`)
+
+        Mark a future or task as done by doing exactly one of:
+        - Cancelling it.
+        - Setting its result.
+        - Setting its exception.
+
+        A task/future is completed if ``future.done() == True``.

@@ -23,48 +23,54 @@ class _ForkAllowedDoneCallbackToken(_DoneCallbackToken):
 
 
 class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T]):
-    """A concurrent.futures.Future subclass that can also be awaited. Provides the following behaviors:
+    r"""A future that can be waited on by synchronous *or* asynchronous code; acts like a hybrid of
+    :py:class:`concurrent.futures.Future` and :py:class:`asyncio.Future`.
 
-    - Calling "await AwaitableFuture(...)" can be done from any thread, ``asyncio`` event loop context, or trio task.
-    - If an AwaitableFuture has already completed, "await"ing it is significantly cheaper than "await"ing an
-      asyncio.Future or using asyncio.wrap_future. TODO assess.
-    - Users can specify one or more event loops or threads (or AwaitableFuture.AnyEventLoop, for any running loop or
-      trio task, or AwaitableFuture.BlockingNotAllowed, for anywhere) within which blocking wait methods inherited from
-      concurrent.futures.Future (e.g. fut.result(timeout=10)) will fail immediately, raising WouldBlock, if the invoking
-      AwaitableFuture is not done. This turns a common cause of deadlocks (erroneously synchronously waiting for an
-      incomplete future on the loop which was intended to complete it) into an error. Polls (with a timeout of 0 or
-      less), which can't block, are never refused.
-    - Several other convenience methods to save on common future-related code.
-    - Cancelling awaits on this class or asyncio.Futures provided by it immediately cancels the underlying
-      concurrent.futures.Future, rather than postponing cancellation until a later event loop iteration as CPython does.
-    - Finishing it on a running event loop's thread finishes the asyncio.Futures it provided on that loop at once, rather
-      than in a later loop iteration as asyncio.wrap_future()'s are.
-    - With ignore_cancel=True, cancel() is refused (returns False), and waiters giving up leave it, and its other
-      waiters, alone.
-    - completed_at is the time.monotonic() time at which it finished (with a result, an exception, or cancellation), or
-      None until then. Its trio futures and asyncio.Futures have none.
-    - Its done callbacks only ever run in the process that added them, as concurrent.futures.Future documents of its
-      own (but doesn't ensure across fork(2)), unless added with run_in_forked_child=True. In a forked process, one
-      that hadn't finished is left pending, as a concurrent.futures.Future would be, unless made with
-      cancel_pending_in_forked_child=True, which cancels it there: see _fork_safety.
-    - With transform_result (None by default), set_result() (and so set_result_if_not_done()) resolves it with
-      transform_result(result) rather than with result itself. It must be pure and run in constant time, as it runs on
-      whichever thread finishes the future, before it has. If it raises, the future fails with what it raised, which
-      set_result() raises too.
+    Provides the following behaviors:
 
-    With ignore_cancel=True, waiters giving up (as asyncio.wait_for(), asyncio.timeout(), TaskGroups, and trio's and
-    anyio's cancel scopes make them) still do so at once, leaving it pending, as asyncio.shield() would. But cancel() is
-    refused for everyone, its owner included: it returns False while neither running() nor done(), which a plain
-    concurrent.futures.Future's never does, and most code ignores what cancel() returns. So:
+    - Calling "await AwaitableFuture(...)" can be done from any thread, ``asyncio`` event loop context, or Trio task.
+    - Synchronous waits with an optional timeout can be performed via :py:func:`AwaitableFuture.result` or
+      :py:func:`AwaitableFuture.exception`.
+    - Any number of event loops, async tasks, or threads can wait on an ``AwaitableFuture`` simultaneously.
+    - Users can specify threads or event loops upon which blocking waits are not allowed. This turns a common cause
+      of deadlocks (erroneously synchronously waiting for an incomplete future on the loop which was intended to
+      complete it) into an error. See the ``prevent_blocking_wait_when`` constructor parameter for more information.
+    - Unified and configurable cancellation behavior across asynchronous and synchronous waiters. This
+      improves on the underspecified and inconsistent semantics regarding cancellation of
+      :py:class:`concurrent.futures.Future` and :py:class:`asyncio.Future`.
+    - Significantly improved performance and reduced locking compared to :py:class:`concurrent.futures.Future`.
+    - Fork-safety: documented and configurable semantics regarding the behavior of incomplete ``AwaitableFuture``
+      objects in the presence of :py:func:`os.fork`; see below.
+    - Several other convenience methods to save code for common future-related tasks.
+    - :term:`Completing` an ``AwaitableFuture`` on a running event loop's thread also completes any
+      :py:class:`asyncio.Future`-like objects that are linked to it at once, rather than in a later loop tick (which is
+      what :py:func:`asyncio.wrap_future` does).
 
-    - Cancelling it, then waiting for it (with concurrent.futures.wait(), asyncio.wait(), or asyncio.gather(), as
-      teardown code does for tasks) waits until it's finished some other way, if ever. To abort it, set an exception
-      instead: a concurrent.futures.CancelledError reaches asyncio waiters already waiting as asyncio.CancelledError,
-      but is raised as is to those that await it once it's done.
-    - Some ways of waiting with a timeout leave a registration on it per wait, until it finishes: asyncio.wait() leaves
-      each as_async_future() it's given (each logging "exception was never retrieved" if this one fails), and
-      asyncio.wait_for(asyncio.wrap_future(...)) a callback, as it does on a running executor job's future.
-      Awaiting it, or as_async_future(), under asyncio.wait_for() or asyncio.timeout() leaves nothing behind.
+    Fork Safety:
+    ^^^^^^^^^^^^
+
+    Stdlib Future-like primitives have several problems related to ``fork(2)``:
+
+    - In child processes created by :py:func:`os.fork`, :py:class:`concurrent.futures.Future`\ s can easily become
+      deadlocked and/or corrupt all future calls to :py:func:`concurrent.futures.wait` or
+      :py:func:`concurrent.futures.as_completed`.
+    - Neither :py:class:`asyncio.Future` nor any other awaitable primitive allows waits to occur on the far side of a
+      forked process boundary.
+    - Done callbacks added via ``add_done_callback`` can run twice (once in the parent and once in the child) when
+      when added to futures that are interacted with on both sides of a ``fork(2)``.
+
+    This class addresses all of those issues:
+
+    - ``AwaitableFuture``\ s will never deadlock or break ``concurrent.futures`` code after fork.
+    - ``AwaitableFuture``\ s can be blocked on or ``await``\ ed from any process. However, results aren't
+      transmitted across process boundaries, so, depending on what you're using futures for, results may never
+      arrive. Still, a cancellable ``await`` or time-outable blocking wait are much preferable to an uninterruptible
+      deadlock after ``fork(2)`` caused by ``concurrent.futures.Future``\ 's internal condition lock corruption.
+    - ``AwaitableFuture``\ s can be configured to cancel themselves immediately when forked into a child process,
+      to prevent easy-to-make mistakes.
+    - :py:func:`AwaitableFuture.add_done_callback` can configure callbacks to always (or never) run in forked child
+      processes.
+
     """
 
     # Running is as an executor's job is once started, which can't be cancelled. Once done, it never transitions again.
@@ -96,11 +102,77 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     def __init__(
         self,
         *,
+        # TODO fix doc type hint
         prevent_blocking_wait_when: BlockingEnvironments | None = None,
         ignore_cancel: bool = False,
         cancel_pending_in_forked_child: bool = False,
         transform_result: Callable[[Any], T] | None = None,
     ):
+        r"""
+        Cancelling ``await``\ s on this class or on :py:class:`asyncio.Future`-like objects produced by it
+        *immediately* cancels the underlying :py:class:`concurrent.futures.Future` (if cancellation is allowed; see
+        ``ignore_cancel`` below), rather than postponing cancellation until a later event loop iteration as the
+        stdlib does.
+
+        Args:
+            prevent_blocking_wait_when: a Collection of :py:class:`asyncio.AbstractEventLoop`\ s or
+                :py:class:`threading.Thread`\ s, or None. When a collection is passed, this future refuses to be blocked
+                on from callers in it: when :py:func:`result` is called from one of those loops or threads and this
+                future is incomplete, an error will be raised instead of allowing ``.result()`` to synchronously block.
+
+                This is provided purely for convenience, since "accidental blocking waits in an event loop" is a very
+                easy defect to accidentally introduce.
+
+                Only weak references to supplied event loops and threads are tracked internally.
+
+                If None or an empty collection is passed, no blocking-allowed checks are performed.
+            ignore_cancel: If True, calls to :py:func:`cancel` this future or its descendants from asynchronous or
+                synchronous code will return False and the future will not enter the cancelled state. If False,
+                cancellation behavior is the same as the behavior of futures in the stdlib.
+
+                :py:class:`asyncio.Future`\ s can be :py:func:`asyncio.shield`\ ed to deflect cancellations, but
+                :py:class:`concurrent.futures.Future`\ s have no equivalent functionality. This parameter unifies that
+                behavior: ``AwaitableFuture``\ s with ``ignore_cancel=True`` behave as though ``asyncio.shield``\ ed
+                when waited upon.
+
+                Note:
+                    ``ignore_cancel=True``\ 's behavior may cause unexpected side effects:
+
+                    - Some code in the stdlib that waits on futures (like :py:func:`concurrent.futures.wait`,
+                      :py:func:`asyncio.wait`, and :py:func:`asyncio.gather`) will do the "correct" thing and, after
+                      calling ``.cancel()`` on a future, wait for it to complete. With ``ignore_cancel=True`` set, those
+                      functions will then wait forever (or until the ``AwaitableFuture`` is completed some other way).
+                    - Some *other* code in the stdlib (e.g. :py:class:`asyncio.TaskGroup`, :py:func:`asyncio.wait`, and
+                      :py:func:`asyncio.timeout`) internally repeatedly converts arguments to `asyncio.Future`\ s and
+                      attaches callbacks to them. If passed an ``AwaitableFuture`` with ``ignore_cancel=True``, such
+                      functions may internally create a large number of never-completed transient wrapper futures,
+                      which will take up memory, and will lead to many spurious "exception was never retrieved" logs
+                      when the wrapping/waiting function finally completes. If you encounter this behavior or need to
+                      use troublesome stdlib future-wrapping functions with ``ignore_cancel=True``, pass the result of
+                      :py:func:`as_async_future` to those functions directly.
+
+            cancel_pending_in_forked_child: if True, this future will automatically be cancelled in any child
+                process created by :py:func:`os.fork` if it is not yet :term:`completed`. If False, this future can
+                still be safely waited on after a fork, in the child process (though it may never complete, depending on
+                what you are using it for).
+            transform_result: a callable which will be called with the arguments of :py:func:`set_result`, whenever
+                ``set_result`` is called. The value returned from that call will be stored as the future's result.
+
+                Warning:
+                    ``transform_result`` may be called:
+
+                    - From any thread, process, or event loop.
+                    - Any number of times for the same result value.
+                    - Even if a result cannot be successfully set (e.g. if the future is already completed).
+
+                    If ``transform_result`` raises an error,  :py:func:`set_result` will fail and
+                    :py:func:`set_exception` will be called with the error instead.
+
+                    Because of this, code in ``transform_result`` must never block, should perform as few OS
+                    interactions as possible, should avoid raising exceptions, and should ideally be as close to a pure
+                    (and pure Python) constant-time function as possible.
+
+        """
         # NB: we're deliberately not calling concurrent.future.Future's super().__init__. We replace basically all of
         # that class's internals, and subclass it only to satisfy isinstance() checks performed by stdlib. This class's
         # observable behavior contract (which, per the stdlib's documented warning, is NOT limited to public methods)
@@ -153,32 +225,83 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
 
     @property
     def completed_at(self) -> float | None:
+        """Returns the timestamp at which this future was completed, or None if it has not yet completed.
+
+        The timestamp returned is a monotonic floating point value that does not necessarily correspond to the system
+        time; see :py:func:`time.monotonic` for details.
+
+        Takes out no locks if this future has already completed.
+
+        Note:
+            This function does *not* return the timestamp according to the event loop (if any) that was running when
+            a future was completed. However, many/most implementations of :py:func:`AbstractEventLoop.time` return
+            values from the same monotonic clock used by this class, so the two values are often safe to compare.
+        """
+        # Optimistically avoid the lock, since it only gets set once.
+        if (completed_at := self._completed_at) is not None:
+            return completed_at
         with self._condition:  # Set just after it finishes, under this: so it's set for anyone who has seen it done
             return self._completed_at
 
     def as_async_future(
         self, loop: asyncio.AbstractEventLoop | None = None, require_running_loop=True
     ) -> asyncio.Future[T] | Awaitable[T]:
+        r"""
+        Returns an :py:class:`asyncio.Future` or Trio awaitable linked to the invocant such that it can be waited on
+        for the invocant's result, or cancelled such that both it and the invocant are cancelled.
+
+        For advanced use-cases only; most code can just ``await AwaitableFuture(...)`` and get the same behavior.
+
+        Use this method if your code needs to handle native asyncio futures, or objects for which
+        :py:func:`asyncio.isfuture` is true. While ``AwaitableFuture`` is, as the name suggests, *awaitable*, it is not
+        recognized by ``asyncio`` as an async *Future*, just an awaitable. This method may be useful in cases like:
+
+        - You want to pass an ``AwaitableFuture`` to stdlib methods that themselves automatically wrap things that are
+          not ``asyncio.Future``\ s in ``asyncio.Future``\ s, but don't want wrapping to reoccur each time you pass
+          this class into those functions (for example, you might want to rely on the identity of objects returned by
+          functions like :py:func:``asyncio.wait``).
+        - You want to pre-construct an ``asyncio.Future`` attached to a different event loop elsewhere in your program
+          (that may or may not be running).
+        - You want to maximize performance of ``await``\ ing on completed ``AwaitableFuture``\ s on a specific event
+          loop (this method is slightly faster than regular ``await AwaitableFuture(..)``, but not much).
+
+        Args:
+            loop: The event loop to which the returned :py:class:`asyncio.Future` should be bound, or None. If None,
+                either Trio will be used (if it is running) or the current asyncio event loop will be used.
+            require_running_loop: If ``loop`` is supplied, or if ``loop`` is None and Trio is not active, the event loop
+                used for the returned ``asyncio.Future`` must be running, otherwise an error will be raised by this
+                method. Just for convenience/runtime bug-checking, since it's easy in async Python to attach futures to
+                the wrong event loop or stopped event loops.
+
+        Raises:
+            ``RuntimeError`` if ``require_running_loop=True`` and ``loop`` (or the current event loop, if Trio is not
+            active) is not running.
+
+        Returns:
+            If ``loop`` is a non-Trio event loop or a non-Trio event loop is running, returns an
+            :py:class:`asyncio.Future` (*or subclass thereof*) that is linked to this ``AwaitableFuture`` and
+            attached to the specified event loop. Cancelling either future cancels the other.
+
+            Note:
+                The returned :py:class:`asyncio.Future` will does *not* support calls to ``set_result`` or
+                ``set_exception`` attempting to call either method will fail with an error; to set the result or
+                exception of the returned future, call :py:func:`set_result` or :py:func:`set_exception` on *this*
+                future instead.
+
+            If ``loop`` is None and Trio is running, returns an awaitable which can (only) be ``await``ed by the current
+            Trio context. The only additional public method on the Trio-compatible awaitable is ``.cancel()``, which
+            works like ``asyncio.Future.cancel`` and cancels the returned future-alike and this ``AwaitableFuture``.
+            Trio-returned futures cannot have a result or exception manually set.
+
+            Either return type, when awaited, produces the result, cancellation, or exception with which its "parent"
+            ``AwaitableFuture`` was completed.
+
+            Note:
+                The returned future may not be new/unique; use :py:func:`asyncio.wrap_future` on the result of this
+                method if your code requires a unique future.
         """
-        Returns an asyncio.Future that is linked to this AwaitableFuture on the specified event loop. Called in a trio
-        task with no loop given (anyio's on trio, or a trio guest run's on an asyncio loop, included), it returns its trio
-        counterpart for that run instead: awaitable, and cancellable, likewise, but not an asyncio.Future.
-
-        Note that the returned future may not be new/unique; use wrap_future on the result of this method if a unique
-        future is required.
-
-        Cancelling the returned future cancels this one, unless this one has already finished, in which case cancellation
-        is "refused" (the returned asyncio.Future's cancel() method returns False). If this one refuses cancellation while
-        pending (made with ignore_cancel=True, or running), only the returned future is cancelled, and this one lets go of
-        it.
-
-        :param loop: the event loop to which the returned future should be bound, or the current event loop if None.
-        :param require_running_loop: if True, a RuntimeError will be raised if the event loop to be used is not running or is closed.
-        :return: an asyncio.Future linked to the invocant.
-        """
-
         if loop is None:
-            if TrioRuntime.in_task():# TODO remove dot lookup
+            if TrioRuntime.in_task(): # TODO remove dot lookup
                 return TrioAwaitableFuture(self, TrioRuntime.current_token())
             loop = asyncio.get_running_loop() if require_running_loop else asyncio.get_event_loop()
         elif require_running_loop and loop.is_closed():
@@ -203,15 +326,37 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     # Lock-free reads of its state: it only ever moves forward, and a finished one's outcome never changes
 
     def done(self) -> bool:
+        """Returns True if this future has :term:`completed`, False otherwise.
+
+        Takes out no locks.
+        """
         return self._last_transition[1].terminal
 
     def cancelled(self) -> bool:
+        """Returns True if this future was :term:`completed` by being cancelled False otherwise.
+
+        Takes out no locks.
+        """
         return self._last_transition[1] is self.Cancelled
 
     def running(self) -> bool:
+        """Returns True if this future has *not* :term:`completed`, False otherwise.
+
+        Takes out no locks.
+        """
         return self.state is self.Running
 
     def cancel(self) -> bool:
+        """
+        Attempts to cancel this future.
+
+        Takes out no locks if this future has already completed.
+
+        Returns:
+            True if the cancellation was recieved/accepted, False otherwise (e.g. if the future has already
+            :term:`completed` or if ``ignore_cancel`` is True).
+        """
+
         # Lock-free unless it's pending, as Executor.map() cancels every future once it has its result
         if not self._ignore_cancel and self.state is self.Pending and self._cancel():
             return True
@@ -249,12 +394,64 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             del self, data
 
     def result(self, timeout: float | None = None) -> T:
+        """
+        Synchronously waits for this future's result, optionally with a timeout, like
+        :py:func:`concurrent.futures.Future.result` but with some additional behavior.
+
+        If this future has not yet :term:`completed` when this method is called, one of several things happens:
+
+        #. If timeout is zero, :py:class:`TimeoutError` is raised.
+        #. If any of the threads or event loops passed to the ``prevent_blocking_wait_when`` constructor parameter is
+           the thread or event loop running in the caller of this method, :py:class:`WouldBlock` is raised.
+        #. Otherwise, waits for ``timeout`` seconds for this future to complete. If it succeeds, its result is returned.
+           If it fails with an exception or is cancelled, that error is raised. If it doesn't complete in time,
+           :py:class:`TimeoutError` is raised.
+
+        Args:
+            timeout: Positive floating point number of seconds to wait for this future to complete, or None. If
+            ``timeout`` is None or positive infinity, waits forever. If ``timeout`` is zero, this method runs in
+            constant time.
+
+        Raises:
+            :py:class:`TimeoutError`: if waiting for completion times out.
+
+            :py:class:`WouldBlock`: if this future is incomplete *and* blocking is not allowed (per the
+                ``prevent_blocking_wait_when`` constructor parameter) on the calling event loop or thread *and*
+                ``timeout`` is greater than zero.
+
+            :py:class:`concurrent.futures.CancelledError`: if this future is cancelled before or during this method.
+
+            :py:class:`BaseException`: if this future was completed as failed via :py:func:`set_exception`.
+
+        Returns:
+            The value with which this future was completed via :py:func:`AwaitableFuture.set_result` if it doesn't fail,
+            isn't cancelled, and waiting for it to complete does not time out.
+        """
         try:
             return self._get_result(True, timeout)
         finally:
             del self
 
     def exception(self, timeout: float | None = None) -> BaseException | None:
+        """
+        Works just like :py:func:`AwaitableFuture.result`, but returns the exception with which this future was
+        :term:`completed`, if any.
+
+        Raises:
+            :py:class:`TimeoutError`: if waiting for completion times out.
+
+            :py:class:`WouldBlock`: if this future is incomplete  *and* blocking is not allowed (per the
+                ``prevent_blocking_wait_when`` constructor parameter) on the calling event loop or thread *and*
+                ``timeout`` is greater than zero.
+
+            :py:class:`concurrent.futures.CancelledError`: if this future is cancelled before or during this method.
+
+        Returns:
+            The value with which this future was completed via :py:func:`AwaitableFuture.set_exception` if it
+            isn't cancelled, and waiting for it to complete does not time out. Returns None if this future is completed
+            via :py:func:`AwaitableFuture.set_result` instead of :py:func:`AwaitableFuture.set_exception`.
+
+        """
         try:
             return self._get_result(False, timeout)
         finally:
@@ -262,15 +459,54 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
 
     def add_done_callback(
         self, fn: Callable[[Self], Any], run_in_forked_child: bool = False, raise_if_failed_immediately=False,
-    ) -> _DoneCallbackToken:
-        """As concurrent.futures.Future's, but with run_in_forked_child, fn runs in a process forked from this one too,
-        as the future finishes there: see _fork_safety. Returns a token for remove_done_callback() that removes just
-        this registration (one that, if this future has finished, has already run fn).
+    ) -> object:
+        r"""
+        Adds a callback which will be called when this future :term:`complete`\ s, and which is called immediately, here,
+        if it already has. Like :py:func:`concurrent.futures.Future.add_done_callback`, but with some additional
+        behavior: fork awareness, identifier return tokens, and improved exception semantics.
 
-        Warning:
-            fn mustn't raise a BaseException that isn't an Exception (KeyboardInterrupt or SystemExit, say). As with
-            concurrent.futures.Future, that propagates at once, out of whatever finished the future, and the callbacks
-            after fn never run: waiters that they would have woken (a thread, a task, another future) may wait for good.
+        Args:
+            fn: The function to be called. Must accept one argument, which will always be the invocant.
+
+                Warning:
+                    In ``async_anywhere`` and in ordinary ``concurrent.futures`` code, done callbacks should follow the
+                    below rules. If these rules are broken, unexpected and damaging behavior might occur, depending on
+                    context:
+
+                    - Done callbacks should not unduly block for more than a short, ideally constant, time.
+                    - Done callbacks should make *zero* assumptions about which thread or event loop they will be called
+                      from, and should assume that they can and will be called from unexpected contexts.
+                    - Done callbacks should never rase a :py:class:`BaseException` that isn't a :py:class:`Exception`:
+                      in ``concurrent.futures`` and in this code, doing so may abort and permanently orphan/never run
+                      all other callbacks attached to a given future. Numerous stdlib components may malfunction after
+                      e.g. :py:class:`SystemExit` is unexpectedly raised from a done callback. In the author's
+                      experience, :py:class:`KeyboardInterrupt` delivery during done callback execution (a scenario
+                      whose likelihood increases proportionally to the runtime duration of done callbacks in use) is
+                      highly likely to (potentially permanently/interpreter-wide) corrupt ``concurrent.futures.Future``
+                      and ``concurrent.futures.Executor`` states.
+
+
+            run_in_forked_child: If True, this done callback will run in a child (or grandchild) process
+                :py:func:`os.fork`\ ed off of the one that created this ``AwaitableFuture``. Depending on how this
+                future is used across processes, and on the value of the ``cancel_pending_in_forked_child`` constructor
+                parameter, this may cause a done callback to run more than once (which doesn't mean "twice"!).
+                Defaults to False.
+            raise_if_failed_immediately: When done callbacks on ``AwaitableFuture``\ s and
+                ``concurrent.futures.Future``\ s raise :py:class:`Exception`\ s, those exceptions are not raised to
+                any calling code and are logged to the console. If this parameter is True and ``add_done_callback`` is
+                being called on an already :term:`completed` ``AwaitableFuture``, any errors raised by the supplied
+                done callback will be raised, rather than logged. Defaults to False.
+
+        Raises:
+            :py:class:`Exception`: if this future has completed *and* ``raise_if_failed_immediately=True`` *and* ``fn``
+            raises an ``Exception`` when this method calls it.
+
+            :py:class:`BaseException`: if this future has completed *and* ``fn`` raises a non-``Exception``
+                ``BaseException`` when this method calls it.
+
+        Returns:
+            An opaque token which can be passed to :py:func:`AwaitableFuture.remove_done_callback` to remove ``fn`` from
+            the future's scheduled callbacks.
         """
         token = _ForkAllowedDoneCallbackToken() if run_in_forked_child else _DoneCallbackToken()
         with self._condition:
@@ -286,11 +522,28 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         return token
 
     def remove_done_callback(
-        self, fn_or_token: Callable[[Self], Any] | _DoneCallbackToken
+        self, fn_or_token: Callable[[Self], Any] | object
     ) -> int:
-        """Removes the registration add_done_callback() returned a token for, or every registration of a function, while
-        this future hasn't finished, returning how many were removed. Once it has, its callbacks have run, or are
-        running, so this returns 0."""
+        r"""
+        Unschedules a callback added via :py:func:`AwaitableFuture.add_done_callback` from the set of functions to be
+        run when this future :term:`complete`\ s.
+
+        Args:
+            fn_or_token: If given the return value from an invocation of :py:func:`AwaitableFuture.add_done_callback`,
+                the callback scheduled by that invocation will be removed, if it exists. If given a function/callable,
+                *all* instances of that callable scheduled as done callbacks will be removed.
+
+        Returns:
+            A non-negative integer representing the number of callbacks removed.
+
+            Note:
+                If a positive value is returned by this function, it means that the specified callback *did not and
+                will not* run. However, the converse isn't true: if this function returns 0, that might
+                mean that the callback already ran; it might mean that the callback wasn't found; and it might mean
+                that the callback is *about* to run, because this method races with the removal of callbacks that
+                occurs when a future is completed.
+        """
+
         if self._last_transition[1].terminal:
             return 0
         keep = []
@@ -331,6 +584,11 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     # For executors
 
     def set_running_or_notify_cancel(self) -> bool:
+        """
+        See :py:func:`concurrent.futures.Future.set_running_or_notify_cancel`.
+
+        This function should generally not be called by user code, and is intended for stdlib-only internal use.
+        """
         # cancel() has notified concurrent.futures' waiters already: so this just refuses a cancelled future, each time
         with self._condition:
             if self.cancelled():
@@ -339,6 +597,27 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         return True
 
     def set_result(self, result: T):
+        """
+        Attempts to set the successful result of this future, :term:`completing` it and any futures derived from it.
+
+        If the ``transform_result`` constructor parameter was passed, that function will be run on the supplied value
+        before storing it. If that function raises an error, that error will be set on this future via
+        :py:func:`set_exception` and will then be raised to the caller.
+
+        Args:
+            result: The result value to store.
+
+        Raises:
+            :py:class:`StateTrackerError`: if the future has already been completed elsewhere. Note that
+                ``StateTrackerError`` subclasses :py:class:`asyncio.InvalidStateError` and
+                :py:class:`concurrent.futures.InvalidStateError` for compatibility.
+
+            :py:class:`BaseException`: If this future is not done *and* ``transform_result`` is set *and* the
+                ``transform_result`` callable raises an error.
+
+        Returns:
+            Not meaningful/reserved for future use.
+        """
         if self._transform_result is not None:
             try:
                 result = self._transform_result(result)
@@ -350,21 +629,60 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         self._invoke_callbacks()
 
     def set_exception(self, exception: BaseException):
+        r"""
+        Works just like :py:func:`set_result`, but stores an exception and :term:`complete`\ s this future as "failed
+        with an error".
+
+        Warning:
+            Storing non-:py:class:`Exception` :py:class:`BaseException`\ s is dangerous and not recommended. This can
+            cause problems, since many ``BaseException``\ s change interpreter behavior when they are raised (e.g.
+            :py:class:`asyncio.CancelledError` or :py:class:`SystemExit`), and can, once stored, be raised from
+            unexpected places in code that calls :py:func:`result`.
+
+        Args:
+            exception: The exception to store.
+
+        Raises:
+            :py:class:`StateTrackerError`: if the future has already been completed elsewhere. Note that
+                ``StateTrackerError`` subclasses :py:class:`asyncio.InvalidStateError` and
+                :py:class:`concurrent.futures.InvalidStateError` for compatibility.
+
+        Returns:
+            Not meaningful/reserved for future use.
+
+        """
         self._transition(self.Failed, exception)
         self._invoke_callbacks()
 
     def raise_if_failed(self):
-        """If this future was completed with an error, raise that error.
-        If this future was cancelled, raise CancelledError."""
+        """If this future was :term:`completed` with an error via :py:func:`set_exception`, raise that error.
+
+        If this future was cancelled, raise CancelledError.
+
+        Otherwise, does nothing.
+
+        Takes out no locks.
+        """
         if error := self.exception_or_none():
             raise error
         if self.state is self.Cancelled:
             raise concurrent.futures.CancelledError
 
     def set_result_if_not_done(self, result: T) -> bool:
-        """Sets this future's completion state to "success", with the supplied value.
-        Returns False if the future was already completed or cancelled.
-        Returns True if the result was saved on the future.
+        r"""If this future is not done, calls :py:func:`set_result` with the supplied value.
+
+        Takes out no locks if the future has already completed.
+
+        Args:
+            result: See :py:func:`set_result`.
+
+        Returns:
+            True if ``result`` was stored via ``set_result``. False if the future was :term:`completed` from elsewhere.
+
+        Raises:
+            Any exception raised by ``transform_result``, if it was passed to the constructor.
+
+
         """
         if self._last_transition[1].terminal:  # Lock-free, so cheaper than the raise below
             return False
@@ -378,9 +696,15 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             raise
 
     def set_exception_if_not_done(self, exception: BaseException) -> bool:
-        """Sets this future's completion state to "failed", with the supplied error.
-        Returns False if the future was already completed or cancelled.
-        Returns True if the error was saved on the future.
+        r"""If this future is not done, calls :py:func:`set_exception` with the supplied value.
+
+        Takes out no locks if the future has already completed.
+
+        Args:
+            exception: See :py:func:`set_exception`.
+
+        Returns:
+            True if ``exception`` was stored via ``set_exception``. False if the future was :term:`completed` from elsewhere.
         """
         if self._last_transition[1].terminal:
             return False
@@ -390,19 +714,28 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         except concurrent.futures.InvalidStateError:
             return False
 
-    def result_or_none(self) -> T | None:
-        """Returns the result of this future if it is done.
-        Returns None if the future is still running, failed, or was cancelled.
-
-        If your future was completed with the value None, this method is likely not useful (use .result(timeout=0) and
-        handle the error instead).
-        """
-        _, state, data = self._last_transition
-        return data if state is self.Succeeded else None
 
     def exception_or_none(self) -> BaseException | None:
         """Returns this future's exception if it failed with an error.
-        Returns None if the future is still running, was cancelled, or completed without an exception.
+
+        Returns None if the future is not done, was cancelled, or :term:`completed` without an exception.
+
+        Takes out no locks.
         """
         _, state, data = self._last_transition
         return data if state is self.Failed else None
+
+
+    def result_or_none(self) -> T | None:
+        """Returns the result of this future if it is done.
+
+        Returns None if the future is not done, failed, or was cancelled.
+
+        Takes out no locks.
+
+        Note:
+            If your future can be successfully :term:`completed` with the value ``None``, this method is likely not
+            useful (use :py:func:`result()` with ``timeout=0`` and handle the error instead).
+        """
+        _, state, data = self._last_transition
+        return data if state is self.Succeeded else None

@@ -185,6 +185,13 @@ async def test_cancelling_an_async_future_cancels_the_future():
     assert future.cancelled()  # At once, so it can't finish first, leaving the async future cancelled though it isn't
 
 
+async def test_async_futures_cant_be_finished_but_by_the_future():
+    waiting = AwaitableFuture().as_async_future()
+    for finish in waiting.set_result, waiting.set_exception:
+        with pytest.raises(RuntimeError, match="not allowed"):
+            finish(ValueError())
+
+
 def test_async_futures_need_a_running_loop_unless_told_otherwise():
     future = AwaitableFuture()
     with pytest.raises(RuntimeError):
