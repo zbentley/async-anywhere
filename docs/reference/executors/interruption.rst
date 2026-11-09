@@ -12,7 +12,7 @@ variety of situations, listed below.
     Interruptions can be sent to the same :py:obj:`asyncio.Task` more than once, both due to the user requesting
     interruption repeatedly or the executor harness cancelling code while stopping due to a failure.
 
-    For example a cancellation is sent to the main task and running bridge jobs `each` time
+    For example a cancellation is sent to the main task and running jobs `each` time
     ``shutdown(cancel_futures=True)`` is called. This can lead to code receiving multiple cancellation events.
 
 .. note::
@@ -40,17 +40,17 @@ Main task Cancellation
 
 An executor's :term:`main task` is interrupted in these situations:
 
-- The idle timeout expires (which means the executor is running no other jobs and has been idle for that amount of time).
+- The idle timeout expires (which means the executor is running no jobs and has been idle for that amount of time).
 - ``EventLoopExecutor.shutdown(cancel_futures=True)`` is called.
 - ``EventLoopExecutor.shutdown(cancel_futures=False)`` is called, once no in-progress :term:`job`\ s are running. This
-  interruption will only be sent to the parent task once, and will only be sent if that task has not been interrupted
+  interruption will only be sent to the main task once, and will only be sent if that task has not been interrupted
   for any other reason.
 - The executor finishes :ref:`shutting down <stopping>`, if tasks have not completed in response to prior interruptions.
 
-Non-job/non-parent-task Cancellation
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Non-job/non-main-task Cancellation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Non-:term:`job` ``asyncio.Task``\ s created inside the executor (e.g. via executor code using :py:func:`asyncio.shield` or
+Non-:term:`job`, non-:term:`main task` ``asyncio.Task``\ s created inside the executor (e.g. via executor code using :py:func:`asyncio.shield` or
 un-awaited/backgrounded :py:obj:`asyncio.Task`\ s) are interrupted in these situations:
 
 - User code supervising a Task triggers an ordinary cancellation, as with normal async Python programming.

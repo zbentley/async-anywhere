@@ -148,12 +148,12 @@ class StopsItself(Works):
 @pytest.mark.parametrize(
     "cls, end, kind, text, cause",
     [
-        (Works, lambda runloop: runloop.set_result(None), CleanStop, "(interrupted) parent task returned", type(None)),
+        (Works, lambda runloop: runloop.set_result(None), CleanStop, "(interrupted) main task returned", type(None)),
         (
             Works,
             lambda runloop: runloop.set_exception(ValueError("boom")),
             EventLoopExecutorStopped,
-            "(interrupted) parent task raised ValueError('boom')",
+            "(interrupted) main task raised ValueError('boom')",
             ValueError,
         ),
         (

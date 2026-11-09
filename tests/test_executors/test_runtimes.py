@@ -263,8 +263,8 @@ async def test_parent_tasks_can_run_trio_as_a_guest():
 @pytest.mark.parametrize(
     "end, kind, text",
     [
-        (lambda: None, CleanStop, "(idle) parent task returned"),
-        (lambda: 1 / 0, EventLoopExecutorStopped, "(idle) parent task raised ZeroDivisionError('division by zero')"),
+        (lambda: None, CleanStop, "(idle) main task returned"),
+        (lambda: 1 / 0, EventLoopExecutorStopped, "(idle) main task raised ZeroDivisionError('division by zero')"),
     ],
     ids=["returns", "raises"],
 )

@@ -29,13 +29,13 @@ When an executor is stopped, the following behavior happens:
 
 #. Immediately upon being stopped, new jobs can no longer be submitted to the executor.
 #. The executor is put into the ``Stopping`` State.
-#. The executor's captive event loop then waits for all :term:`job`\ s besides the :term:`main task` to complete. Jobs (the main task included) can receive :term:`interrupt`\ s during this phase: see :ref:`interruption`.
+#. The executor's captive event loop then waits for all :term:`job`\ s to complete. Jobs and the :term:`main task` can receive :term:`interrupt`\ s during this phase: see :ref:`interruption`.
      - This step is skipped when an executor is stopped due to ``os.fork()``, in the child process.
 #. Once those jobs have completed, if the :term:`main task` is still running, and has not been cancelled, ``asyncio.Task.cancel()`` is called on it.
     - This step is skipped when an executor is stopped due to ``os.fork()``, in the child process.
-#. Once all jobs have completed (or once waiting for them fails due to e.g. a broken event loop), ``asyncio.Task.cancel()`` is called on `all` remaining tasks on the executor's event loop (including any still-running jobs and tasks created/backgrounded by jobs).
+#. Once all jobs have completed (or once waiting for them fails due to e.g. a broken event loop), ``asyncio.Task.cancel()`` is called on `all` remaining tasks on the executor's event loop (including any still-running jobs, the main task, and tasks created/backgrounded by them).
     - This step is skipped when an executor is stopped due to ``os.fork()``, in the child process.
-#. Unfinished futures corresponding to all jobs in-fight on the executor when it was stopped are `failed` with an exception describing the conditions of the stop. In other words: if a job ignored cancellation, never started, or was stuck, attempts to wait on that job's completion will not wait for it, and will fail fast with an error after this point.
+#. Unfinished futures corresponding to all jobs in-flight on the executor when it was stopped are `failed` with an exception describing the conditions of the stop. In other words: if a job ignored cancellation, never started, or was stuck, attempts to wait on that job's completion will not wait for it, and will fail fast with an error after this point.
 #. The executor's captive event loop is shut down.
     - In the process that created the executor, this is done by shutting down all active tasks, async generators, and signalling the loop's ``ThreadPoolExecutor`` to shut down before calling ``.close()`` on the event loop.
     - When an executor is stopped due to ``os.fork()``, in the child process, this is done by calling ``.close()`` on the executor's event loop.

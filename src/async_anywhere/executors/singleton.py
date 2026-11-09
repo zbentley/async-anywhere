@@ -1,5 +1,5 @@
 """An EventLoopExecutor that's replaced once it stops (by expiry, a crash, or a fork, say), for a client that should
-outlive any one executor: a database connection, for one. Only one of its executors runs user code (its main, and calls)
+outlive any one executor: a database connection, for one. Only one of its executors runs user code (its :term:`main task`, and :term:`jobs <job>`)
 at a time: a replacement is made at once, but runs nothing until the executor it replaces has finished."""
 from functools import partial, update_wrapper
 from inspect import iscoroutinefunction
@@ -47,7 +47,7 @@ class SingletonEventLoopExecutor:
         self._wrapped_executor = LockProtected(None)
 
     def get(self) -> EventLoopExecutor:
-        """The executor. If it has stopped, a new one, which runs nothing (its main, or calls made to it) until the old one
+        """The executor. If it has stopped, a new one, which runs nothing (its :term:`main task`, or its :term:`jobs <job>`) until the old one
         has shut down, and its thread finished: the old one is shut down, if it's stopping, but not waited for.
         Blocking waits for any of its executors' futures, on any of its executors' threads, raise WouldBlock: they could
         be waiting for a replacement that's waiting for them. Raises what EventLoopExecutor's constructor does."""
@@ -90,7 +90,7 @@ class SingletonEventLoopExecutor:
     def submit(
         self, fn: Callable[P, Coroutine[Any, Any, T]], /, *args: P.args, **kwargs: P.kwargs
     ) -> AwaitableFuture[T]:
-        """As EventLoopExecutor.submit(), to get()'s executor; or, if that has stopped since get(), refusing the call, to
+        """As EventLoopExecutor.submit(), to get()'s executor; or, if that has stopped since get(), refusing the job, to
         its replacement, which get() makes once more."""
         executor = self.get()
         try:
@@ -99,5 +99,5 @@ class SingletonEventLoopExecutor:
             return self.get().submit(fn, *args, **kwargs)
 
     def bridge(self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
-        """As EventLoopExecutor.bridge(), its calls going through submit() above."""
+        """As EventLoopExecutor.bridge(), its jobs going through submit() above."""
         return update_wrapper(partial(self.submit, func), func)

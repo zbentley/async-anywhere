@@ -78,11 +78,11 @@ async def test_interrupting_an_executor_cancels_the_inner_calls_its_jobs_await()
         assert type(await outer.reached("inner stopped")) is CleanStop  # Then drained by the outer parent task's cleanup
 
 
-@pytest.mark.parametrize("how", ["stopped", "interrupted", "parent task returned"])
+@pytest.mark.parametrize("how", ["stopped", "interrupted", "main task returned"])
 async def test_an_executor_can_stop_one_it_owns_as_it_stops(how):
     async with running(Owner) as outer:
         inner = await outer.reached("made")
-        if how == "parent task returned":
+        if how == "main task returned":
             outer.runloop.set_result(None)
             await outer.wait_for_state(outer.Shutdown)
         else:
@@ -113,14 +113,14 @@ class MakesInRun(Forwards):
 
 
 @pytest.mark.parametrize("cls, method", [(Maker, "make"), (MakesInRun, "made")], ids=["in a call", "in the parent task"])
-@pytest.mark.parametrize("outer_is", ["running", "stopped", "interrupted", "parent task returned"])
+@pytest.mark.parametrize("outer_is", ["running", "stopped", "interrupted", "main task returned"])
 async def test_an_executor_handed_out_by_the_one_that_made_it_can_be_used_from_anywhere(cls, method, outer_is):
     async with running(cls) as outer:
         inner = await getattr(outer, method)()
         match outer_is:
             case "running":
                 assert await outer.forwards(inner.work, 0.01, "from the outer worker") == "from the outer worker"
-            case "parent task returned":
+            case "main task returned":
                 outer.runloop.set_result(None)
                 await outer.wait_for_state(outer.Shutdown)
             case _:
