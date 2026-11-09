@@ -7,7 +7,6 @@ which accept asynchronous Python jobs, and run those jobs on an isolated, captiv
 .. toctree::
     :maxdepth: 2
 
-    glossary
     EventLoopExecutor
     SingletonEventLoopExecutor
     interruption

@@ -288,9 +288,10 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                     unsupported. Underscore-prefixed kwargs are reserved for future use by this module and may or may
                     not be passed to "func".
 
-        Returns: an AwaitableFuture containing the result of executing "func" on the executor's captive event loop.
-            Attempting to block on the returned future via AwaitableFuture.result() from inside the executor will raise
-            an error if the future is not yet completed, to avoid accidental deadlock.
+        Returns:
+            An :py:class:`AwaitableFuture` containing the result of executing "func" on the executor's event loop.
+            Attempting to block on the returned future via :py:func:`AwaitableFuture.result` from inside the executor
+            will raise :py:class:`WouldBlock` if the future is not yet completed, to avoid accidental deadlock.
 
             Calling ``fork(2)`` will, in the child process, fail (complete with a EventLoopExecutorForked exception) any
             not-yet-completed futures that were returned by this method.

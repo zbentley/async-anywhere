@@ -4,7 +4,6 @@ Glossary
 .. glossary::
 
     executor
-    worker
         An instance of EventLoopExecutor.
 
     main task
