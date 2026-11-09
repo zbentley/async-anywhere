@@ -30,7 +30,7 @@ class State:
     The state of a StateTracker. Declare States as class variables on a class which extends StateTracker, and the
     StateTracker will use them to model its internal state machine/graph.
 
-    States will be named according to what field they're assigned to in their StateTracker class; see TODO PROPERTY NAME link.
+    States will be named according to what field they're assigned to in their StateTracker class; see :py:attr:`name`.
 
     Note:
         A State is only ever equal to itself. States with the same parameters from two different StateTrackers
@@ -38,13 +38,28 @@ class State:
     """
     # As declared, until StateTracker.__init_subclass__ replaces it with every State this one can transition to
     _destinations: Collection[Transition] = attr.field()
-    _sources: Transition | Collection[Transition] = attr.field()
+    _sources: Collection[Transition] = attr.field()
     initial: bool = attr.field()
-    """Some ogher stuff"""
     terminal: bool = attr.field(default=False, init=False)
-    """Some stuff!"""
+    """Whether this State can transition to any other States.
+    If a State is not yet bound to a StateTracker, the behavior of this field is undefined.
+    """
     _name: str = attr.field(init=False, default=_UNBOUND)
     _owner: type | None = attr.field(init=False, default=None)
+
+    @property
+    def name(self) -> str:
+        """The name to which the State was bound on its StateTracker.
+
+        If a State is not yet bound to a StateTracker, this is the empty string. You *can* declare States apart from
+        their StateTracker class, but probably *shouldn't*: a State can only be bound to one StateTracker (reusing
+        it is an error at StateTracker class declaration time) and declaring them separately will likely lead to
+        needlessly hard-to-follow code.
+        """
+        rv = self._name
+        if rv == _UNBOUND:
+            return ""
+        return rv
 
     def __init__(
         self,
@@ -55,21 +70,39 @@ class State:
     ):
         """
         Args:
-            initial: declare a state as the initial/default state that a StateTracker will start in.
-                One and only one State in a StateTracker must be marked with "initial=True". If you need the initial state
-                to be customizable e.g. at StateTracker construction time, set an unreachable state with "initial=True" and
-                call transition() as appropriate in __init__. (TODO EXAMPLE)
-            destinations (another State, typing.Any, typing.Self, or an iterable of any of those): states which the
-                StateTracker can transition *to* from this State. If typing.Any is present, this state can transition to
-                any other state in the StateTracker, including itself. If typing.Self is present, this state can be
-                transitioned to itself (doing so will trigger a transition event (TODO link transition events)).
+            initial: Mark this state as the initial/default state that a :py:class:`StateTracker` will start in. One
+                and only one State in a StateTracker must be marked with ``initial=True``.
 
-                A transition is allowed if it is listed either in "sources" or "destinations"; it doesn't need to be listed in both.
+                If you need the initial state to be customizable e.g. at ``StateTracker`` construction time, set a
+                private/unreachable state with ``initial=True`` and call :py:func:`_transition` as appropriate at
+                initialization time.
+
+            destinations: States which the StateTracker can transition *to* from this State. Accepts another
+                :py:class:`State` declared in the same class as this one, :py:obj:`typing.Any`, :py:obj:`typing.Self`,
+                or an iterable of any of those
+
+                If ``typing.Any`` is present, this state can transition to any other state in the ``StateTracker``,
+                including itself.
+
+                If ``typing.Self`` is present, this state can be transitioned to itself (doing so will trigger a
+                transition event and will wake up any :py:func:`WaitableStateTracker.wait_for_state` calls subscribed
+                to that transition).
+
+                A transition is allowed if it is listed either in "sources" or "destinations"; it doesn't need to be
+                listed in both.
 
                 Redundant or duplicate entries in "sources" and "destinations" are ignored.
 
-            sources: states which the StateTracker
-                can transition into this state *from*. Behaves the same as "destinations" otherwise.
+                Note:
+                    The references to :py:obj:`typing.Any` and :py:obj:`typing.Self` here are *literal* references. That
+                    is: you can pass those specific values to this class as sentinels, like this:
+
+                    >>> import typing
+                    >>> Initial = State(initial=True, destinations=typing.Any)
+                    >>> Second = State(sources=[typing.Self, Initial])
+
+            sources: States which the ``StateTracker`` can transition into this state *from*. Behaves the same as
+                ``destinations`` otherwise.
         """
         self.__attrs_init__(
             initial=initial,
@@ -112,17 +145,6 @@ class State:
             object.__setattr__(self, "_owner", owner)
             object.__setattr__(self, "_name", name)
 
-    @property
-    def name(self) -> str:
-        """Returns the name to which the State was bound on its StateTracker.
-
-        If a State is not yet bound to a StateTracker, returns the empty string. You *can* declare States apart from
-        their StateTracker class, but probably *shouldn't*: a State can only be bound to one StateTracker (reusing
-        it is an error at StateTracker class declaration time) and declaring them separately will likely lead to
-        needlessly hard-to-follow code.
-        """
-        return self._name
-
     def __repr__(self):
         return f"<{self.__class__.__qualname__} {self.name}>"
 
@@ -130,8 +152,8 @@ class State:
 # TODO think about hash or not
 class StateTracker(ABC):
     """
-    A class which has a field, ".state", containing a State object representing the current state in a state machine/
-    state transition graph of this class.
+    An abstract class which has a field :py:attr:`state`, containing a State object representing the current state in a
+    state machine/state transition graph of this class.
 
     Users are intended to subclass StateTracker for their own use-cases. When subclassing StateTracker, users should
     declare one or more State objects as class-level fields, like this:
