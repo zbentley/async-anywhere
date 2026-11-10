@@ -549,7 +549,7 @@ async def test_cancelling_a_jobs_task_cancels_its_call():
 
         @worker.bridge
         async def cancels_itself():
-            worker.current_job().cancel()
+            asyncio.current_task().cancel()
             await asyncio.sleep(10)
 
         call = cancels_itself()
@@ -561,7 +561,21 @@ async def test_cancelling_a_jobs_task_cancels_its_call():
 # Current job
 
 
-async def test_current_job_is_a_calls_task_in_it_and_in_tasks_it_awaits():
+async def test_cancelling_the_current_job_cancels_its_call_from_any_thread():
+    async with running() as worker:
+
+        @worker.bridge
+        async def cancels_itself():
+            await asyncio.to_thread(worker.current_job().cancel)
+            await asyncio.sleep(10)
+
+        call = cancels_itself()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        assert call.cancelled()
+
+
+async def test_current_job_is_a_calls_future_in_it_and_in_tasks_it_awaits():
     async with running() as worker:
 
         async def sees():
@@ -572,15 +586,15 @@ async def test_current_job_is_a_calls_task_in_it_and_in_tasks_it_awaits():
         async def job():
             async with asyncio.TaskGroup() as group:
                 grouped = group.create_task(sees())
-            seen = [
+            return [
                 worker.current_job(),
                 await asyncio.create_task(sees(), context=contextvars.Context()),  # Whatever context it runs in
                 *await asyncio.gather(sees(), sees()),
                 grouped.result(),
             ]
-            return [found is asyncio.current_task() for found in seen]
 
-        assert await job() == [True] * 5
+        call = job()
+        assert [found is call for found in await call] == [True] * 5
 
 
 async def test_current_job_is_none_outside_calls_and_what_they_await():

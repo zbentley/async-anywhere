@@ -326,16 +326,16 @@ async def sees_no_job(worker, job):
 
 
 async def reports_cancellation(worker, job):
-    job.cancel()  # Which run() passes on to this, as it does a cancellation of the call
+    job.cancel()  # As its caller would: run() passes it on to this
     await trio.sleep_forever()
 
 
-async def test_trio_code_reports_its_cancellation_by_cancelling_its_jobs_task():
+async def test_trio_code_reports_its_cancellation_by_cancelling_its_call():
     guest = TrioGuest()
     async with running(main=guest.parent_task) as worker:
 
         @worker.bridge
-        async def hands_over(func):  # The job's task, as trio code runs in the guest's tasks, not the job's
+        async def hands_over(func):  # The call's future, as trio code runs in the guest's tasks, not the job's
             return await guest.run(func, worker, worker.current_job())
 
         assert await hands_over(sees_no_job) == (None, True)

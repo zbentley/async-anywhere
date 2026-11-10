@@ -189,8 +189,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     # threads of a SingletonEventLoopExecutor's other executors, say, which share one)
     _blocking_checker: BlockingChecker = field(alias="_blocking_checker", factory=BlockingChecker)
 
-    # Bridged calls in flight: their jobs' tasks. They hold off idle expiry, and drains wait for them; see _interrupt().
-    _calls: set[asyncio.Task] = field(init=False, factory=set)
+    # Bridged calls in flight: their jobs' tasks, mapped to their futures. They hold off idle expiry, and drains wait
+    # for them; see _interrupt().
+    _calls: dict[asyncio.Task, AwaitableFuture] = field(init=False, factory=dict)
     # Whether the executor has cancelled its main task, calls, or what they left running
     _interrupted: Toggleable = field(init=False, factory=Toggleable)
     # The main task's task, once it has started, which the constructor waits for: see _main()
@@ -410,32 +411,33 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         # Performance: inline parts of .current() since this is on the hot path of submit/job execution.
         return _current_executor.get() is self and current_thread() is self._thread
 
-    def current_job(self) -> asyncio.Task | None:
+    def current_job(self) -> AwaitableFuture | None:
         """
         Returns:
-            The :py:obj:`asyncio.Task` running the invocant executor's :term:`job` that this method is called
-            from, or None if it is not called from one of the executor's jobs.
+            The :py:class:`.AwaitableFuture` of the invocant executor's :term:`job` that this method is called from
+            (the same one :py:func:`submit` returned for it), or None if it is not called from one of the executor's
+            jobs.
 
             Code is inside a job if it is run by a call to a function called via :py:func:`submit`. If code is
             *dispatched* from a job but is not directly *called* by it (e.g. if the job backgrounds an ``asyncio.Task``
             or runs work on a thread via ``asgiref`` or ``asyncio.to_thread``), this method returns None.
 
-            Cancelling the returned task cancels the job: if the job then ends by raising
-            :py:obj:`asyncio.CancelledError`, the ``AwaitableFuture`` returned the job's original ``submit`` is
-            cancelled as well.
+            Cancelling the returned future cancels the job, just as its caller cancelling it would. Do not call
+            ``set_result()`` or ``set_exception()`` on it: the job's caller would get that result or error, and the
+            job's own outcome would be logged as an error once the job ends.
         """
         loop = asyncio._get_running_loop()
         if loop is not self._loop or (task := asyncio.current_task(loop)) is None:  # Jobs are tasks on this loop
             return None
         calls = self._calls
-        if task in calls:
-            return task
+        if (future := calls.get(task)) is not None:
+            return future
         # Else a job awaiting this, maybe via other tasks: asyncio records who awaits what, for capture_call_graph()
         seen, todo = {task}, [task]
         while len(todo) > 0:
             for awaiter in todo.pop()._asyncio_awaited_by or ():
-                if awaiter in calls:
-                    return awaiter
+                if (future := calls.get(awaiter)) is not None:
+                    return future
                 if awaiter not in seen:  # Tasks deadlocked awaiting each other would loop forever
                     seen.add(awaiter)
                     todo.append(awaiter)
@@ -748,7 +750,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         if self.state is not self.Running:
             self._fail(future)  # Refused, as the executor stopped after the call was made, but before its job started
             return
-        calls.add(task)
+        calls[task] = future
         expiry.reset(None) # Suspend the idle timeout
         try:
             result = func(*args, **kwargs)
@@ -786,7 +788,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # TODO think more about this: whether, and when, users should see that error
             future.set_result(result)
         finally:  # Once the future is resolved: a drain's interrupt below may cancel the main task awaiting this call
-            calls.remove(task)
+            del calls[task]
             # A drain (a stop that leaves calls in flight to finish) cancels the main task only once the last has
             # ended: here. Nothing else would, unless the main task ended of its own accord, or a later shutdown()
             # interrupted.
