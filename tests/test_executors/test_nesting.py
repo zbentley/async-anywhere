@@ -138,6 +138,6 @@ async def test_an_executor_handed_out_by_the_one_that_made_it_can_be_used_from_a
         assert await anyio.to_thread.run_sync(asyncio.run, on_a_fresh_loop()) == "on a fresh loop"
         assert await inner.nested(0.01) == "outer done"  # Its calls on its own thread
         assert type(await inner.shutdown(wait=False)) is CleanStop
-        # Its states' futures' callbacks run on its own thread
-        assert await inner.reached("stopped") == (True, inner.Stopping)
+        # Its states' futures' callbacks run on the thread that changed its state: this one, then its own
+        assert await inner.reached("stopped") == (False, inner.Stopping)
         assert await inner.reached("shutdown") == (True, inner.Shutdown, True)

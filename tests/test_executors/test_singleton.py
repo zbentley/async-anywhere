@@ -339,9 +339,10 @@ def test_shutdowns_future_refuses_blocking_waits_on_the_executors_own_loop():
 
 
 def test_shutdown_on_an_executor_it_has_replaced_stops_that_one_and_makes_none():
-    release, go, called = AwaitableFuture(), AwaitableFuture(), AwaitableFuture()
+    release, go, called, started = AwaitableFuture(), AwaitableFuture(), AwaitableFuture(), AwaitableFuture()
 
     async def main(worker):
+        started.set_result_if_not_done(None)
         try:
             await asyncio.Future()
         except asyncio.CancelledError:
@@ -352,8 +353,8 @@ def test_shutdown_on_an_executor_it_has_replaced_stops_that_one_and_makes_none()
 
     with running_singleton(main=main, cancel_futures_on_stopping_executors=False) as singleton:
         first = singleton.get()
+        started.result(5)  # Else replaced before its main had begun (a stop doesn't wait for its loop), it runs nothing
         first.shutdown(wait=False)  # Its main cleaning up until released
-        first.wait_for_state(first.Stopping).result(5)
         second = singleton.get()
         go.set_result(None)
         stopping = called.result(5)

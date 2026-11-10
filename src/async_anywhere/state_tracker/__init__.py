@@ -38,7 +38,7 @@ class State:
     _sources: Collection[Transition] = attr.field()
     initial: bool = attr.field()
     terminal: bool = attr.field(default=False, init=False)
-    """Whether this State can transition to any other States.
+    """Whether this State can transition to any other States. Read-only.
     
     Example:
         >>> class MyTracker(StateTracker):
@@ -53,7 +53,7 @@ class State:
     If a State is not yet bound to a StateTracker, the behavior of this field is undefined.
     """
     name: str = attr.field(init=False, default="")
-    """The name to which the State was bound on its StateTracker class.
+    """The name to which the State was bound on its StateTracker class. Read-only.
     
     Example:
     
@@ -477,10 +477,10 @@ class StateTracker(ABC):
             The invocant StateTracker object, for convenience in chaining.
         """
         current_state = self.state
-        if current_state is state or current_state in desired_states:
+        if current_state is desired_state or current_state in desired_states:
             return self
         # Validate the inputs on the failure path so the happy path stays fast:
-        for s in (state, *desired_states):
+        for s in (desired_state, *desired_states):
             self._check_state(s)
-        raise StateTrackerError(self, "Not in required state(s)", state, *desired_states)
+        raise StateTrackerError(self, "Not in required state(s)", desired_state, *desired_states)
 

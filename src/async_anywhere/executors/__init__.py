@@ -6,16 +6,16 @@ from contextvars import Context, ContextVar, copy_context
 from datetime import timedelta
 from functools import cached_property, partial, update_wrapper
 from inspect import isawaitable
-from threading import Thread, current_thread, main_thread, RLock
+from threading import Thread, current_thread, main_thread
 from typing import Any, Callable, ClassVar, Coroutine, Literal, ParamSpec, TypeVar, final, Collection
-from weakref import WeakKeyDictionary
 
 from attrs import Factory, define, field, setters, validators
 from sniffio import current_async_library_cvar
 
-from async_anywhere._util import BlockingChecker, validate_coroutine_function, Toggleable
+from async_anywhere._util import BlockingChecker, LockProtected, validate_coroutine_function, Toggleable
 from async_anywhere.exceptions import CleanStop, EventLoopExecutorBroken, JobCancelledByExecutorShutdown, EventLoopExecutorStopped, EventLoopExecutorForked
 from async_anywhere.executors import _fork_safety
+from async_anywhere.executors._job import _ExecutorJob
 from async_anywhere.executors._timer import Timer
 from async_anywhere.futures import AwaitableFuture
 from async_anywhere.state_tracker import State
@@ -189,20 +189,16 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     # threads of a SingletonEventLoopExecutor's other executors, say, which share one)
     _blocking_checker: BlockingChecker = field(alias="_blocking_checker", factory=BlockingChecker)
 
-    # Bridged calls in flight: their jobs' tasks, mapped to their futures. They hold off idle expiry, and drains wait
-    # for them; see _interrupt().
-    _calls: dict[asyncio.Task, AwaitableFuture] = field(init=False, factory=dict)
-    # Whether the executor has cancelled its main task, calls, or what they left running
+    # The lock transitions take, around the calls accepted, started or not, until their jobs end: what a stop drains or
+    # interrupts, and what holds off expiry. So none is added once the executor has stopped. _finalize() fails what's
+    # left (if the loop drops calls unrun as it closes, say). Recursive, as transitions take it again, and callbacks may.
+    _condition: LockProtected[set[_ExecutorJob]]
+    # Whether the executor has cancelled (or, with shutdown(cancel_futures=True), is about to cancel) its main task, calls,
+    # or what they left running
     _interrupted: Toggleable = field(init=False, factory=Toggleable)
     # The main task's task, once it has started, which the constructor waits for: see _main()
     _runner: AwaitableFuture[asyncio.Task] = field(init=False, factory=AwaitableFuture)
     _expiry: Timer = field(init=False, default=Factory(_timer_factory, takes_self=True))
-    # Calls' futures, which _finalize() fails if the executor won't finish them (if the loop drops them unrun as it closes,
-    # say), each with its job's task once _start() has made it (see _cancellation_forwarder). Weak, as a call that's
-    # done, and dropped by its caller, needs nothing more. Added to, and popped from, only under _condition, which
-    # transitions take too, so none is added once the executor has stopped; _start() just sets tasks, on the executor's
-    # thread, which _finalize() lists them on.
-    _submitted: WeakKeyDictionary[AwaitableFuture, asyncio.Task | None] = field(init=False, factory=WeakKeyDictionary)
 
     Running: ClassVar[State] = State(initial=True)
     """
@@ -227,7 +223,8 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
 
     def __attrs_post_init__(self):
-        super().__init__()
+        # Not concurrent.futures.Executor's, which might set fields of its own: this shadows all of its API
+        WaitableStateTracker.__init__(self, lock=LockProtected(set(), recursive=True))
         _fork_safety.executors.ensure_registered(self)
         # Captured outside the try/except in case the code to prime these fields has errors
         thread, runner = self._thread, self._runner
@@ -304,8 +301,8 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
         Note:
             The asyncio.task running "func" may be cancelled in response to executor failures
-            or user calls to :py:meth:`EventLoopExecutor.shutdown(cancel_futures=True) <shutdown>`. For more details, see
-            :ref:`cancellation`.
+            or user calls to :py:meth:`EventLoopExecutor.shutdown(cancel_futures=True) <shutdown>`. In those cases,
+            "func" may never be called at all. For more details, see :ref:`cancellation`.
 
         Warning:
             Avoid blocking the executor's event loop: this is "supported" insofar as its semantics are documented and
@@ -333,15 +330,18 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         ) = (
             # Performance: re-use the blocking checker rather than passing in this executor's loop/thread. This path is
             # hot, so saving here has an impact.
-            AwaitableFuture(prevent_blocking_wait_when=self._blocking_checker),
+            _ExecutorJob(prevent_blocking_wait_when=self._blocking_checker),
             copy_context(),
             # Compute job names for use in tracebacks, so users see exceptions as arising from
             # "EventLoopExecutor._job[user.function.name]". This helps distinguish failures when multiple jobs are
             # running on the executor.
             f"{self._job.__qualname__}[{getattr(func, '__qualname__', None) or type(func).__qualname__}]"
         )
+        job = self._job(func, args, kwargs, future)  # Nothing in it runs until future.start()
+        job.__qualname__, future._target = name, job
 
-        future.add_done_callback(self._cancellation_forwarder)
+        future.add_done_callback(self._cancellation_forwarder) # TODO performance: manipulate directly?
+        context.run(_current_executor.set, self)  # In the call's context, which its job's task copies
 
         # If a caller is using a non-asyncio/stdlib runtime (e.g. anyio, trio), remove that preference from the context.
         # Code inside the executor assumes asyncio/stdlib (and can host other runtimes via runtime-specific tools like
@@ -351,21 +351,21 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         if context.get(current_async_library_cvar):
             context.run(current_async_library_cvar.set, None)
 
-        with self._condition:
+        with self._condition as jobs:
             # TODO can we easily do this opportunistically outside the lock? Is that worth it since its error is a
             #   misuse condition anyway?
             if self._last_transition[1] is not self.Running:
+                future.finish()  # Closing its coroutine, never to run
                 raise self._last_transition[2].copy()
 
-            # _submitted maps futures to None (when they haven't been picked up by the executor yet), and then later to
-            # asyncio.Tasks when they're in progress:
-            self._submitted[future] = None
+            # Accepted for good: from now on the job runs, or is interrupted, but is never refused
+            jobs.add(future)
 
             if self.is_current_executor():
-                # TODO can we just call _start directly and chain the future? Tried that before, but why was it abandoned?
-                self._loop.call_soon(self._start, future, func, args, kwargs, name, context=context)
+                # TODO can we just call start directly and chain the future? Tried that before, but why was it abandoned?
+                self._loop.call_soon(future.start, self._loop, context=context)
             else:
-                self._loop.call_soon_threadsafe(self._start, future, func, args, kwargs, name, context=context)
+                self._loop.call_soon_threadsafe(future.start, self._loop, context=context)
         return future
 
     def bridge(self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
@@ -429,7 +429,13 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         loop = asyncio._get_running_loop()
         if loop is not self._loop or (task := asyncio.current_task(loop)) is None:  # Jobs are tasks on this loop
             return None
-        calls = self._calls
+        calls, coroutine = {}, task.get_coro()
+        with self._condition as jobs:  # As submit() adds jobs on other threads
+            for job in jobs:
+                if job._target is coroutine:  # In its first step, which runs as it starts: see _ExecutorJob.start()
+                    return job
+                if (started := job.task) is not None:
+                    calls[started] = job
         if (future := calls.get(task)) is not None:
             return future
         # Else a job awaiting this, maybe via other tasks: asyncio records who awaits what, for capture_call_graph()
@@ -530,72 +536,50 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         if wait and self.state is not self.Shutdown:
             self._blocking_checker.check(self.shutdown)
 
-        # TODO transition to Stopping synchronously so we won't have races.
-        def report_stop():
-            """
-            On the executor's captive loop, perform the shutdown: record the exception and cancel jobs or the main task if
-            appropriate.
-
-            Doesn't use :py:meth:`submit` or its machinery so it can be exempt from all internal checks aimed at
-            preventing code from running on a broken or stopping executor. ``shutdown()`` is the exception to those rules.
-            """
-
-            # Since we're not using .submit(), adjust the context by hand (otherwise the whole context is inherited from
-            # the caller).
-            _current_executor.set(self)
-            if cancel_futures and len(self._calls) > 0:
+        # Stopped here and now, on this thread, under the lock submit() takes: so every call is either refused, or
+        # accepted before the stop, to be drained or interrupted
+        with self._condition as jobs:
+            busy = len(jobs) > 0
+            if cancel_futures and busy:
                 self._unclean_stop("manually stopped")
             else:
                 self._clean_stop("stopped")
-            if cancel_futures or len(self._calls) == 0:
-                self._interrupt(cancel_futures)  # Otherwise the last call to end does: see _job()
-
-        with suppress(RuntimeError):  # RuntimeError: the loop has closed, so the executor has already stopped
-            # Queue shutdown, even if called from the executor's thread, so that it is begun after any other in-flight
-            # calls are accepted by the event loop.
-            # TODO can we do better than that without risking racy state corruption?
-            self._loop.call_soon_threadsafe(report_stop)
+            if cancel_futures:  # Once stopped, as _job() then reads why, and before the loop gets to calls not yet started
+                self._interrupted.set()
+        if cancel_futures or not busy:  # Otherwise the last call to end does: see _job()
+            with suppress(RuntimeError):  # RuntimeError: the loop has closed, so the executor has already stopped
+                self._loop.call_soon_threadsafe(self._interrupt, cancel_futures)
         stopped = self.wait_for_state(self.Shutdown)
         if wait:
             stopped.result()
         return stopped
 
-    def _start(self, future: AwaitableFuture, func, args, kwargs, name: str):
-        # If the job was cancelled by its caller or failed by the executor e.g. forking, do nothing.
-        if future.done():
-            return
-        _current_executor.set(self)  # In the call's context (see submit()), which its job's task copies
-        job = self._job(func, args, kwargs, future)
-        job.__qualname__ = name
-        # eager_start=True ensures that the job is queued to run before anything dispatched after it. Not setting this
-        # leads to confusing priority semantics between jobs started inside the executor vs. outside.
-        self._submitted[future] = self._loop.create_task(job, eager_start=True)
-        if future.cancelled():  # Since done() above, so before _cancellation_forwarder could find the task
-            self._cancellation_forwarder(future)
+    @property
+    def _tasks(self) -> list[asyncio.Task]:
+        # Started jobs' tasks
+        with self._condition as jobs:  # As submit() adds jobs on other threads
+            return [task for job in jobs if (task := job.task) is not None]
 
     @cached_property
-    def _cancellation_forwarder(self) -> Callable[[AwaitableFuture], None]:
+    def _cancellation_forwarder(self) -> Callable[[_ExecutorJob], None]:
         # Each call's future's first done callback (see submit()), made once, for all: cancelling the future cancels its
-        # job's task, once _start() has made it. The task's popped, so that this and _start() cancel it only once
-        # between them; under _condition, as _finalize() lists them under it.
+        # job's task, on the loop, as its start() and _job() run there too. So no lock: a call cancelled before its job
+        # starts has no task yet, and its job never runs (see _job()).
 
-        def forward_cancellations(future: AwaitableFuture):
+        def forward_cancellations(future: _ExecutorJob):
             if future.cancelled():
-                with self._condition:
-                    task = self._submitted.pop(future, None)
-                if task is not None:
 
-                    def cancel():
-                        # Not once the executor has interrupted it: an interrupt also cancelling what awaits it (the
-                        # main task's TaskGroup cancelling its children, say) mustn't cancel it twice.
-                        if not (self._interrupted and task.cancelling()):
-                            task.cancel()
-                    # TODO can we call it directly if on the loop?
-                    # TODO can we have a util method that decides call-soon/threadsafe/local-call?
-                    try:
-                        self._loop.call_soon_threadsafe(cancel)
-                    except RuntimeError:  # The loop has closed
-                        pass
+                def cancel():
+                    # Not once the executor has interrupted it: an interrupt also cancelling what awaits it (the
+                    # main task's TaskGroup cancelling its children, say) mustn't cancel it twice.
+                    if (task := future.task) is not None and not (self._interrupted and task.cancelling()):
+                        task.cancel()
+                # TODO can we call it directly if on the loop?
+                # TODO can we have a util method that decides call-soon/threadsafe/local-call?
+                try:
+                    self._loop.call_soon_threadsafe(cancel)
+                except RuntimeError:  # The loop has closed
+                    pass
 
         return forward_cancellations
 
@@ -604,8 +588,8 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         return future.set_exception_if_not_done(error or self._last_transition[2].copy())
 
     def _log(self, level: int, msg: str, *args, **kwargs):
-        # Only on the executor's thread: in a forked process, a handler's stream may be locked forever
-        if self.is_current_executor() and not self._forked:
+        # Never in a forked process, where a handler's stream may be locked forever: its fork handler stops the executor
+        if not self._forked and not isinstance(self._last_transition[2], EventLoopExecutorForked):
             # Naming what recorded the stop: past this, _after_state_change(), the two transition methods, and
             # _clean_stop() or _unclean_stop()
             self.logger.log(level, msg, *args, stacklevel=6, **kwargs)
@@ -618,21 +602,25 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             else:
                 self._log(logging.ERROR, "Stopping due to error:", exc_info=data)
 
-    # Both return whether this was the first stop, so recorded: only ever on the executor's own thread
+    # Both return whether this was the first stop, so recorded. Under _condition, so that no call is accepted meanwhile.
     def _clean_stop(self, why: Literal["expired", "stopped", "main task returned"]) -> bool:
-        match why:
-            case "expired":
-                assert len(self._calls) == 0, "Invariant violation: expiry with calls in flight"
-                reason = "(idle) expired"
-            case "stopped":
-                reason = "(waiting for running jobs) manually stopped" if len(self._calls) > 0 else "(idle) manually stopped"
-            case "main task returned":
-                reason = f"({'tasks cancelled' if len(self._calls) > 0 else 'idle'}) main task returned"
-        return self._try_transition(self.Stopping, CleanStop(reason))
+        with self._condition as jobs:
+            busy = len(jobs) > 0
+            match why:
+                case "expired":
+                    if busy:  # Accepted, but not yet started, as the countdown ended: the last call to end restarts it
+                        return False
+                    reason = "(idle) expired"
+                case "stopped":
+                    reason = "(waiting for running jobs) manually stopped" if busy else "(idle) manually stopped"
+                case "main task returned":
+                    reason = f"({'tasks cancelled' if busy else 'idle'}) main task returned"
+            return self._try_transition(self.Stopping, CleanStop(reason))
 
     def _unclean_stop(self, reason: str, cause: BaseException | None = None) -> bool:
-        why = EventLoopExecutorStopped(f"({'tasks cancelled' if len(self._calls) > 0 else 'idle'}) {reason}", cause)
-        return self._try_transition(self.Stopping, why)
+        with self._condition as jobs:
+            why = EventLoopExecutorStopped(f"({'tasks cancelled' if len(jobs) > 0 else 'idle'}) {reason}", cause)
+            return self._try_transition(self.Stopping, why)
 
     def _after_fork_in_child(self):
         """
@@ -650,7 +638,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
           shut down already. Its calls' futures fail with it, and its state futures resolve: neither are cancelled by the
           fork, but their callbacks don't run here, unless added with run_in_forked_child=True.
         """
-        self._condition = RLock()
+        self._condition = LockProtected(self._condition._value, recursive=True)  # Its jobs, unlocked: no other thread is here
         forked = EventLoopExecutorForked()
         self._try_transition(self.Stopping, forked)  # Unless it had stopped
         if self._try_transition(self.Shutdown, forked):  # Unless it had shut down
@@ -660,11 +648,13 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         # Wait for any jobs that were being submitted at the moment of shutdown to finish being submitted. Because
         # the executor has stopped already everywhere this method is called, serializing here ensures that any submits
         # after this point in time will observe that and fail.
-        with self._condition:
-            to_abort = list(self._submitted)
-            self._submitted.clear()
+        with self._condition as jobs:
+            to_abort = list(jobs)
+            jobs.clear()
         while len(to_abort) > 0:
-            self._fail(to_abort.pop())  # Never run, or abandoned (or here, in a forked process)
+            job = to_abort.pop()
+            job.finish()  # Closing its coroutine, if never started
+            self._fail(job)  # Never run, or abandoned (or here, in a forked process)
 
     def _main(self):
         async def run():
@@ -685,10 +675,13 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             if stopping:
                 # The main task ending was the stop, so it interrupts calls, as shutdown(cancel_futures=True) would
                 self._interrupt(True)
+            # Calls accepted but not yet started first: turns of the loop run their start()s, queued before the stop
+            while len(self._tasks) < len(self._condition._value):  # Unlocked, as none is added now
+                loop.run_until_complete(asyncio.sleep(0))
             # Let calls still in flight finish (or, if they were interrupted, clean up) before re-cancelling them and
             # aborting them.
-            if len(self._calls) > 0:
-                loop.run_until_complete(asyncio.wait(self._calls.copy()))
+            if len(tasks := self._tasks) > 0:
+                loop.run_until_complete(asyncio.wait(tasks))
         except BaseException as exc:
             # Should never happen, except for a KeyboardInterrupt or SystemExit from the main task or a call: asyncio
             # lets those escape the loop from any task. Record the crash (logging it, if it's the first stop), so that
@@ -707,10 +700,10 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                 if not forked:
                     # TODO log the non-call/non-run tasks this cancels
                     tasks = asyncio.all_tasks(loop)
+                    # Calls among them (after a crash) tell their waiters why: see _job()
+                    self._interrupted.set()  # Even with none to cancel, so calls not yet started never start
                     for task in tasks:
-                        if task.cancel():
-                            # Calls among them (after a crash) tell their waiters why: see _job()
-                            self._interrupted.set()
+                        task.cancel()
                     # TODO: log the threads this abandons, per executor: asyncio only warns, with a RuntimeWarning shown
                     # once.
                     # Created before the wait below starts its clock, so its own timeout fires (and warns) first.
@@ -720,7 +713,6 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                     loop.run_until_complete(asyncio.wait(tasks, timeout=0.05))
             finally:
                 self._finalize()
-                self._calls.clear()
                 if not forked:  # Else a process forked from a call, whose fork handler has finished it
                     self._loop.close()  # Shuts the executor down without waiting, if it hasn't been already
                     # The very last action: shutdown()'s waiters wait for it
@@ -733,26 +725,29 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         # shutdown(cancel_futures=True), expiry, and the main task ending of its own accord); otherwise (for a stop that
         # doesn't interrupt, once no calls are left in flight) only if the executor hasn't interrupted anything yet.
         if again or not self._interrupted:
-            for task in {self._runner.result(timeout=0), *self._calls}:
-                task.cancel() and self._interrupted.set()
+            self._interrupted.set()  # Even with none to cancel, so calls not yet started never start: see _job()
+            for task in {self._runner.result(timeout=0), *self._tasks}:
+                task.cancel()
 
 
-    async def _job(self, func, args, kwargs, future: AwaitableFuture):
+    async def _job(self, func, args, kwargs, future: _ExecutorJob):
         """
-        Runs a job on the executor's event loop. All jobs are submitted by _start().
+        Runs a job on the executor's event loop. All jobs are submitted by their start().
         Only raises in the thread on a crash (e.g. a cancel race or a broken event loop); all errors from user code are
         forwarded back to the user if the user is still accepting responses (that is, the waiting future hasn't been
         cancelled or failed with a JobCancelledByExecutorShutdown).
         """
 
         # We're a little precious about performance in this method since it's on the hot path:
-        task, calls, expiry = asyncio.current_task(), self._calls, self._expiry
-        if self.state is not self.Running:
-            self._fail(future)  # Refused, as the executor stopped after the call was made, but before its job started
-            return
-        calls[task] = future
+        task, expiry = asyncio.current_task(), self._expiry
         expiry.reset(None) # Suspend the idle timeout
         try:
+            # If the job was cancelled by its caller or failed by the executor e.g. forking, do nothing.
+            if future.done():
+                return
+            if self._interrupted:  # Accepted before an interrupt, which it never starts after: see shutdown()
+                self._fail(future, JobCancelledByExecutorShutdown.from_cancellation(self._last_transition[2]))
+                return
             result = func(*args, **kwargs)
             if isawaitable(result):
                 result = await result
@@ -761,7 +756,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # so, this job's waiters get an error indicating where the job was cancelled, with exception-chain-context
             # about why the executor stopped.
             if self._interrupted and task.cancelling():
-                error = JobCancelledByExecutorShutdown.from_cancellation(ex, self._last_transition[2].copy())
+                error = JobCancelledByExecutorShutdown.from_cancellation(ex, self._last_transition[2])
             elif task.cancelling():  # By its caller, or by something else, current_job().cancel() say: so is its future
                 future.cancel()
                 raise
@@ -783,18 +778,22 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         else:
             # Transmit a successful result to the user.
             # NB: if the caller cancelled it, this raises concurrent.futures.InvalidStateError, which asyncio logs as
-            # never retrieved only if the job swallowed the cancellation: if the result won a race with it, the cancel()
-            # that forward() queues clears the finished task's _log_traceback.
+            # never retrieved only if the job swallowed the cancellation: if the result won a race with it (so the
+            # cancellation never reached the task), it's dropped.
             # TODO think more about this: whether, and when, users should see that error
-            future.set_result(result)
+            if (not future.cancelled()) or (task.cancelling() > 0):
+                future.set_result(result)
         finally:  # Once the future is resolved: a drain's interrupt below may cancel the main task awaiting this call
-            del calls[task]
+            future.finish()
+            with self._condition as jobs:
+                jobs.discard(future)
+                idle, stopping = len(jobs) == 0, self._last_transition[1] is not self.Running
             # A drain (a stop that leaves calls in flight to finish) cancels the main task only once the last has
             # ended: here. Nothing else would, unless the main task ended of its own accord, or a later shutdown()
             # interrupted.
-            if len(calls) == 0:
+            if idle:
                 # Not a callback on wait_for_state(Stopping): that fires once, as the stop is recorded (begin() covers
                 # there being no calls then), on whichever thread records it, rather than as the last call ends.
-                if self.state is not self.Running:
+                if stopping:
                     self._interrupt(False)
                 expiry.reset(self._idle_timeout)

@@ -99,8 +99,8 @@ class Forks(Works):
 
     @bridge
     async def forks(self) -> forked:
-        with self._condition:
-            in_flight = list(self._submitted)  # Before the fork handler fails and drops them
+        with self._condition as jobs:
+            in_flight = list(jobs)  # Before the fork handler fails and drops them
         work = self.work  # Bridged before the fork, so that calling it there reaches the call itself
         with forked(wait=False) as f:  # For the test to check(), rather than blocking the worker's loop
             if f.child:  # Carrying on in this call, on its copy of the worker's loop

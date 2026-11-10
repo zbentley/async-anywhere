@@ -8,8 +8,7 @@ Stopping :py:class:`EventLoopExecutor`\ s
 An :py:class:`EventLoopExecutor` can be **stopped**, meaning that it's :py:class:`.WaitableStateTracker` API is in the
 ``Stopping`` or ``Shutdown`` :py:class:`.State`.
 
-Once an executor is stopped, attempts to submit new jobs will fail with an error. Waiting for jobs submitted just before
-it was stopped (that have not yet started running) will also fail with an error.
+Once an executor is stopped, attempts to submit new jobs will fail with an error.
 
 When is an executor stopped?
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

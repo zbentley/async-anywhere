@@ -16,6 +16,7 @@ from datetime import timedelta
 import pytest
 
 from async_anywhere.executors import EventLoopExecutor, _fork_safety
+from async_anywhere.executors._job import _ExecutorJob
 from async_anywhere.exceptions import CleanStop, EventLoopExecutorStopped, JobCancelledByExecutorShutdown, WouldBlock
 from async_anywhere.futures import AwaitableFuture
 from tests.test_executors.utils import (
@@ -91,18 +92,12 @@ class BlockedAtFirst(Expiring):
 
 
 @TIMING_SENSITIVE
-async def test_calls_made_before_expiry_hold_it_off_though_the_loop_is_blocked(request, executor_loop):
-    if executor_loop == "uvloop":
-        request.applymarker(
-            pytest.mark.xfail(
-                strict=True,
-                raises=CleanStop,
-                reason="libuv runs overdue timers before callbacks queued while the loop was blocked, so expiry wins",
-            )
-        )
+async def test_calls_made_before_expiry_hold_it_off_though_the_loop_is_blocked():
     async with running(BlockedAtFirst) as worker:
         await asyncio.sleep(IDLE / 2)
-        assert await worker.work() == "done"  # Taken by the loop before the overdue countdown fires
+        # Accepted, so it holds off the overdue countdown, though uvloop runs overdue timers before callbacks queued
+        # while the loop was blocked
+        assert await worker.work() == "done"
         await worker.reached("stopped")
         assert reason(worker) == "(idle) expired"
 
@@ -491,17 +486,37 @@ async def test_calls_made_during_a_drain_are_refused_without_waiting_for_the_loo
         await blocking
 
 
-async def test_calls_made_after_a_stop_is_queued_are_refused_once_it_begins():
+async def test_calls_made_after_a_stop_are_refused_though_the_loop_is_blocked():
     async with running(BlocksLoop) as worker:
         blocking = worker.blocks()
-        await worker.reached("blocked")  # So the stop can't begin yet
+        await worker.reached("blocked")
         worker.shutdown(wait=False)
-        call = worker.work()
-        assert not call.done()  # Not refused yet, as the worker hasn't stopped
-        worker.mark("release")
         with pytest.raises(CleanStop):
-            await call
+            worker.work()  # Raised by the call itself, as the stop has begun though the loop hasn't run it
+        worker.mark("release")
         await blocking
+
+
+@pytest.mark.parametrize("interrupt", [False, True])
+async def test_calls_accepted_before_a_stop_run_unless_it_interrupts_but_are_never_refused(interrupt):
+    async with running(BlocksLoop) as worker:
+        blocking = worker.blocks()
+        await worker.reached("blocked")  # So the calls below are accepted, but can't start, before the stop
+        calls = [worker.work(0, f"done {n}") for n in range(3)]
+        stopped = await stop_begun(worker, cancel_futures=interrupt)
+        worker.mark("release")
+        assert await blocking is None  # Ended as the loop unblocked, before the interrupt reached it
+        if interrupt:
+            assert type(stopped) is EventLoopExecutorStopped and stopped.args == ("(tasks cancelled) manually stopped",)
+            for call in calls:
+                with pytest.raises(JobCancelledByExecutorShutdown) as raised:
+                    await call
+                assert type(raised.value.__cause__) is EventLoopExecutorStopped
+            await worker.shutdown(wait=False)
+            assert not worker.reached("work").done()  # None started
+        else:
+            assert stopped.args == ("(waiting for running jobs) manually stopped",)
+            assert [await call for call in calls] == [f"done {n}" for n in range(3)]
 
 
 async def test_draining_caller_gets_why_when_another_stop_finishes_the_executor(scale):
@@ -624,13 +639,15 @@ async def test_giving_up_waiting_on_stop_cancels_nothing():
     async with running(BlocksLoop) as worker:
         call = worker.blocks()
         await worker.reached("blocked")  # So nothing on its loop can finish yet
-        for future in stop_begun(worker), worker.shutdown(wait=False), call:
+        assert stop_begun(worker).done()  # Begun at once, on this thread
+        for future in worker.shutdown(wait=False), call:
             with pytest.raises(TimeoutError):
                 future.result(0.05)
             assert not future.cancelled()
         worker.mark("release")
         assert await call is None
-        assert (await worker.shutdown(wait=False)).args == ("(idle) manually stopped",)  # The stop went ahead, once the call had ended
+        # The stop, begun as the call ran, went ahead once it had ended
+        assert (await worker.shutdown(wait=False)).args == ("(waiting for running jobs) manually stopped",)
 
 
 @TIMING_SENSITIVE
@@ -730,13 +747,13 @@ async def test_a_call_from_a_handler_logging_the_stop_is_refused_rather_than_dea
     class CallsTheExecutor(logging.Handler):
         def emit(self, record):
             # Under the lock its transition holds: if that's not reentrant, this times out, rather than deadlocking
-            if worker._condition.acquire(timeout=1):
+            if worker._condition._acquire(timeout=1):
                 try:
                     worker.work()
                 except CleanStop as error:
                     refused.append(error)
                 finally:
-                    worker._condition.release()
+                    worker._condition.__exit__(None, None, None)
 
     async with running(Works) as worker:
         caplog.set_level(logging.INFO, logger=worker.logger.name)
@@ -849,10 +866,11 @@ def test_submission_the_loop_never_runs_fails_instead_of_hanging(monkeypatch):
         # worker has stopped.) Only on the worker's own thread, as it finishes: not in a forked process, whose copy's loop
         # has closed.
         if worker.is_current_executor():
-            with worker._condition:
-                late.append(future := AwaitableFuture(prevent_blocking_wait_when=(worker._loop,)))
-                worker._submitted[future] = None
-                worker._loop.call_soon_threadsafe(worker._start, future, asyncio.sleep, (0,), {}, "sleep")
+            with worker._condition as jobs:
+                late.append(future := _ExecutorJob(prevent_blocking_wait_when=worker._blocking_checker))
+                future._target = worker._job(asyncio.sleep, (0,), {}, future)  # As submit() sets it
+                jobs.add(future)
+                worker._loop.call_soon_threadsafe(future.start, worker._loop)
         finalize(worker)
 
     monkeypatch.setattr(EventLoopExecutor, "_finalize", finalize_late)

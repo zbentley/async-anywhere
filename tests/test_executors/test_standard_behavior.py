@@ -47,11 +47,12 @@ async def test_run_doesnt_see_the_constructors_context():
 
 
 @pytest.mark.parametrize("interrupt", [False, True])
-async def test_state_callbacks_run_on_the_executors_thread(interrupt):
+async def test_state_callbacks_run_on_the_thread_that_changes_the_state(interrupt):
     async with running(Works) as worker:
+        await worker.reached("_run")  # By when its state callbacks have been added: see Harness._parent()
         await worker.shutdown(wait=False, cancel_futures=interrupt)
         await worker.shutdown(wait=False, cancel_futures=True)  # Again, which changes nothing
-        assert await worker.reached("stopped") == (True, worker.Stopping)  # See Harness._parent()
+        assert await worker.reached("stopped") == (False, worker.Stopping)  # This thread's, which stopped it
         assert await worker.reached("shutdown") == (True, worker.Shutdown, True)  # Once its loop has closed
 
 

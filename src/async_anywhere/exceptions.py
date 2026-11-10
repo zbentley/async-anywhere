@@ -165,8 +165,17 @@ class JobCancelledByExecutorShutdown(AsyncAnywhereException, concurrent.futures.
     an executor stop condition that cancels running work (e.g. ``EventLoopExecutor.shutdown(cancel_futures=True)``)."""
 
     @classmethod
-    def from_cancellation(cls, cancelled: BaseException, stopped: EventLoopExecutorStopped) -> Self:
-        """:meta private:"""
-        interrupted = cls(*cancelled.args).with_traceback(cancelled.__traceback__)  # Ending where the job was cancelled
-        interrupted.__cause__ = stopped
+    def from_cancellation(
+        cls, cancelled: asyncio.CancelledError | EventLoopExecutorStopped, stopped: EventLoopExecutorStopped | None = None
+    ) -> Self:
+        """For a job cancelled by a stop: given its asyncio.CancelledError, and why the executor stopped; or, for a job
+        never started, just why the executor stopped. Raised from a copy of why.
+
+        :meta private:
+        """
+        if isinstance(cancelled, EventLoopExecutorStopped):
+            interrupted, stopped = cls(), cancelled
+        else:
+            interrupted = cls(*cancelled.args).with_traceback(cancelled.__traceback__)  # Ending where the job was cancelled
+        interrupted.__cause__ = stopped.copy()
         return interrupted

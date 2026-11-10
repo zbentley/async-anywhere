@@ -61,19 +61,19 @@ class Toggleable:
 
 @final
 class LockProtected[T]:
-    __slots__ = ("_acquire", "_release", "_value")
+    # __exit__ is a slot, not a method: with-statements look it up on the class, whose slot descriptor gives them this
+    # instance's lock's own (C) __exit__, so leaving a with-block runs no Python frame
+    __slots__ = ("_acquire", "_value", "__exit__")
+    __exit__: Callable[..., None]
 
     def __init__(self, value: T, recursive: bool = False):
         lock = RLock() if recursive else Lock()
         # Bound once: calling these is cheaper than looking up the lock's methods per call
-        self._acquire, self._release, self._value = lock.acquire, lock.release, value
+        self._acquire, self._value, self.__exit__ = lock.acquire, value, lock.__exit__
 
     def __enter__(self) -> T:
         self._acquire()
         return self._value
-
-    def __exit__(self, exc_type, exc, tb):
-        self._release()
 
     def replace_value(self, value: T) -> T:
         """Replaces the value. Not thread-safe unless called inside this class's context manager."""
