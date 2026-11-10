@@ -86,6 +86,8 @@ _STDLIB_PUBLIC_NAMES = {
     '_asyncio.Future': 'asyncio.Future',
     'asyncio.futures.Future': 'asyncio.Future',
     'asyncio.Future': 'asyncio.Future',
+    '_asyncio.Task': 'asyncio.Task',
+    'asyncio.Task': 'asyncio.Task',
     'concurrent.futures._base.Future': 'concurrent.futures.Future',
     'concurrent.futures.Future': 'concurrent.futures.Future',
     'asyncio.events.AbstractEventLoop': 'asyncio.AbstractEventLoop',

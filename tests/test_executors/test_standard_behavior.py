@@ -544,6 +544,83 @@ async def test_cancelled_error_raised_by_a_job_reaches_its_caller_as_an_error(me
             await asyncio.to_thread(lambda: getattr(worker, method)().result(2))
 
 
+async def test_cancelling_a_jobs_task_cancels_its_call():
+    async with running() as worker:
+
+        @worker.bridge
+        async def cancels_itself():
+            worker.current_job().cancel()
+            await asyncio.sleep(10)
+
+        call = cancels_itself()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        assert call.cancelled() and asyncio.current_task().cancelling() == 0
+
+
+# Current job
+
+
+async def test_current_job_is_a_calls_task_in_it_and_in_tasks_it_awaits():
+    async with running() as worker:
+
+        async def sees():
+            await asyncio.sleep(0)
+            return worker.current_job()
+
+        @worker.bridge
+        async def job():
+            async with asyncio.TaskGroup() as group:
+                grouped = group.create_task(sees())
+            seen = [
+                worker.current_job(),
+                await asyncio.create_task(sees(), context=contextvars.Context()),  # Whatever context it runs in
+                *await asyncio.gather(sees(), sees()),
+                grouped.result(),
+            ]
+            return [found is asyncio.current_task() for found in seen]
+
+        assert await job() == [True] * 5
+
+
+async def test_current_job_is_none_outside_calls_and_what_they_await():
+    async def main(worker):
+        seen["main task"] = worker.current_job()
+        await asyncio.get_running_loop().create_future()
+
+    seen, later = {}, AwaitableFuture()
+    async with running(main=main) as worker:
+
+        @worker.bridge
+        async def job():
+            loop, release = asyncio.get_running_loop(), asyncio.Event()
+            unawaited = loop.create_future()
+
+            async def background():
+                unawaited.set_result(worker.current_job())
+
+            async def outlives():
+                await release.wait()
+                later.set_result(worker.current_job())
+
+            asyncio.create_task(background())
+            await asyncio.wait([asyncio.create_task(outlives())], timeout=0.01)  # Awaited, then left running
+            seen["unawaited task"] = await unawaited
+            seen["thread"] = await asyncio.to_thread(worker.current_job)
+            return release
+
+        release = await job()
+
+        @worker.bridge
+        async def releases():  # Once the call has finished
+            release.set()
+
+        await releases()
+        seen["task the call awaited, after it finished"] = await later
+        seen["outside the executor"] = worker.current_job()
+        assert seen == dict.fromkeys(seen)
+
+
 async def test_cancelling_a_call_cancels_its_job_quietly():
     # Like a task cancelled and never awaited: the teardown fails the test if asyncio logs it as never retrieved
     async with running(Tidy) as worker:

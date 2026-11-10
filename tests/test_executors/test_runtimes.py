@@ -320,6 +320,32 @@ async def test_cancelling_a_call_cancels_the_trio_code_it_handed_over():
         assert await worker.bridge(guest.run)(checks, "after") == (True, "after")  # The guest carries on
 
 
+async def sees_no_job(worker, job):
+    await trio.lowlevel.checkpoint()
+    return worker.current_job(), job is not None
+
+
+async def reports_cancellation(worker, job):
+    job.cancel()  # Which run() passes on to this, as it does a cancellation of the call
+    await trio.sleep_forever()
+
+
+async def test_trio_code_reports_its_cancellation_by_cancelling_its_jobs_task():
+    guest = TrioGuest()
+    async with running(main=guest.parent_task) as worker:
+
+        @worker.bridge
+        async def hands_over(func):  # The job's task, as trio code runs in the guest's tasks, not the job's
+            return await guest.run(func, worker, worker.current_job())
+
+        assert await hands_over(sees_no_job) == (None, True)
+        call, finished = hands_over(reports_cancellation), AwaitableFuture()
+        call.add_done_callback(lambda _: finished.set_result(None))
+        await finished
+        assert call.cancelled()
+        assert await worker.bridge(guest.run)(checks, "after") == (True, "after")  # The guest carries on
+
+
 async def test_interrupting_cancels_the_trio_code_calls_handed_over():
     guest, marks = TrioGuest(), {name: AwaitableFuture() for name in ("started", "cleaned up")}
     async with running(main=guest.parent_task) as worker:

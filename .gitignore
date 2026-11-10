@@ -228,3 +228,4 @@ __marimo__/
 staticfiles/
 .idea/
 .ignore.py
+test.py

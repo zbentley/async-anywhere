@@ -410,6 +410,37 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         # Performance: inline parts of .current() since this is on the hot path of submit/job execution.
         return _current_executor.get() is self and current_thread() is self._thread
 
+    def current_job(self) -> asyncio.Task | None:
+        """
+        Returns:
+            The :py:obj:`asyncio.Task` running the invocant executor's :term:`job` that this method is called
+            from, or None if it is not called from one of the executor's jobs.
+
+            Code is inside a job if it is run by a call to a function called via :py:func:`submit`. If code is
+            *dispatched* from a job but is not directly *called* by it (e.g. if the job backgrounds an ``asyncio.Task``
+            or runs work on a thread via ``asgiref`` or ``asyncio.to_thread``), this method returns None.
+
+            Cancelling the returned task cancels the job: if the job then ends by raising
+            :py:obj:`asyncio.CancelledError`, the ``AwaitableFuture`` returned the job's original ``submit`` is
+            cancelled as well.
+        """
+        loop = asyncio._get_running_loop()
+        if loop is not self._loop or (task := asyncio.current_task(loop)) is None:  # Jobs are tasks on this loop
+            return None
+        calls = self._calls
+        if task in calls:
+            return task
+        # Else a job awaiting this, maybe via other tasks: asyncio records who awaits what, for capture_call_graph()
+        seen, todo = {task}, [task]
+        while len(todo) > 0:
+            for awaiter in todo.pop()._asyncio_awaited_by or ():
+                if awaiter in calls:
+                    return awaiter
+                if awaiter not in seen:  # Tasks deadlocked awaiting each other would loop forever
+                    seen.add(awaiter)
+                    todo.append(awaiter)
+        return None
+
     @property
     def _forked(self) -> bool:
         """
@@ -729,6 +760,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # about why the executor stopped.
             if self._interrupted and task.cancelling():
                 error = JobCancelledByExecutorShutdown.from_cancellation(ex, self._last_transition[2].copy())
+            elif task.cancelling():  # By its caller, or by something else, current_job().cancel() say: so is its future
+                future.cancel()
+                raise
             else:
                 error = ex
             # If we can't report it to the user, crash the task so Python's logger reports the failure

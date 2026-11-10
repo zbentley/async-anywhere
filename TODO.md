@@ -1,5 +1,9 @@
 # TODOs
 
+AwaitableFuture todos:
+- call graph support
+- "task cannot await on itself" for AFs that correspond to/wrap Tasks
+
 EventLoopExecutor todos;
 - decorate loop-only methods
 - add debug flag that causes decorator to assert, and runs loop in dbg
@@ -11,7 +15,7 @@ EventLoopExecutor todos;
 - py:exception doc tag?
 - ditch the term interrupt from all docs
 - Better trio support
-- 
+
 # Comparison
 
 Vs anyio:
