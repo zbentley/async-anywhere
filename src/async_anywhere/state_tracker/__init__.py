@@ -5,13 +5,13 @@ import threading
 from abc import ABC
 from collections import defaultdict
 from threading import RLock
-from typing import Any, ClassVar, Collection, ContextManager, Iterable, Self, TypeAlias, Union
+from typing import Any, ClassVar, Collection, ContextManager, Iterable, Self, TypeAlias, Union, final, Literal
 
 import attr
 
 from async_anywhere.exceptions import StateTrackerError
 
-# NB: in this instance, we mean "the literal class object for the typing.Self type", not "the type of the invoking class".
+# NB: in this instance, we mean "the literal class object for the typing.Self type", not "the type of the invocant".
 Transition: TypeAlias = Union["State", type[Any], type[Self]]
 
 
@@ -20,7 +20,6 @@ def _structural_invariant(cls: type, cond: Any, msg: str):
         raise TypeError(f"{cls.__qualname__}: {msg}")
     return cond
 
-_UNBOUND = "<unknown; State is not yet bound to a class>"
 # This lock orchestrates the extremely rare conflict risk of importing modules/declaring subclasses in parallel:
 _binding_lock = threading.Lock()
 
@@ -29,8 +28,6 @@ class State:
     """
     The state of a StateTracker. Declare States as class variables on a class which extends StateTracker, and the
     StateTracker will use them to model its internal state machine/graph.
-
-    States will be named according to what field they're assigned to in their StateTracker class; see :py:attr:`name`.
 
     Note:
         A State is only ever equal to itself. States with the same parameters from two different StateTrackers
@@ -42,24 +39,35 @@ class State:
     initial: bool = attr.field()
     terminal: bool = attr.field(default=False, init=False)
     """Whether this State can transition to any other States.
+    
+    Example:
+        >>> class MyTracker(StateTracker):
+        >>>     Foo = State()
+        >>>     First = State(initial=True, destinations=[Foo])
+        >>>     Bar = State(sources=[First])
+        >>>
+        >>> assert not MyTracker.First.terminal
+        >>> assert MyTracker.Bar.terminal
+        >>> assert MyTracker.Foo.terminal
+    
     If a State is not yet bound to a StateTracker, the behavior of this field is undefined.
     """
-    _name: str = attr.field(init=False, default=_UNBOUND)
+    name: str = attr.field(init=False, default="")
+    """The name to which the State was bound on its StateTracker class.
+    
+    Example:
+    
+        >>> class Foo(StateTracker):
+        >>>     MyFirstState = State(initial=True)
+        >>>
+        >>> assert Foo.MyFirstState.name == "MyFirstState"
+
+    If a State is not yet bound to a StateTracker, this is the empty string. You *can* declare States apart from
+    their StateTracker class, but probably *shouldn't*: a State can only be bound to one StateTracker (reusing
+    it is an error at StateTracker class declaration time) and declaring them separately will likely lead to
+    needlessly hard-to-follow code.
+    """
     _owner: type | None = attr.field(init=False, default=None)
-
-    @property
-    def name(self) -> str:
-        """The name to which the State was bound on its StateTracker.
-
-        If a State is not yet bound to a StateTracker, this is the empty string. You *can* declare States apart from
-        their StateTracker class, but probably *shouldn't*: a State can only be bound to one StateTracker (reusing
-        it is an error at StateTracker class declaration time) and declaring them separately will likely lead to
-        needlessly hard-to-follow code.
-        """
-        rv = self._name
-        if rv == _UNBOUND:
-            return ""
-        return rv
 
     def __init__(
         self,
@@ -79,7 +87,7 @@ class State:
 
             destinations: States which the StateTracker can transition *to* from this State. Accepts another
                 :py:class:`State` declared in the same class as this one, :py:obj:`typing.Any`, :py:obj:`typing.Self`,
-                or an iterable of any of those
+                or an iterable of any of those.
 
                 If ``typing.Any`` is present, this state can transition to any other state in the ``StateTracker``,
                 including itself.
@@ -88,7 +96,7 @@ class State:
                 transition event and will wake up any :py:func:`WaitableStateTracker.wait_for_state` calls subscribed
                 to that transition).
 
-                A transition is allowed if it is listed either in "sources" or "destinations"; it doesn't need to be
+                A transition is allowed if it is listed either in ``sources`` or ``destinations``; it doesn't need to be
                 listed in both.
 
                 Redundant or duplicate entries in "sources" and "destinations" are ignored.
@@ -103,6 +111,9 @@ class State:
 
             sources: States which the ``StateTracker`` can transition into this state *from*. Behaves the same as
                 ``destinations`` otherwise.
+
+                A transition is allowed if it is listed either in ``sources`` or ``destinations``; it doesn't need to be
+                listed in both.
         """
         self.__attrs_init__(
             initial=initial,
@@ -136,60 +147,89 @@ class State:
             bound = self._owner
             _structural_invariant(
                 owner,
-                bound is None or self._binding(name, owner) == self._binding(self._name, bound),
-                f"Cannot bind State {bound.__qualname__ if bound else ''}.{self._name} as '{name}'; a State can only be bound once"
+                bound is None or self._binding(name, owner) == self._binding(self.name, bound),
+                f"Cannot bind State {bound.__qualname__ if bound else ''}.{self.name} as '{name}'; a State can only be bound once"
             )
             # Hack around frozen-ness to update the state object. This is safe, since it happens only at compile time
             # and only when a State object is first bound to its StateTracker. Attempts to rebind a State later fail
             # if its "name" is already set.
             object.__setattr__(self, "_owner", owner)
-            object.__setattr__(self, "_name", name)
+            object.__setattr__(self, "name", name)
 
     def __repr__(self):
-        return f"<{self.__class__.__qualname__} {self.name}>"
+        name = self.name or "<unknown; State is not yet bound to a class>"
+        return f"<{self.__class__.__qualname__} {name}>"
 
 
-# TODO think about hash or not
 class StateTracker(ABC):
-    """
-    An abstract class which has a field :py:attr:`state`, containing a State object representing the current state in a
-    state machine/state transition graph of this class.
+    r"""
+    An abstract class which contains one or more :py:class:`State`\ s as class variables, and can move between them in
+    a thread-safe way. Instances have a field :py:attr:`state` which contains the current ``State`` of the instance,
+    and have several other methods to inspect and assert on states and transitions between them.
 
-    Users are intended to subclass StateTracker for their own use-cases. When subclassing StateTracker, users should
-    declare one or more State objects as class-level fields, like this:
+    Users can call :py:func:`_transition` or :py:func:`_try_transition` to move a ``StateTracker`` between states.
+
+    Users are intended to subclass StateTracker for their own use-cases. When subclassing StateTracker, users must
+    declare one or more State objects as class-level fields.
+
+    Warning:
+        Do not declare invalid (unreachable) States on a StateTracker subclass. At the moment, no topological validation
+        of the state graph is performed, but validation (and resulting validation errors) may be added in a future
+        release.
 
     Example:
 
         >>> class MyStateTracker(StateTracker):
         >>>    InitialState = State(initial=True)
         >>>    OtherState = State(sources=[InitialState])
-        >>>    ...
+        >>>
+        >>>    def foo(self):
+        >>>         self._transition(self.OtherState, "some data")
+        >>>
+        >>> t = MyStateTracker()
+        >>> assert t.state is MyStateTracker.InitialState is t.InitialState
+        >>> t.foo()
+        >>> assert t.state is MyStateTracker.OtherState is t.OtherState
+        >>> t.require(t.OtherState)
+        >>>
+        >>> # Raises StateTrackerError (an InvalidStateError): not in required state
+        >>> t.require(t.InitialState)
+        >>> # Raises StateTrackerError: cannot transition from OtherState -> OtherState.
+        >>> t.foo()
 
-    When this is done, instances of MyStateTracker will start with ``inst.state == MyStateTracker.InitialState``.
+    .. admonition:: Subclassing
 
-    States must be declared together on one class; they cannot be combined or layered across subclasses. States must be
-    declared in one of the following locations:
+        All of a StateTracker's States must be declared together on one class; they cannot be combined or layered across
+        subclasses. States may be declared in one of the following locations:
 
-    1. On a concrete StateTracker subclass, as explicit, literal class fields (not via descriptors or __class_getitem__).
-    2. On any class that is inherited by a StateTracker subclass as explicit, literal fields. This allows for common
-       state graphs to be used by multiple different StateTracker subclasses via a mixin.
+        1. On a concrete StateTracker subclass, as explicit, literal class fields (not via descriptors or ``__class_getitem__``).
+        2. On any class that is inherited by a StateTracker subclass (as explicit, literal class fields). This allows for
+           common state graphs to be used by multiple different StateTracker subclasses via a mixin.
 
-    All concrete StateTracker subclasses must declare States. Abstract StateTracker subclasses must be extended by a
-    concrete class which declares States.
+        All concrete StateTracker subclasses must declare States. Abstract StateTracker subclasses must be extended by a
+        concrete class which declares States.
 
-    Note: if using `attrs`, `dataclass` or other class-creation factories, all State objects declared at the class level
-    should be annotated with ClassVar, otherwise subclass declaration may fail.
+        If subclasses use ``attrs``, ``dataclass`` or other class-creation factories, all State objects declared at the class
+        level should be annotated with :py:obj:`ClassVar`, otherwise subclass declaration may fail.
 
-    Users can call StateTracker._transition() to move a StateTracker between states (or _try_transition(), which returns
-    whether the transition was allowed, rather than raising StateTrackerError if not).
+    .. admonition:: Fork Safety
 
-    Note that the "_transition()" method *is* a user-callable public API. It is declared as _private for convenience,
-    since many uses of StateTracker may not want the state to be externally transitionable. You can declare a public
-    transition method via code like:
+        ``StateTracker`` itself is safe to use in the presence of :py:func:`os.fork` in that it *will not crash or
+        deadlock* in either the parent or child process. However, there are two important caveats when using this class
+        with forking code.
 
-    >>> class PubliclyTransitionableStateTracker(StateTracker):
-    >>>      transition = StateTracker._transition  # or WaitableStateTracker._transition
-    >>>      ...
+        1. If the ``lock`` constructor parameter cannot be safely reset/re-constructed in a child process, behavior is
+           undefined.
+        2. If forking happens from another thread while a ``StateTracker`` is calling :py:func:`_transition`, some, all,
+        or none of the following may be true when the tracker is used in a forked child process:
+
+        - It might be as if the call to ``_transition`` never occurred. ``_transition``\ s side effects are only
+          guaranteed if it has *returned* by the time ``os.fork`` is called.
+        - ``StateTracker.state`` might point to the new State, but ``_after_state_change`` may be skipped in the forked child.
+        - *Some* code in ``_after_state_change`` may have run, but that method may have never completed/returned,
+          leaving any data it mutated in an undefined/indeterminate state.
+
+        Forking and continuing to use a StateTracker in the parent process requires no special consideration.
     """
 
     states: ClassVar[frozenset[State]]
@@ -198,27 +238,57 @@ class StateTracker(ABC):
 
     # (old state, new state, data) of the last transition, or (None, initial state, None) before any: one tuple, so that
     # lock-free readers always see a state and its data together
-    _last_transition: tuple[State | None, State, Any]
+    _last_transition: tuple[State | None, State, object]
 
     __slots__ = ('_last_transition', '_condition')
 
     def __init__(self, lock: ContextManager | None = None) -> None:
         """
-
         Args:
-            lock: context manager representing the lock that will be held by each transition, and its
-                _after_state_change(). The default is a fresh RLock, so _after_state_change() can use the StateTracker
-                again. Pass contextlib.nullcontext() to take no lock, and only use the StateTracker from one thread at
-                a time.
+            lock: a context manager representing the lock that will be held by each transition between states, and by
+                :py:func:`_after_state_change`. The value it produces is not used. The default is a per-instance
+                :py:obj:`threading.RLock`, which allows ``_after_state_change`` to perform transitions.
+
+                *Only* these methods are protected by the lock: :py:func:`_transition`, :py:func:`_try_transition`, and
+                :py:func:`_after_state_change`. All other methods are lock-free and thread-safe to call.
+
+                Pass :py:obj:`contextlib.nullcontext` to take no lock (which means that a ``StateTracker`` can only be
+                safely used from one thread at a time).
+
+                Warning:
+                    If a non-recursive value is supplied for ``lock`` (e.g. :py:obj:`threading.Lock`) attempts to call
+                    :py:func:`_transition` or :py:func:`_try_transition` from within :py:func:`_after_state_change` will
+                    deadlock.
         """
         self._last_transition = self._initial_transition
         self._condition = RLock() if lock is None else lock
 
-    # We use a property to prevent accidental manual mutation
+    @final
     @property
     def state(self) -> State:
+        """The current :py:class:`State` of the invocant StateTracker."""
         return self._last_transition[1]
 
+    @final
+    @property
+    def last_transition(self) -> tuple[State | None, State, object]:
+        """Information about the last state transition (if any) performed on this StateTracker.
+
+        A 3-tuple containing:
+
+        1. The :py:class:`State` that the StateTracker was in before its most recent transition.
+        2. The :py:class:`State` that this StateTracker was transitioned *into*, as returned by :py:attr:`state`.
+        3. The data payload passed to :py:func:`_transition` during the last successful transition event, or None if no
+           data was passed or no transition has yet been performed.
+
+        Note:
+            The value provided by this property is retrieved in an atomic, thread-safe manner, but simultaneous calls to
+            ``_transition`` or ``_try_transition`` from other threads may cause repeated reads of this property to
+            observe multiple values, and it may disagree with the :py:attr:`state` property.
+        """
+        return self._last_transition
+
+    @final
     @classmethod
     def _check_states(cls, seen: frozenset[State], source, *states):
         # TODO warn unreachable/prime DAG?
@@ -286,10 +356,33 @@ class StateTracker(ABC):
         cls.states = states
         cls._initial_transition = (None, initial, None)  # A tuple, not a State, so this class doesn't declare one
 
-    def _after_state_change(self, old_state: State, new_state: State, data: Any):
-        """To be overridden by subclassers."""
-        # NB: runs under the lock, just after the transition, so self.state is new_state; keep it brief
+    def _after_state_change(self, old_state: State, new_state: State, data: object):
+        """
+        Called immediately after the invocant successfully transitions into a new State. *Not* called when the invocant
+        is constructed in its initial state.
 
+        Does nothing by default; can optionally be overridden by subclasses (``super()`` does not need to be called by
+        overriders).
+
+        This method is called by :py:func:`_transition` while the ``lock`` constructor parameter is held, and will thus
+        never be called concurrently on the same StateTracker instance. If you instead want to react to state changes
+        without ``lock`` being held, override ``_transition`` in a subclass instead.
+
+        Warning:
+            If a non-recursive value is supplied for ``lock`` (e.g. :py:obj:`threading.Lock`) attempts to call
+            :py:func:`_transition` or :py:func:`_try_transition` from within :py:func:`_after_state_change` will
+            deadlock. If not specified, ``lock`` uses :py:obj:`threading.RLock`, which is not at risk for this deadlock.
+
+        Args:
+            old_state: the :py:class:`State` that the invocant was in before its most recent transition.
+            new_state: the :py:class:`State` that the invocant was transitioned *into*. Depending on concurrency and the
+                semantics of the ``lock`` constructor parameter, this may or may not be the same value as the
+                :py:attr:`state` attribute.
+            data: the value that was supplied to :py:func:`_transition` when transitioning from ``old_state`` to
+                ``new_state``, or None if a value was not supplied.
+        """
+
+    @final
     def _check_state(self, state: State) -> State:
         if state not in self.states:
             err = StateTrackerError(
@@ -299,23 +392,90 @@ class StateTracker(ABC):
             raise TypeError(err.args[0])
         return state
 
-    def _transition(self, target: State, data: Any = None):
+    def _transition(self, target: State, data: object = None) -> State:
+        r"""
+        Move the invocant ``StateTracker`` from its current State (stored in :py:attr:`state`) to the specified
+        ``target`` State, storing an optional data payload related to the transition.
+
+        If this method is overridden in a subclass, ``super()._transition`` must be called.
+
+        Note:
+             Despite its name starting with an underscore, :py:meth:`_transition` *is* a user-callable public API. It
+             is declared as _private for convenience, since many uses of StateTracker may not want the state to be
+             externally transitionable. You can declare a public ``transition()`` method via code like:
+
+            >>> class PubliclyTransitionableStateTracker(StateTracker):
+            >>>      transition = StateTracker._transition  # or WaitableStateTracker._transition
+            >>>      ...
+
+        Args:
+            target: the State that the invocant should be transitioned into.
+            data: a payload to attach to the transition event. Will be provided to :py:func:`_after_state_change` and
+                returned by :py:attr:`last_transition`. ``data`` is stored on the invocant (and thus not garbage
+                collected) until the next successful call to ``_transition``.
+
+        Raises:
+            :py:class:`StateTrackerError`: if the current :py:attr:`state` cannot be transitioned to ``target`` (via
+                the ``sources`` and ``destinations`` constructor parameters to :py:class:`State`).
+
+            :py:class:`TypeError`: if ``target`` is not one of the invocant's declared :py:class:`State`\ s.
+
+        Returns:
+            The prior state of the invocant before it was transitioned to ``target``.
+        """
         with self._condition:
             old_state = self._last_transition[1]
             if target not in old_state._destinations:
                 raise StateTrackerError(self, "Could not transition to state", self._check_state(target))
             self._last_transition = (old_state, target, data)
+            # TODO fork unsafety is between these lines
             self._after_state_change(old_state, target, data)
+        return old_state
 
-    def _try_transition(self, target: State, data: Any = None) -> bool:
-        # Through _transition(), so a subclass's is used. A State not of this class still raises TypeError.
+    @final
+    def _try_transition(self, target: State, data: object = None) -> State | Literal[False]:
+        r"""
+        Tries to call :py:func:`_transition` and returns False if it raises :py:class:`StateTrackerError`.
+
+        Args:
+            target: see :py:func:`_transition`.
+            data: see :py:func:`_transition`.
+
+        Raises:
+            :py:class:`TypeError`: if ``target`` is not one of the invocant's declared :py:class:`State`\ s.
+
+        Returns:
+            The prior state of the invocant before it was transitioned to ``target``, if the transition was successful,
+            or False, if ``target`` was a valid State for the invocant, but there was no source/destination path from
+            the invocant's current :py:attr:`state` to ``target``.
+
+            Since State objects are always truthy, the return value of this method can be safely tested as a boolean,
+            e.g. ``if old := tracker._try_transition(tracker.NewState): ...``.
+        """
         try:
-            self._transition(target, data)
+            return self._transition(target, data)
         except StateTrackerError:
             return False
-        return True
 
-    def require(self, state: State, *desired_states: State) -> Self:
+    @final
+    def require(self, desired_state: State, *desired_states: State) -> Self:
+        r"""
+        Asserts that the invocant ``StateTracker`` is in one of several specified :py:class:`State`\ s.
+
+        Args:
+            desired_state: a ``State`` to require.
+            *desired_states: additional ``State``\ s to require. ``require()`` is satisfied if :py:attr:`state`
+                is *any* of the supplied ``desired_state`` or ``desired_states`` values.
+
+        Raises:
+            :py:class:`StateTrackerError`: if the current :py:attr:`state` is not ``desired_state`` or any of ``desired_states``.
+
+            :py:class:`TypeError`: if any of ``desired_state`` or ``desired_states`` is not one of the invocant's
+                declared :py:class:`State`\ s.
+
+        Returns:
+            The invocant StateTracker object, for convenience in chaining.
+        """
         current_state = self.state
         if current_state is state or current_state in desired_states:
             return self

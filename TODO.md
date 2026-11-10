@@ -10,7 +10,8 @@ EventLoopExecutor todos;
 - Log never-awaited on bridge futures
 - py:exception doc tag?
 - ditch the term interrupt from all docs
-
+- Better trio support
+- 
 # Comparison
 
 Vs anyio:

@@ -2,7 +2,8 @@
 ================================
 
 .. automodule:: async_anywhere.state_tracker
-   :members:
+    :members:
+    :private-members:
 
 .. automodule:: async_anywhere.state_tracker.waitable
-   :members:
+    :members:

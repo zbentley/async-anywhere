@@ -202,8 +202,6 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         The timestamp returned is a monotonic floating point value that does not necessarily correspond to the system
         time; see :py:func:`time.monotonic` for details.
 
-        Takes out no locks if this future has already completed.
-
         Note:
             This function does *not* return the timestamp according to the event loop (if any) that was running when
             a future was completed. However, many/most implementations of :py:meth:`AbstractEventLoop.time <asyncio.loop.time>` return
@@ -250,27 +248,39 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
                 is not active) is not running.
 
         Returns:
+            :**Outside of Trio**:
+
             If ``loop`` is a non-Trio event loop or a non-Trio event loop is running, returns an
-            :py:obj:`asyncio.Future` (*or subclass thereof*) that is linked to this ``AwaitableFuture`` and
-            attached to the specified event loop. Cancelling either future cancels the other.
+            :py:obj:`asyncio.Future` (*or subclass thereof*) that is linked to the outcome of the invocant
+            ``AwaitableFuture`` and attached to the specified event loop.
+
+        Returns:
+            :**Inside Trio**:
+
+            If ``loop`` is None and Trio is running, returns an awaitable which can (only) be ``await``\ ed by the
+            current Trio context, and is linked to the outcome of the invocant ``AwaitableFuture``.
+
+            The only public method on the returned Trio-compatible awaitable is ``.cancel()``.
 
             Note:
-                The returned :py:obj:`asyncio.Future` will does *not* support calls to ``set_result`` or
-                ``set_exception`` attempting to call either method will fail with an error; to set the result or
-                exception of the returned future, call :py:meth:`set_result` or :py:meth:`set_exception` on *this*
-                future instead.
+                When the returned value or the invocant ``AwaitableFuture`` is cancelled, the returned Trio awaitable
+                will be marked as `failed` (not cancelled, since ``asyncio.Future``\ s notion of cancellation is not
+                present in Trio) with a :py:class:`concurrent.futures.CancelledError` exception.
 
-            If ``loop`` is None and Trio is running, returns an awaitable which can (only) be ``await``ed by the current
-            Trio context. The only additional public method on the Trio-compatible awaitable is ``.cancel()``, which
-            works like ``asyncio.Future.cancel`` and cancels the returned future-alike and this ``AwaitableFuture``.
-            Trio-returned futures cannot have a result or exception manually set.
+        Either return type, when awaited, produces the result, cancellation, or exception with which the invocant--
+        its "parent" ``AwaitableFuture``--was completed.
 
-            Either return type, when awaited, produces the result, cancellation, or exception with which its "parent"
-            ``AwaitableFuture`` was completed.
+        Cancelling either the returned awaitable or the invocant cancels the other.
 
-            Note:
-                The returned future may not be new/unique; use :py:func:`asyncio.wrap_future` on the result of this
-                method if your code requires a unique future.
+        The returned future may not be new/unique; use :py:func:`asyncio.wrap_future` on the result of this
+        method if your code requires a unique future.
+
+        Note:
+            The returned object does *not* support calls to ``set_result()`` or ``set_exception()``. Attempting to call
+            either method will fail with an error. To :term:`complete` the returned future, either cancel it, or call
+            :py:meth:`set_result`, :py:meth:`set_exception`, or :py:meth:`cancel` on the AwaitableFuture that originally
+            called ``as_async_future()`` instead.
+
         """
         if loop is None:
             if TrioRuntime.in_task(): # TODO remove dot lookup
@@ -281,10 +291,9 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         return AsyncioAwaitableFuture(self, loop)
 
     def __await__(self):
-        # If we're already done, __await__ can resolve without dealing with any loop machinery at all
+        # If we're already done, __await__ can resolve without dealing with any loop machinery at all:
         if self._last_transition[1].terminal:
             return self._await_finished()
-        # Not a generator, so that what awaits it awaits the asyncio.Future's own iterator directly
         return self.as_async_future().__await__()
 
     def _await_finished(self):
@@ -293,13 +302,11 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
             # Since result() raises concurrent.futures.CancelledError, convert to asyncio.CancelledError here
             raise asyncio.CancelledError
         return self.result()
-        yield  # A generator, for __await__ to return, that finishes at once
+        yield  # Mark this method as a generator so that it can be returned from __await__
 
     def cancel(self) -> bool:
         """
         Attempts to cancel this future.
-
-        Takes out no locks if this future has already completed.
 
         Returns:
             True if the cancellation was recieved/accepted, False otherwise (e.g. if the future has already
@@ -607,8 +614,6 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         If this future was cancelled, raise CancelledError.
 
         Otherwise, does nothing.
-
-        Takes out no locks.
         """
         if error := self.exception_or_none():
             raise error.with_traceback(self._exception_tb)
@@ -617,8 +622,6 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
 
     def set_result_if_not_done(self, result: T) -> bool:
         r"""If this future is not done, calls :py:meth:`set_result` with the supplied value.
-
-        Takes out no locks if the future has already completed.
 
         Args:
             result: See :py:meth:`set_result`.
@@ -645,8 +648,6 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     def set_exception_if_not_done(self, exception: BaseException) -> bool:
         r"""If this future is not done, calls :py:meth:`set_exception` with the supplied value.
 
-        Takes out no locks if the future has already completed.
-
         Args:
             exception: See :py:meth:`set_exception`.
 
@@ -665,8 +666,6 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         """Returns this future's exception if it failed with an error.
 
         Returns None if the future is not done, was cancelled, or :term:`completed` without an exception.
-
-        Takes out no locks.
         """
         _, state, data = self._last_transition
         return data if state is self.Failed else None
@@ -675,8 +674,6 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         """Returns the result of this future if it is done.
 
         Returns None if the future is not done, failed, or was cancelled.
-
-        Takes out no locks.
 
         Note:
             If your future can be successfully :term:`completed` with the value ``None``, this method is likely not
@@ -687,15 +684,11 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
 
     def done(self) -> bool:
         """Returns True if this future has :term:`completed`, False otherwise.
-
-        Takes out no locks.
         """
         return self._last_transition[1].terminal
 
     def cancelled(self) -> bool:
         """Returns True if this future was :term:`completed` by being cancelled False otherwise.
-
-        Takes out no locks.
         """
         return self._last_transition[1] is self.Cancelled
 
@@ -709,8 +702,6 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     def running(self) -> bool:
         """
         Returns True if this future has *not* :term:`completed`, False otherwise.
-
-        Takes out no locks.
 
         :meta private:
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC
 from operator import itemgetter
-from typing import ContextManager, Generic, Literal, TypeAlias, TypeVar, overload
+from typing import ContextManager, Generic, Literal, TypeAlias, TypeVar, overload, final
 from weakref import WeakSet
 
 from async_anywhere.exceptions import StateTrackerError
@@ -12,13 +12,11 @@ from async_anywhere.state_tracker import State, StateTracker
 _data = itemgetter(2)  # A transition's data, from its (old state, new state, data) triple
 T = TypeVar("T")
 # Old state and data are None for the initial state, which no transition entered
-_FutureType: TypeAlias = tuple[State | None, State, T]
 
 class WaitableStateTracker(StateTracker, ABC, Generic[T]):
     """TODO"""
-    _waiters: dict[State, WeakSet[AwaitableFuture[T]]]
-
     __slots__ = ('_waiters',)
+
     def __init__(self, lock: ContextManager | None = None):
         """
         Always thread safe, as its futures can be waited on and resolved from any thread. Futures from wait_for_state()
@@ -27,7 +25,7 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
         lock: see StateTracker. It must be a real lock, as its futures are waited on and resolved from any thread.
         """
         super().__init__(lock=lock)
-        self._waiters = {s: WeakSet() for s in self.states}
+        self._waiters: dict[State, WeakSet[AwaitableFuture[T]]] = {s: WeakSet() for s in self.states}
 
     @overload
     def wait_for_state(
@@ -41,7 +39,8 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
     @overload
     def wait_for_state(
         self, state: State, *states: State, ignore_current_state: bool = False, return_states: Literal[True], **kwargs
-    ) -> AwaitableFuture[_FutureType]: ...
+    ) -> AwaitableFuture[tuple[State | None, State, T]]: ...
+    @final
     def wait_for_state(
         self, state: State, *states: State, ignore_current_state: bool = False, return_states: bool = False, **kwargs
     ) -> AwaitableFuture[T]:
@@ -68,7 +67,8 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
                     self._waiters[state].add(future)
         return future
 
-    def _transition(self, target: State, data: T | None = None):
+    @final
+    def _transition(self, target: State, data: T | None = None) -> State:
         with self._condition:
             old_state = self.state
             if target not in old_state._destinations:
@@ -81,3 +81,4 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
 
         for future in waiters:
             future.set_result_if_not_done(result)
+        return old_state
