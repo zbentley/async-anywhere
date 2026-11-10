@@ -223,7 +223,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
 
     def __attrs_post_init__(self):
-        super().__init__(lock=LockProtected(set(), recursive=True))
+        super().__init__(lock=LockProtected(set()))
         _fork_safety.executors.ensure_registered(self)
         # Captured outside the try/except in case the code to prime these fields has errors
         thread, runner = self._thread, self._runner
@@ -362,11 +362,15 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # Accepted for good: from now on the job runs, or is interrupted, but is never refused
             jobs.add(future)
 
-            if self.is_current_executor():
-                # TODO can we just call start directly and chain the future? Tried that before, but why was it abandoned?
-                self._loop.call_soon(future.start, self._loop, context=context)
-            else:
+        # Unlocked: asyncio's self-pipe send() drops the GIL, so holding the lock across it stalls a loop that takes it
+        if self.is_current_executor():
+            # TODO can we just call start directly and chain the future? Tried that before, but why was it abandoned?
+            self._loop.call_soon(future.start, self._loop, context=context)
+        else:
+            try:
                 self._loop.call_soon_threadsafe(future.start, self._loop, context=context)
+            except RuntimeError:  # The loop closed after a crash, and _finalize() has failed the job
+                pass
         return future
 
     def bridge(self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
@@ -639,7 +643,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
           shut down already. Its calls' futures fail with it, and its state futures resolve: neither are cancelled by the
           fork, but their callbacks don't run here, unless added with run_in_forked_child=True.
         """
-        self._condition = LockProtected(self._condition._value, recursive=True)  # Its jobs, unlocked: no other thread is here
+        self._condition = LockProtected(self._condition._value)  # Its jobs, unlocked: no other thread is here
         forked = EventLoopExecutorForked()
         self._try_transition(self.Stopping, forked)  # Unless it had stopped
         if self._try_transition(self.Shutdown, forked):  # Unless it had shut down
@@ -676,7 +680,8 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             if stopping:
                 # The main task ending was the stop, so it interrupts calls, as shutdown(cancel_futures=True) would
                 self._interrupt(True)
-            # Calls accepted but not yet started first: turns of the loop run their start()s, queued before the stop
+            # Calls accepted but not yet started first: turns of the loop run their start()s, which submit() posts
+            # just after accepting them, so maybe after the stop
             while len(self._tasks) < len(self._condition._value):  # Unlocked, as none is added now
                 loop.run_until_complete(asyncio.sleep(0))
             # Let calls still in flight finish (or, if they were interrupted, clean up) before re-cancelling them and

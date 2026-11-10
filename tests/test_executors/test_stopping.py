@@ -747,7 +747,7 @@ async def test_a_call_from_a_handler_logging_the_stop_is_refused_rather_than_dea
     class CallsTheExecutor(logging.Handler):
         def emit(self, record):
             # Under the lock its transition holds: if that's not reentrant, this times out, rather than deadlocking
-            if worker._condition._acquire(timeout=1):
+            if worker._condition.acquire(timeout=1):
                 try:
                     worker.work()
                 except CleanStop as error:

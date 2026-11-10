@@ -2,11 +2,11 @@ import asyncio
 import concurrent.futures
 from concurrent.futures._base import CANCELLED_AND_NOTIFIED, FINISHED, PENDING, RUNNING
 from math import isinf
-from threading import Condition, Thread
+from threading import Thread
 from time import monotonic
 from typing import Any, Awaitable, Callable, Self, Collection, TypeVar, Iterable
 
-from async_anywhere._util import AnyEventLoop, BlockingChecker, BlockingNotAllowed, futures_logger
+from async_anywhere._util import AnyEventLoop, BlockingChecker, BlockingNotAllowed, Condition, futures_logger
 from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.futures import _fork_safety
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
@@ -166,19 +166,26 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
             self._blocking_checker = None
         else:
             self._blocking_checker = BlockingChecker(prevent_blocking_wait_when)
-        self._ignore_cancel = ignore_cancel
-        self._cancel_pending_in_forked_child = cancel_pending_in_forked_child
-        self._transform_result = transform_result
+        (
+            self._ignore_cancel,
+            self._cancel_pending_in_forked_child,
+            self._transform_result,
+            self._exception_tb,
+        ) = (
+            ignore_cancel,
+            cancel_pending_in_forked_child,
+            transform_result,
+            None,
+        )
         self._completed_at: float | None = None
         # None for most futures: skipping the comprehension saves ~20 ns on hot paths
         self._done_callbacks: dict[_DoneCallbackToken, Callable[[Self], Any]] = (
             {} if done_callbacks is None else {_DoneCallbackToken(): c for c in done_callbacks}
         )
-        self._exception_tb = None
 
         # Mutated only by code in concurrent.futures.wait() and .as_completed(). Contains opaque objects installed and
         # removed by those methods.
-        self._waiters: list = []
+        self._waiters = []
         _fork_safety.futures.ensure_registered(self)  # Until it has finished
 
     def __repr__(self):
