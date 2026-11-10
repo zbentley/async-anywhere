@@ -29,9 +29,12 @@ class _ExecutorJob(AwaitableFuture):
         if not task.done():  # Else it ended in its first step, and was finish()ed already
             self._target = task
 
-    def finish(self):
-        # Its task's context holds the executor, which a finished job's future mustn't keep alive
+    def finish(self) -> bool:
+        # Returns whether its job never started. Its task's context holds the executor, which a finished job's future
+        # mustn't keep alive
         target, self._target = self._target, None
         # Its coroutine, never started, so never will be: not running its first step, which this ends, eagerly
         if target is not None and not isinstance(target, asyncio.Task) and getcoroutinestate(target) == CORO_CREATED:
             target.close()  # As Python warns about coroutines dropped unawaited
+            return True
+        return False

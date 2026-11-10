@@ -352,25 +352,33 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         if context.get(current_async_library_cvar):
             context.run(current_async_library_cvar.set, None)
 
-        with self._condition as jobs:
-            # TODO can we easily do this opportunistically outside the lock? Is that worth it since its error is a
-            #   misuse condition anyway?
-            if self._last_transition[1] is not self.Running:
-                future.finish()  # Closing its coroutine, never to run
-                raise self._last_transition[2].copy()
+        try:
+            with self._condition as jobs:
+                # TODO can we easily do this opportunistically outside the lock? Is that worth it since its error is a
+                #   misuse condition anyway?
+                if self._last_transition[1] is not self.Running:
+                    future.finish()  # Closing its coroutine, never to run
+                    raise self._last_transition[2].copy()
 
-            # Accepted for good: from now on the job runs, or is interrupted, but is never refused
-            jobs.add(future)
+                # Accepted for good: from now on the job runs, or is interrupted, but is never refused
+                jobs.add(future)
 
-        # Unlocked: asyncio's self-pipe send() drops the GIL, so holding the lock across it stalls a loop that takes it
-        if self.is_current_executor():
-            # TODO can we just call start directly and chain the future? Tried that before, but why was it abandoned?
-            self._loop.call_soon(future.start, self._loop, context=context)
-        else:
-            try:
-                self._loop.call_soon_threadsafe(future.start, self._loop, context=context)
-            except RuntimeError:  # The loop closed after a crash, and _finalize() has failed the job
-                pass
+            # Unlocked: asyncio's self-pipe send() drops the GIL, so holding the lock across it stalls a loop that takes it
+            if self.is_current_executor():
+                # TODO can we just call start directly and chain the future? Tried that before, but why was it abandoned?
+                self._loop.call_soon(future.start, self._loop, context=context)
+            else:
+                try:
+                    self._loop.call_soon_threadsafe(future.start, self._loop, context=context)
+                except RuntimeError:  # The loop closed after a crash, and _finalize() has failed the job
+                    pass
+        except BaseException:  # A signal's KeyboardInterrupt, say: else a job accepted but never posted stalls any stop
+            with self._condition as jobs:
+                accepted = future in jobs
+                jobs.discard(future)
+            if accepted:  # Its start may be posted, so cancelled for that to skip it (or for its task, if running)
+                future.cancel()
+            raise
         return future
 
     def bridge(self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
@@ -656,10 +664,14 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         with self._condition as jobs:
             to_abort = list(jobs)
             jobs.clear()
+        stopped = self._last_transition[2]
         while len(to_abort) > 0:
             job = to_abort.pop()
-            job.finish()  # Closing its coroutine, if never started
-            self._fail(job)  # Never run, or abandoned (or here, in a forked process)
+            # Closing its coroutine, if never started: then cancelled by the stop, as _job() fails those it refuses
+            if job.finish() and not isinstance(stopped, EventLoopExecutorForked):
+                self._fail(job, JobCancelledByExecutorShutdown.from_cancellation(stopped))
+            else:
+                self._fail(job)  # Abandoned (or here, in a forked process)
 
     def _main(self):
         async def run():
@@ -680,10 +692,8 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             if stopping:
                 # The main task ending was the stop, so it interrupts calls, as shutdown(cancel_futures=True) would
                 self._interrupt(True)
-            # Calls accepted but not yet started first: turns of the loop run their start()s, which submit() posts
-            # just after accepting them, so maybe after the stop
-            while len(self._tasks) < len(self._condition._value):  # Unlocked, as none is added now
-                loop.run_until_complete(asyncio.sleep(0))
+            # One turn runs the start()s posted so far, whose calls _job() fails as interrupted; _finalize() fails any never started
+            loop.run_until_complete(asyncio.sleep(0))
             # Let calls still in flight finish (or, if they were interrupted, clean up) before re-cancelling them and
             # aborting them.
             if len(tasks := self._tasks) > 0:
