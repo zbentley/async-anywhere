@@ -39,6 +39,8 @@ Job Cancellation
   it.
 - Code cancels the job's :py:obj:`asyncio.Task` directly (e.g. via ``asyncio.current_task().cancel()`` in the job). The
   job's future is cancelled once the job finishes.
+- An :py:obj:`asyncio.CancelledError` escapes the job without anything having cancelled it (e.g. the job awaits
+  something that was cancelled). As with an :py:obj:`asyncio.Task`, the job's future is cancelled.
 - The executor finishes :ref:`shutting down <stopping>`, if tasks have not completed in response to prior cancellations.
 
 Main task Cancellation
@@ -117,11 +119,6 @@ job.
 - **A cancel scope opened by the Trio code**: Trio handles this as usual, and the executor is not involved. The job's
   outcome is whatever the Trio code returns or raises afterwards; for example, if a :py:func:`trio.fail_after` deadline
   passes and its :py:obj:`trio.TooSlowError` escapes the Trio code, the job's future fails with that error.
-- **The cancel scope the recipe wraps around the Trio code**: if this scope is cancelled from the Trio side, rather than
-  by cancelling the job's future, the cancellation is reported back to the job as an :py:obj:`asyncio.CancelledError`.
-  Since the job's future was not cancelled, the executor :term:`completes <complete>` it as failed with that
-  :py:obj:`asyncio.CancelledError`, rather than as cancelled: the future's ``cancelled()`` method returns False, and
-  ``result()``, or awaiting the future from asyncio or Trio, raises :py:obj:`asyncio.CancelledError`.
 
 If your Trio code was conceptually cancelled, report this by cancelling the job's future, which
 :py:meth:`EventLoopExecutor.current_job` returns, as the job's caller would. Trio code running as a guest is not inside

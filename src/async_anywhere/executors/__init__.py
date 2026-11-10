@@ -129,7 +129,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         - ``await``\ ing the result of a :term:`job` from :doc:`Trio <trio:index>` works automatically. Running :term:`code in an executor`
           that uses Trio requires some setup, since the internal machinery of EventLoopExecutor is asyncio-only
           at this time. To run Trio code in an executor, use Trio's facilities for :ref:`acting as a "guest" of another
-          event loop <trio:guest-mode>`, e.g. :py:func:`trio.lowlevel.start_guest_run`. See tests/test_executors/test_runtimes.py for examples.
+          event loop <trio:guest-mode>`, e.g. :py:func:`trio.lowlevel.start_guest_run`.
     """
     # TODO move trio docs into their own submod
 
@@ -223,8 +223,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
 
     def __attrs_post_init__(self):
-        # Not concurrent.futures.Executor's, which might set fields of its own: this shadows all of its API
-        WaitableStateTracker.__init__(self, lock=LockProtected(set(), recursive=True))
+        super().__init__(lock=LockProtected(set(), recursive=True))
         _fork_safety.executors.ensure_registered(self)
         # Captured outside the try/except in case the code to prime these fields has errors
         thread, runner = self._thread, self._runner
@@ -330,7 +329,10 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         ) = (
             # Performance: re-use the blocking checker rather than passing in this executor's loop/thread. This path is
             # hot, so saving here has an impact.
-            _ExecutorJob(prevent_blocking_wait_when=self._blocking_checker),
+            _ExecutorJob(
+                prevent_blocking_wait_when=self._blocking_checker,
+                done_callbacks=(self._cancellation_forwarder,),  # Cheaper than add_done_callback(), which locks
+            ),
             copy_context(),
             # Compute job names for use in tracebacks, so users see exceptions as arising from
             # "EventLoopExecutor._job[user.function.name]". This helps distinguish failures when multiple jobs are
@@ -340,7 +342,6 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         job = self._job(func, args, kwargs, future)  # Nothing in it runs until future.start()
         job.__qualname__, future._target = name, job
 
-        future.add_done_callback(self._cancellation_forwarder) # TODO performance: manipulate directly?
         context.run(_current_executor.set, self)  # In the call's context, which its job's task copies
 
         # If a caller is using a non-asyncio/stdlib runtime (e.g. anyio, trio), remove that preference from the context.
@@ -757,11 +758,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # about why the executor stopped.
             if self._interrupted and task.cancelling():
                 error = JobCancelledByExecutorShutdown.from_cancellation(ex, self._last_transition[2])
-            elif task.cancelling():  # By its caller, or by something else, current_job().cancel() say: so is its future
+            else:  # Asked or not: asyncio ends a task cancelled when a CancelledError escapes it, so its future too
                 future.cancel()
                 raise
-            else:
-                error = ex
             # If we can't report it to the user, crash the task so Python's logger reports the failure
             if not self._fail(future, error):
                 raise
@@ -781,7 +780,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # never retrieved only if the job swallowed the cancellation: if the result won a race with it (so the
             # cancellation never reached the task), it's dropped.
             # TODO think more about this: whether, and when, users should see that error
-            if (not future.cancelled()) or (task.cancelling() > 0):
+            if task._must_cancel:  # Cancelled unseen as it returned: asyncio ends the task cancelled, so its future too
+                future.cancel()
+            elif (not future.cancelled()) or (task.cancelling() > 0):
                 future.set_result(result)
         finally:  # Once the future is resolved: a drain's interrupt below may cancel the main task awaiting this call
             future.finish()

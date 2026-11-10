@@ -423,6 +423,20 @@ def test_completed_at_is_when_it_finished():
     assert not refusing.cancel() and refusing.completed_at is None
 
 
+def test_done_callbacks_given_to_the_constructor_run_as_if_added_first():
+    ran = []
+
+    def removed(_):
+        ran.append("removed")
+
+    future = AwaitableFuture(done_callbacks=(lambda done: ran.append(("first", done)), removed, ran.append))
+    future.add_done_callback(lambda done: ran.append(("added", done)))
+    assert future.remove_done_callback(removed) == 1
+    assert len(ran) == 0
+    future.set_result("done")
+    assert ran == [("first", future), future, ("added", future)]
+
+
 async def test_an_async_future_a_callback_kept_from_finishing_finishes_once_cancelled():
     future = AwaitableFuture()
 

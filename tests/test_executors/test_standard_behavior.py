@@ -536,13 +536,14 @@ class RaisesCancelled(Works):
 
 
 @pytest.mark.parametrize("method", ["raise_cancelled", "via_nested"])
-async def test_cancelled_error_raised_by_a_job_reaches_its_caller_as_an_error(method):
+async def test_cancelled_error_raised_by_a_job_cancels_its_call_as_it_would_its_task(method):
     async with running(RaisesCancelled) as worker:
-        with pytest.raises(asyncio.CancelledError, match="raised by the job"):
-            await getattr(worker, method)()
-        assert asyncio.current_task().cancelling() == 0  # Raised, not a cancellation of this task
-        with pytest.raises(asyncio.CancelledError, match="raised by the job"):
-            await asyncio.to_thread(lambda: getattr(worker, method)().result(2))
+        call = getattr(worker, method)()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        assert call.cancelled() and asyncio.current_task().cancelling() == 0  # Raised, not a cancellation of this task
+        with pytest.raises(concurrent.futures.CancelledError):  # Not asyncio's, as for any cancelled call
+            call.result()
 
 
 async def test_cancelling_a_jobs_task_cancels_its_call():
@@ -552,6 +553,20 @@ async def test_cancelling_a_jobs_task_cancels_its_call():
         async def cancels_itself():
             asyncio.current_task().cancel()
             await asyncio.sleep(10)
+
+        call = cancels_itself()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        assert call.cancelled() and asyncio.current_task().cancelling() == 0
+
+
+async def test_cancelling_a_jobs_task_as_it_returns_cancels_its_call():
+    async with running() as worker:
+
+        @worker.bridge
+        async def cancels_itself():
+            asyncio.current_task().cancel()
+            return "dropped"  # Before the cancellation reaches it, so asyncio ends its task cancelled
 
         call = cancels_itself()
         with pytest.raises(asyncio.CancelledError):

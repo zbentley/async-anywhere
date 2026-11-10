@@ -53,11 +53,12 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
         # whole (old state, new state, data) triple.
         # NB: cancelling the returned future does nothing.
         # NB: if your done callbacks are slow, you'll break stuff (here and everywhere)
-        # NB: kwargs go to AwaitableFuture() (prevent_blocking_wait_when, say), bar ignore_cancel and
-        # transform_result: those are errors
+        # NB: kwargs go to AwaitableFuture() (prevent_blocking_wait_when, say), bar ignore_cancel,
+        # transform_result and done_callbacks: those are errors
         states = [self._check_state(state) for state in (state, *states)]
         future = AwaitableFuture(  # Giving up on it leaves it, and other waiters, alone
-            **kwargs, ignore_cancel=True, transform_result=None if return_states else _data
+            # No done_callbacks: resolved below under the lock, they'd run under it too
+            **kwargs, ignore_cancel=True, transform_result=None if return_states else _data, done_callbacks=None
         )
         with self._condition:
             if not ignore_current_state and self.state in states:

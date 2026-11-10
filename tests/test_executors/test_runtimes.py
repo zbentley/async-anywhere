@@ -1,6 +1,6 @@
 """EventLoopExecutors with async libraries other than asyncio: callers on trio, or using anyio's API on any of its
-backends, and parent tasks using anyio, or trio, run as a guest on the worker's loop (see TrioGuest), which bridged
-functions can hand trio code to. The worker's own loop is asyncio's, or uvloop's: see executor_loop()."""
+backends, and parent tasks using anyio, or trio, run as a guest on the worker's loop (see trio_guest()). The worker's own
+loop is asyncio's, or uvloop's: see executor_loop()."""
 from __future__ import annotations
 
 import asyncio
@@ -161,34 +161,18 @@ async def test_parent_tasks_can_use_anyio():
         assert worker.reached("child cleaned up").done()
 
 
-class TrioGuest:
-    """A recipe for trio code in a worker: parent_task (pass it as the worker's main) runs `await trio_main(worker)` (or sleeps
-    until cancelled) in trio, as a guest on the worker's loop, with a nursery that run() hands trio code to from asyncio
-    code there, such as bridged functions. The parent task ends as trio_main() does, and interrupting it cancels
-    trio_main() and what run() handed over. Calls made in trio code can be awaited there."""
+def trio_guest(trio_main):
+    """A parent task running `await trio_main(worker)` in trio, as a guest on the worker's loop. It ends as trio_main()
+    does, and interrupting it cancels trio_main(), and waits for the run to finish."""
 
-    def __init__(self, trio_main=None):
-        self.trio_main = trio_main
-        self._ready = None  # Resolved, once the guest has started, with its run's token and nursery
-
-    async def parent_task(self, worker):
+    async def parent_task(worker):
         loop = asyncio.get_running_loop()
-        done, scope, self._ready = loop.create_future(), trio.CancelScope(), loop.create_future()
+        done, token, scope = loop.create_future(), loop.create_future(), trio.CancelScope()
 
         async def main():
+            token.set_result(trio.lowlevel.current_trio_token())
             with scope:
-                async with trio.open_nursery() as nursery:
-                    self._ready.set_result((trio.lowlevel.current_trio_token(), nursery))
-                    try:
-                        result = await self.trio_main(worker) if self.trio_main else await trio.sleep_forever()
-                        error = None
-                    except BaseException as caught:  # noqa: BLE001 (Raised outside the nursery, which would wrap it in a group)
-                        result, error = None, caught
-                    finally:
-                        nursery.cancel_scope.cancel()  # Cancelling what run() left running, as the worker interrupts calls
-                if error:
-                    raise error
-                return result
+                return await trio_main(worker)
 
         trio.lowlevel.start_guest_run(
             main,
@@ -200,44 +184,14 @@ class TrioGuest:
             try:
                 await asyncio.wait([done])  # Which, unlike awaiting it, cancelling this task doesn't cancel
             except asyncio.CancelledError:
-                # Through the run, so it wakes even if it's waiting for I/O; unless main() has yet to enter the scope
-                self._ready.result()[0].run_sync_soon(scope.cancel) if self._ready.done() else scope.cancel()
+                # Through the run, so it wakes even if it's waiting for I/O; unless main() has yet to start
+                token.result().run_sync_soon(scope.cancel) if token.done() else scope.cancel()
         result = done.result().unwrap()
         if scope.cancelled_caught:
             raise asyncio.CancelledError  # Cancelled, as an asyncio task, as the worker cancelled it
         return result
 
-    async def run(self, func, *args):
-        """Runs `await func(*args)` in a task of the guest's nursery, from asyncio code on the worker's loop, returning
-        what it returns, or raising what it raises (asyncio's CancelledError, if it's cancelled). Cancelling the asyncio
-        task cancels the trio one, and waits for it to finish."""
-        await asyncio.wait([self._ready])  # Until the guest has started, as a call made at once may come first
-        token, nursery = self._ready.result()
-        done, scope = asyncio.get_running_loop().create_future(), trio.CancelScope()
-
-        async def task():
-            try:
-                with scope:
-                    done.set_result(await func(*args))
-            except Exception as error:  # noqa: BLE001 (Anything else, a cancellation from outside the scope say, is trio's)
-                done.set_exception(error)
-            finally:
-                if not done.done():  # Cancelled, through the scope or from outside it
-                    done.cancel()
-
-        def start():
-            try:
-                nursery.start_soon(task)
-            except RuntimeError as closed:  # As main() ends: raised here, it would crash the run
-                done.set_exception(closed)
-
-        token.run_sync_soon(start)
-        while not done.done():
-            try:
-                await asyncio.wait([done])
-            except asyncio.CancelledError:
-                token.run_sync_soon(scope.cancel)  # After start(), so cancels the task as it starts, if it hasn't
-        return done.result()
+    return parent_task
 
 
 async def test_parent_tasks_can_run_trio_as_a_guest():
@@ -245,7 +199,8 @@ async def test_parent_tasks_can_run_trio_as_a_guest():
 
     async def trio_main(worker):
         bridged = worker.bridge(sees)  # Bridged here, and run, on asyncio, as ever
-        marks["started"].set_result(await bridged())  # Awaited in trio, on the worker's own thread
+        # Awaited in trio, on the worker's own thread, which is in no job
+        marks["started"].set_result((await bridged(), worker.current_job()))
         try:
             await trio.sleep_forever()
         finally:
@@ -253,8 +208,8 @@ async def test_parent_tasks_can_run_trio_as_a_guest():
                 await trio.sleep(0.01)  # Cleanup that awaits, in trio
             marks["cleaned up"].set_result(trio.lowlevel.in_trio_task())
 
-    async with running(main=TrioGuest(trio_main).parent_task) as worker:
-        assert await marks["started"] == (asyncio.CancelledError, "unset")
+    async with running(main=trio_guest(trio_main)) as worker:
+        assert await marks["started"] == ((asyncio.CancelledError, "unset"), None)
         stopped = await worker.shutdown(wait=False, cancel_futures=True)
         assert stopped.args == ("(idle) manually stopped",)
         assert marks["cleaned up"].result_or_none() is True
@@ -273,87 +228,6 @@ async def test_a_trio_guest_ending_stops_the_executor(end, kind, text):
         await trio.sleep(0.01)
         end()
 
-    async with running(main=TrioGuest(trio_main).parent_task) as worker:
+    async with running(main=trio_guest(trio_main)) as worker:
         stopped = await worker.wait_for_state(worker.Shutdown)  # Of its own accord
         assert type(stopped) is kind and stopped.args == (text,)
-
-
-async def checks(value):
-    await trio.lowlevel.checkpoint()
-    return trio.lowlevel.in_trio_task(), value
-
-
-async def fails(error):
-    await trio.lowlevel.checkpoint()
-    raise error
-
-
-async def tidies(marks):
-    marks["started"].set_result(None)
-    try:
-        await trio.sleep_forever()
-    except trio.Cancelled:
-        with trio.CancelScope(shield=True):
-            await trio.sleep(0.01)  # Cleanup that awaits, in trio
-        marks["cleaned up"].set_result(None)
-        raise
-
-
-async def test_bridged_functions_can_hand_trio_code_to_a_trio_guest():
-    guest = TrioGuest()
-    async with running(main=guest.parent_task) as worker:
-        in_trio = worker.bridge(guest.run)
-        assert await in_trio(checks, "value") == (True, "value")  # Made as the worker starts, maybe before the guest
-        with pytest.raises(ValueError) as raised:
-            await in_trio(fails, error := ValueError())
-        assert raised.value is error
-        assert await in_trio(checks, "after") == (True, "after")  # Its failing didn't end the guest
-
-
-async def test_cancelling_a_call_cancels_the_trio_code_it_handed_over():
-    guest, marks = TrioGuest(), {name: AwaitableFuture() for name in ("started", "cleaned up")}
-    async with running(main=guest.parent_task) as worker:
-        call = worker.bridge(guest.run)(tidies, marks)
-        await marks["started"]
-        assert call.cancel()
-        await marks["cleaned up"]  # The trio task got the cancellation, and cleaned up
-        assert await worker.bridge(guest.run)(checks, "after") == (True, "after")  # The guest carries on
-
-
-async def sees_no_job(worker, job):
-    await trio.lowlevel.checkpoint()
-    return worker.current_job(), job is not None
-
-
-async def reports_cancellation(worker, job):
-    job.cancel()  # As its caller would: run() passes it on to this
-    await trio.sleep_forever()
-
-
-async def test_trio_code_reports_its_cancellation_by_cancelling_its_call():
-    guest = TrioGuest()
-    async with running(main=guest.parent_task) as worker:
-
-        @worker.bridge
-        async def hands_over(func):  # The call's future, as trio code runs in the guest's tasks, not the job's
-            return await guest.run(func, worker, worker.current_job())
-
-        assert await hands_over(sees_no_job) == (None, True)
-        call, finished = hands_over(reports_cancellation), AwaitableFuture()
-        call.add_done_callback(lambda _: finished.set_result(None))
-        await finished
-        assert call.cancelled()
-        assert await worker.bridge(guest.run)(checks, "after") == (True, "after")  # The guest carries on
-
-
-async def test_interrupting_cancels_the_trio_code_calls_handed_over():
-    guest, marks = TrioGuest(), {name: AwaitableFuture() for name in ("started", "cleaned up")}
-    async with running(main=guest.parent_task) as worker:
-        call = worker.bridge(guest.run)(tidies, marks)
-        await marks["started"]
-        stopped = await worker.shutdown(wait=False, cancel_futures=True)
-        assert type(stopped) is EventLoopExecutorStopped and stopped.__cause__ is None
-        assert marks["cleaned up"].done()  # Before the worker finished
-        with pytest.raises(concurrent.futures.CancelledError) as raised:
-            await call
-        assert type(raised.value.__cause__) is EventLoopExecutorStopped

@@ -4,7 +4,7 @@ from concurrent.futures._base import CANCELLED_AND_NOTIFIED, FINISHED, PENDING, 
 from math import isinf
 from threading import Condition, Thread
 from time import monotonic
-from typing import Any, Awaitable, Callable, Self, Collection, TypeVar
+from typing import Any, Awaitable, Callable, Self, Collection, TypeVar, Iterable
 
 from async_anywhere._util import AnyEventLoop, BlockingChecker, BlockingNotAllowed, futures_logger
 from async_anywhere._util.trio import TrioRuntime
@@ -83,6 +83,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         ignore_cancel: bool = False,
         cancel_pending_in_forked_child: bool = False,
         transform_result: Callable[[Any], T] | None = None,
+        done_callbacks: Iterable[Callable[[Self], Any]] | None = None,
     ):
         r"""
         Cancelling ``await``\ s on this class or on :py:obj:`asyncio.Future`-like objects produced by it
@@ -127,6 +128,9 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
                       use troublesome stdlib future-wrapping functions with ``ignore_cancel=True``, pass the result of
                       :py:meth:`as_async_future` to those functions directly.
 
+            done_callbacks: Any done callbacks to attach to this future at construction time (which can be done much
+                faster than with :py:meth:`add_done_callback`). Callbacks will be added with equivalent behavior to
+                calling ``add_done_callback(cb)`` with default keyword argument values.
             cancel_pending_in_forked_child: if True, this future will automatically be cancelled in any child
                 process created by :py:func:`os.fork` if it is not yet :term:`completed`. If False, this future can
                 still be safely waited on after a fork, in the child process (though it may never complete, depending on
@@ -166,7 +170,10 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         self._cancel_pending_in_forked_child = cancel_pending_in_forked_child
         self._transform_result = transform_result
         self._completed_at: float | None = None
-        self._done_callbacks: dict[_DoneCallbackToken, Callable[[Self], Any]] = {}
+        # None for most futures: skipping the comprehension saves ~20 ns on hot paths
+        self._done_callbacks: dict[_DoneCallbackToken, Callable[[Self], Any]] = (
+            {} if done_callbacks is None else {_DoneCallbackToken(): c for c in done_callbacks}
+        )
         self._exception_tb = None
 
         # Mutated only by code in concurrent.futures.wait() and .as_completed(). Contains opaque objects installed and
