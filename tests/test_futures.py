@@ -588,7 +588,7 @@ def test_a_forked_process_cancels_only_the_pending_futures_asked_to_running_only
     for future in pending, running, uncancellable, kept:
         future.set_result(None)
     assert ran == [("dropped", pending), ("kept", pending), ("dropped", kept), ("kept", kept)]  # Each once, here
-    assert not any(future in _fork_safety.futures.instances for future in (pending, kept))  # Let go of, once finished
+    assert not any(future in _fork_safety.futures for future in (pending, kept))  # Let go of, once finished
 
 
 @FORKS
@@ -637,7 +637,7 @@ def test_futures_left_pending_in_a_forked_process_are_readied_again_in_processes
     future, ran = AwaitableFuture(), []
     with forked() as f:
         if f.child:
-            assert future in _fork_safety.futures.instances  # Still pending here, so still registered
+            assert future in _fork_safety.futures  # Still pending here, so still registered
             future.add_done_callback(lambda _: ran.append("child's"))  # Not to run in the grandchild
             with forked() as grandchild:
                 if grandchild.child:
@@ -653,13 +653,13 @@ def test_futures_left_pending_in_a_forked_process_are_readied_again_in_processes
 def test_a_forked_process_lets_go_of_futures_that_had_finished_as_it_forked():
     future = AwaitableFuture()
     future._transition(future.Succeeded, "finished")  # As set_result() does, before it runs callbacks and unregisters it
-    assert future in _fork_safety.futures.instances
+    assert future in _fork_safety.futures
     with forked() as f:
         if f.child:
-            assert future not in _fork_safety.futures.instances and future.result(0) == "finished"
-    assert future in _fork_safety.futures.instances  # Here, until the thread finishing it unregisters it
+            assert future not in _fork_safety.futures and future.result(0) == "finished"
+    assert future in _fork_safety.futures  # Here, until the thread finishing it unregisters it
     future._invoke_callbacks()
-    assert future not in _fork_safety.futures.instances
+    assert future not in _fork_safety.futures
 
 
 # Transforming results

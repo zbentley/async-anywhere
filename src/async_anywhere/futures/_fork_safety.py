@@ -11,7 +11,7 @@ class AwaitableFutureForkSafety(ForkSafeInstanceTracker):
         # threading.Conditions after fork.
         # Iterated, not drained: those left pending stay registered, so that processes forked from this one ready them too.
         # A WeakSet iterates a copy of itself, so unregistering as it goes (or futures made meanwhile) is safe.
-        for future in self.instances:
+        for future in self:
             future._after_fork_in_child()
             if future.done():  # Finished on a thread that isn't here, which was yet to unregister it
                 self.ensure_unregistered(future)

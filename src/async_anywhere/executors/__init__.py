@@ -12,7 +12,7 @@ from typing import Any, Callable, ClassVar, Coroutine, Final, Literal, ParamSpec
 from attrs import Factory, define, field, setters, validators
 from sniffio import current_async_library_cvar
 
-from async_anywhere._util import BlockingChecker, LockProtected, validate_coroutine_function, Toggleable
+from async_anywhere._util import BlockingChecker, ConditionProtected, validate_coroutine_function, Toggleable
 from async_anywhere.exceptions import CleanStop, EventLoopExecutorBroken, JobCancelledByExecutorShutdown, EventLoopExecutorStopped, EventLoopExecutorForked
 from async_anywhere.executors import _fork_safety
 from async_anywhere.executors._job import _ExecutorJob
@@ -192,7 +192,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     # The lock transitions take, around the calls accepted, started or not, until their jobs end: what a stop drains or
     # interrupts, and what holds off expiry. So none is added once the executor has stopped. _finalize() fails what's
     # left (if the loop drops calls unrun as it closes, say). Recursive, as transitions take it again, and callbacks may.
-    _condition: LockProtected[set[_ExecutorJob]]
+    _condition: ConditionProtected[set[_ExecutorJob]]
     # Whether the executor has cancelled (or, with shutdown(cancel_futures=True), is about to cancel) its main task, calls,
     # or what they left running
     _interrupted: Toggleable = field(init=False, factory=Toggleable)
@@ -223,7 +223,8 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
 
     def __attrs_post_init__(self):
-        super().__init__(lock=LockProtected(set()))
+        super().__init__()
+        self._condition.replace_value(set())  # Its jobs: see _condition
         _fork_safety.executors.ensure_registered(self)
         # Captured outside the try/except in case the code to prime these fields has errors
         thread, runner = self._thread, self._runner
@@ -644,14 +645,13 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
         When fork occurs, this method ensures the following is true in the child process for every EventLoopExecutor
         that existed when fork(2) occurred:
-        - The executor gets a fresh lock (in case another thread was using it: dispatching a @bridge call, say, at the
-          moment of fork(2)), as its pending AwaitableFutures have fresh conditions already, from their own fork
-          handler, which runs first (see _fork_safety).
+        - The executor's lock is reset (in case another thread was using it: dispatching a @bridge call, say, at the
+          moment of fork(2)), as its pending AwaitableFutures' conditions are, by ConditionProtected's own fork handler,
+          which runs first (see async_anywhere._util).
         - The executor is Shutdown, going through Stopping if it hadn't stopped, with a EventLoopExecutorForked as why, unless it had
           shut down already. Its calls' futures fail with it, and its state futures resolve: neither are cancelled by the
           fork, but their callbacks don't run here, unless added with run_in_forked_child=True.
         """
-        self._condition = LockProtected(self._condition._value)  # Its jobs, unlocked: no other thread is here
         forked = EventLoopExecutorForked()
         self._try_transition(self.Stopping, forked)  # Unless it had stopped
         if self._try_transition(self.Shutdown, forked):  # Unless it had shut down

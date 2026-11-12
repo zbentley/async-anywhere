@@ -2,21 +2,18 @@ import os
 from abc import ABC, abstractmethod
 from weakref import WeakSet
 
-_HAS_ATFORK = hasattr(os, "register_at_fork")
-
-class ForkSafeInstanceTracker(ABC):
+class ForkSafeInstanceTracker(WeakSet, ABC):
+    __slots__ = ("ensure_registered", "ensure_unregistered")
     def __init__(self):
-        self.instances = WeakSet()
-        if _HAS_ATFORK:
+        super().__init__()
+
+        if hasattr(os, "register_at_fork"):
+            self.ensure_registered = self.add
+            self.ensure_unregistered = self.discard
             os.register_at_fork(after_in_child=self.after_fork_in_child)
+        else:
+            self.ensure_registered = self.ensure_unregistered = lambda _: None
 
     @abstractmethod
     def after_fork_in_child(self):
         raise NotImplementedError
-
-    def ensure_registered(self, instance):
-        if _HAS_ATFORK:
-            self.instances.add(instance)
-
-    def ensure_unregistered(self, instance):
-        self.instances.discard(instance)

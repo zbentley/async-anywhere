@@ -215,10 +215,10 @@ def test_an_executor_whose_get_was_interrupted_as_it_was_made_runs_nothing():
         first = singleton.get()
         first.shutdown(wait=False)  # Its main cleaning up until released
         first.wait_for_state(first.Stopping).result(5)
-        before = set(_fork_safety.executors.instances)
+        before = set(_fork_safety.executors)
         with pytest.raises(KeyboardInterrupt):
             singleton.get()
-        [interrupted] = set(_fork_safety.executors.instances) - before
+        [interrupted] = set(_fork_safety.executors) - before
         third = singleton.get()  # Waiting for first too, as the interrupted one does
         release.set_result(None)
         interrupted.wait_for_state(interrupted.Shutdown).result(5)

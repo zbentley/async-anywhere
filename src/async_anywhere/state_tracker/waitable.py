@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC
 from operator import itemgetter
-from typing import ContextManager, Generic, Literal, TypeAlias, TypeVar, overload, final
+from typing import Generic, Literal, TypeVar, overload, final
 from weakref import WeakSet
 
 from async_anywhere.exceptions import StateTrackerError
@@ -17,14 +17,12 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
     """TODO"""
     __slots__ = ('_waiters',)
 
-    def __init__(self, lock: ContextManager | None = None):
+    def __init__(self):
         """
         Always thread safe, as its futures can be waited on and resolved from any thread. Futures from wait_for_state()
         are held weakly, so ones whose callers drop them (after adding done callbacks, say) are never resolved.
-
-        lock: see StateTracker. It must be a real lock, as its futures are waited on and resolved from any thread.
         """
-        super().__init__(lock=lock)
+        super().__init__()
         self._waiters: dict[State, WeakSet[AwaitableFuture[T]]] = {s: WeakSet() for s in self.states}
 
     @overload

@@ -78,7 +78,7 @@ def test_a_forked_process_cant_use_its_copies_of_executors_nor_wait_for_them():
                 finished.bridge(asyncio.sleep)(0)
             assert type(finished.shutdown(wait=False).result(1)) is CleanStop
             assert getattr(worker, "cleaned_up_in", None) != pid  # Cleanup meant for the parent, not run here
-            assert len(_fork_safety.executors.instances) == 0  # Nothing in this process need revisit them
+            assert len(_fork_safety.executors) == 0  # Nothing in this process need revisit them
         else:
             release.set_result(None)
     holder.join()

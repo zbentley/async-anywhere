@@ -1,9 +1,9 @@
 import abc
 import asyncio
-import contextlib
 import copy
 import dataclasses
 import gc
+import os
 import pickle
 import threading
 from typing import Any, ClassVar, Final, Self
@@ -12,9 +12,12 @@ import anyio
 import attr
 import pytest
 
+from async_anywhere._util import ConditionProtected
 from async_anywhere.exceptions import StateTrackerError
+from async_anywhere.futures import AwaitableFuture
 from async_anywhere.state_tracker import StateTracker, State
 from async_anywhere.state_tracker.waitable import WaitableStateTracker
+from tests.test_executors.utils import forked
 
 
 class MyStateTracker(StateTracker):
@@ -27,9 +30,10 @@ def test_basic_state_tracker():
     assert inst.state is inst.Initial
     assert inst.state == inst.Initial
 
-@pytest.mark.parametrize("lock", [contextlib.nullcontext(), threading.Lock()], ids=["unlocked", "locked"])
-def test_transition(lock):
-    inst = MyStateTracker(lock=lock)
+@pytest.mark.parametrize("thread_safe", [False, True], ids=["unlocked", "locked"])
+def test_transition(thread_safe):
+    inst = MyStateTracker(thread_safe=thread_safe)
+    assert isinstance(inst._condition, ConditionProtected) is thread_safe
     inst._transition(MyStateTracker.Second)
     assert inst.state is MyStateTracker.Second
     with pytest.raises(StateTrackerError, match="Could not transition"):
@@ -46,7 +50,7 @@ def test_after_state_change_runs_under_the_lock_once_transitioned():
         def _after_state_change(self, old_state, new_state, data):
             seen.append((self._condition._is_owned(), self.state, self._last_transition))
 
-    Hooked(lock=threading.RLock())._transition(Hooked.Next, "data")
+    Hooked()._transition(Hooked.Next, "data")
     assert seen == [(True, Hooked.Next, (Hooked.Initial, Hooked.Next, "data"))]
 
 def test_concrete_tracker_requires_states():
@@ -360,3 +364,26 @@ async def test_wait_for_state_across_threads():
     with anyio.fail_after(5):
         assert await future == "data"
     thread.join()
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
+def test_a_forked_process_resets_trackers_locks_before_futures_callbacks_run():
+    inst, holding, release = MyStateTracker(), threading.Event(), threading.Event()
+    # Cancelled by the futures' fork handler, whose callback transitions the tracker: so its lock must be reset by then
+    cancelled = AwaitableFuture(cancel_pending_in_forked_child=True)
+    cancelled.add_done_callback(lambda _: inst._transition(MyStateTracker.Second), run_in_forked_child=True)
+
+    def hold():
+        with inst._condition:  # As a transition would, as the process forks
+            holding.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    holding.wait(2)
+    with forked() as f:
+        if f.child:
+            assert cancelled.cancelled() and inst.state is MyStateTracker.Second
+        else:
+            release.set()
+    holder.join()
+    assert inst.state is MyStateTracker.Initial and not cancelled.done()

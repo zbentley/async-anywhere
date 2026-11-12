@@ -5,7 +5,7 @@ from functools import partial, update_wrapper
 from inspect import iscoroutinefunction
 from typing import Any, Callable, Coroutine, ParamSpec, TypeVar, final
 
-from async_anywhere._util import BlockingChecker, LockProtected
+from async_anywhere._util import BlockingChecker, ConditionProtected
 from async_anywhere.exceptions import EventLoopExecutorStopped
 from async_anywhere.executors import EventLoopExecutor, _wait_forever
 from async_anywhere.executors._fork_safety import executors
@@ -35,7 +35,7 @@ class SingletonEventLoopExecutor:
             raise TypeError(f"main must be a coroutine function (an async def), not {main!r}")
         self._main, self._kwargs = main, kwargs
         self._cancel_futures_on_stopping_executors = cancel_futures_on_stopping_executors
-        self._wrapped_executor = LockProtected(None)  # The executor, once get() has made one
+        self._wrapped_executor = ConditionProtected(None)  # The executor, once get() has made one
         # Shared by its executors, each adding its own thread, so that their futures refuse blocking waits on any of them
         self._blocking_checker = BlockingChecker()
         executors.ensure_registered(self)
@@ -43,8 +43,8 @@ class SingletonEventLoopExecutor:
             self.get()
 
     def _after_fork_in_child(self):
-        # A new lock, which a thread that isn't here may hold, and no executor, as its own has shut down here
-        self._wrapped_executor = LockProtected(None)
+        # No executor, as its own has shut down here. Its lock, which a thread that isn't here may hold, resets itself
+        self._wrapped_executor.replace_value(None)
 
     def get(self) -> EventLoopExecutor:
         """The executor. If it has stopped, a new one, which runs nothing (its :term:`main task`, or its :term:`jobs <job>`) until the old one

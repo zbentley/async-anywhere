@@ -718,12 +718,12 @@ def test_an_executor_interrupted_as_its_made_is_stopped_once_it_has_started():
                 time.sleep(0.1)
             return super().run_until_complete(future)
 
-    before = set(_fork_safety.executors.instances)
+    before = set(_fork_safety.executors)
     with pytest.raises((KeyboardInterrupt, RuntimeError)) as raised:
         EventLoopExecutor(loop_factory=InterruptsItsMaker, logger=logging.getLogger(name))
-    # Or as RuntimeError's context, if it landed as a wait let go of its lock: see async_anywhere._util.enter()
+    # Or as RuntimeError's context, if it landed as a wait let go of its lock: see async_anywhere._util.ConditionProtected.__enter__()
     assert KeyboardInterrupt in (type(raised.value), type(raised.value.__context__))
-    [worker] = set(_fork_safety.executors.instances) - before
+    [worker] = set(_fork_safety.executors) - before
     assert type(worker.wait_for_state(worker.Shutdown).result(2)) is CleanStop  # Rather than left running unreachable
 
 

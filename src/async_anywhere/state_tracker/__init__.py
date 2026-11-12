@@ -4,11 +4,12 @@ import inspect
 import threading
 from abc import ABC, ABCMeta
 from collections import defaultdict
-from threading import RLock
-from typing import Any, ClassVar, Collection, ContextManager, Iterable, Self, TypeAlias, Union, final, Literal
+from contextlib import nullcontext
+from typing import Any, ClassVar, Collection, Iterable, Self, TypeAlias, Union, final, Literal
 
 import attr
 
+from async_anywhere._util import ConditionProtected
 from async_anywhere.exceptions import StateTrackerError
 
 # NB: in this instance, we mean "the literal class object for the typing.Self type", not "the type of the invocant".
@@ -22,6 +23,7 @@ def _structural_invariant(cls: type, cond: Any, msg: str):
 
 # This lock orchestrates the extremely rare conflict risk of importing modules/declaring subclasses in parallel:
 _binding_lock = threading.Lock()
+_UNLOCKED = nullcontext()  # Every thread-unsafe StateTracker's lock: it holds nothing, so one is enough
 
 @attr.define(frozen=True, eq=False, repr=False, str=False, hash=False, init=False)
 class State:
@@ -253,10 +255,6 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
     Warning:
         Setting ``State``\ s on a ``StateTracker`` at any point after class declaration time (e.g.
         ``MyTracker.Foo = State()``) is not allowed.
-
-    .. admonition:: Fork Safety
-
-        See :ref:`state_tracker_fork_safety`.
     """
 
     states: ClassVar[frozenset[State]]
@@ -269,26 +267,21 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
 
     __slots__ = ('_last_transition', '_condition')
 
-    def __init__(self, lock: ContextManager | None = None) -> None:
-        """
+    def __init__(self, thread_safe: bool = True) -> None:
+        r"""
         Args:
-            lock: a context manager representing the lock that will be held by each transition between states, and by
-                :py:func:`_after_state_change`. The value it produces is not used. The default is a per-instance
-                :py:obj:`threading.RLock`, which allows ``_after_state_change`` to perform transitions.
+            thread_safe: If True, a per-instance thread-recursive lock is held by :py:func:`_transition`,
+                :py:func:`_try_transition`, and :py:func:`_after_state_change`. All other methods are lock-free and
+                thread-safe to call regardless of the value of this argument.
 
-                *Only* these methods are protected by the lock: :py:func:`_transition`, :py:func:`_try_transition`, and
-                :py:func:`_after_state_change`. All other methods are lock-free and thread-safe to call.
+                If False, no locks are used (which means that a ``StateTracker`` can only be safely used from one thread
+                at a time).
 
-                Pass :py:obj:`contextlib.nullcontext` to take no lock (which means that a ``StateTracker`` can only be
-                safely used from one thread at a time).
-
-                Warning:
-                    If a non-recursive value is supplied for ``lock`` (e.g. :py:obj:`threading.Lock`) attempts to call
-                    :py:func:`_transition` or :py:func:`_try_transition` from within :py:func:`_after_state_change` will
-                    deadlock.
+                Regardless of the value of ``thread_safe``, ``StateTracker``\ s are safe to use in the presence of
+                :py:func:`os.fork`, though some care is required. See :ref:`state_tracker_fork_safety`.
         """
         self._last_transition = self._initial_transition
-        self._condition = RLock() if lock is None else lock
+        self._condition = ConditionProtected(None) if thread_safe else _UNLOCKED
 
     @final
     @property
@@ -391,19 +384,14 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
         Does nothing by default; can optionally be overridden by subclasses (``super()`` does not need to be called by
         overriders).
 
-        This method is called by :py:func:`_transition` while the ``lock`` constructor parameter is held, and will thus
-        never be called concurrently on the same StateTracker instance. If you instead want to react to state changes
-        without ``lock`` being held, override ``_transition`` in a subclass instead.
-
-        Warning:
-            If a non-recursive value is supplied for ``lock`` (e.g. :py:obj:`threading.Lock`) attempts to call
-            :py:func:`_transition` or :py:func:`_try_transition` from within :py:func:`_after_state_change` will
-            deadlock. If not specified, ``lock`` uses :py:obj:`threading.RLock`, which is not at risk for this deadlock.
+        This method is called by :py:func:`_transition` while the lock (see the ``thread_safe`` constructor parameter)
+        is held, and will thus never be called concurrently on the same StateTracker instance. If you instead want to
+        react to state changes without the lock being held, override ``_transition`` in a subclass instead.
 
         Args:
             old_state: the :py:class:`State` that the invocant was in before its most recent transition.
             new_state: the :py:class:`State` that the invocant was transitioned *into*. Depending on concurrency and the
-                semantics of the ``lock`` constructor parameter, this may or may not be the same value as the
+                ``thread_safe`` constructor parameter, this may or may not be the same value as the
                 :py:attr:`state` attribute.
             data: the value that was supplied to :py:func:`_transition` when transitioning from ``old_state`` to
                 ``new_state``, or None if a value was not supplied.

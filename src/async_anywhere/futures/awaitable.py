@@ -6,7 +6,7 @@ from threading import Thread
 from time import monotonic
 from typing import Any, Awaitable, Callable, Self, Collection, TypeVar, Iterable, Final
 
-from async_anywhere._util import AnyEventLoop, BlockingChecker, BlockingNotAllowed, Condition, futures_logger
+from async_anywhere._util import AnyEventLoop, BlockingChecker, BlockingNotAllowed, futures_logger
 from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.futures import _fork_safety
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
@@ -157,7 +157,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         # that class's internals, and subclass it only to satisfy isinstance() checks performed by stdlib. This class's
         # observable behavior contract (which, per the stdlib's documented warning, is NOT limited to public methods)
         # must remain a superset of concurrent.future.Future's contract.
-        StateTracker.__init__(self, lock=Condition())
+        StateTracker.__init__(self)
         # Not making a BlockingChecker for None (most futures) saves its call: these are made on hot paths
         # Or a checker made already, passed in, as an executor's are
         if prevent_blocking_wait_when is None or isinstance(prevent_blocking_wait_when, BlockingChecker):
@@ -166,17 +166,10 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
             self._blocking_checker = None
         else:
             self._blocking_checker = BlockingChecker(prevent_blocking_wait_when)
-        (
-            self._ignore_cancel,
-            self._cancel_pending_in_forked_child,
-            self._transform_result,
-            self._exception_tb,
-        ) = (
-            ignore_cancel,
-            cancel_pending_in_forked_child,
-            transform_result,
-            None,
-        )
+        self._ignore_cancel = ignore_cancel
+        self._cancel_pending_in_forked_child = cancel_pending_in_forked_child
+        self._transform_result = transform_result
+        self._exception_tb = None
         self._completed_at: float | None = None
         # None for most futures: skipping the comprehension saves ~20 ns on hot paths
         self._done_callbacks: dict[_DoneCallbackToken, Callable[[Self], Any]] = (
@@ -547,8 +540,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
                 futures_logger().exception("exception calling callback for %r", self)
 
     def _after_fork_in_child(self):
-        # See _fork_safety: the threads that held its condition, or waited in concurrent.futures.wait(), aren't here
-        self._condition = Condition()
+        # See _fork_safety: the threads that waited in concurrent.futures.wait() aren't here. Its condition resets itself
         self._waiters.clear()
         callbacks = [k for k in self._done_callbacks.keys() if not isinstance(k, _ForkAllowedDoneCallbackToken)]
         for tok in callbacks:
