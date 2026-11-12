@@ -52,6 +52,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     """
 
     # Running is as an executor's job is once started, which can't be cancelled. Once done, it never transitions again.
+    # So once a lock-free read of _last_transition finds it done, rereading it for that state's data can't tear
     Pending: Final[State] = State(initial=True)
     Running: Final[State] = State(sources=Pending)
     Cancelled: Final[State] = State(sources=(Pending, Running))  # From Running only in a forked process: see _fork_safety
@@ -184,7 +185,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     def __repr__(self):
         # Unlike concurrent.futures.Future, we don't need to take the lock for repr, since reading the field is atomic.
         # Our repr is similar to, but not the same as, concurrent.futures.Future's repr.
-        _, state, data = self._last_transition
+        _, state, data = self.last_transition
         outcome = "" if data is None else f"[{type(data).__name__}]"
         return f"<{type(self).__qualname__} at {id(self):#x} {state.name}{outcome}>"
 
@@ -299,7 +300,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
 
     def __await__(self):
         # If we're already done, __await__ can resolve without dealing with any loop machinery at all:
-        if self._last_transition[1].terminal:
+        if self.state.terminal:
             return self._await_finished()
         return self.as_async_future().__await__()
 
@@ -337,12 +338,11 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
 
     def _get_result(self, expect_success: bool, timeout: float | None):
         try:
-            _, state, data = self._last_transition
-            match state:
-                case self.Succeeded if expect_success: return data
+            match self._last_transition[1]:  # Rereads below can't tear: see the note above Pending
+                case self.Succeeded if expect_success: return self._last_transition[2]
                 case self.Succeeded: return None
-                case self.Failed if expect_success: raise data.with_traceback(self._exception_tb)
-                case self.Failed: return data
+                case self.Failed if expect_success: raise self._last_transition[2].with_traceback(self._exception_tb)
+                case self.Failed: return self._last_transition[2]
                 case self.Cancelled: raise concurrent.futures.CancelledError
             if self._blocking_checker is not None and (timeout is None or timeout > 0):  # Else it only polls
                 self._blocking_checker.check(self)
@@ -354,7 +354,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
                     raise TimeoutError
             return self._get_result(expect_success, None)
         finally:
-            del self, data
+            del self
 
     def result(self, timeout: float | None = None) -> T:
         """
@@ -473,7 +473,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         """
         token = _ForkAllowedDoneCallbackToken() if run_in_forked_child else _DoneCallbackToken()
         with self._condition:
-            if not self._last_transition[1].terminal:
+            if not self.state.terminal:
                 self._done_callbacks[token] = fn
                 return token
         try:
@@ -609,7 +609,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         # To avoid that condition, we store and always re-raise from the original traceback that was recieved by
         # set_exception().
         with self._condition: # Recursive lock, so _transition works within it
-            if not self._last_transition[1].terminal:
+            if not self.state.terminal:
                 self._exception_tb = exception.__traceback__
             self._transition(self.Failed, exception)
         self._invoke_callbacks()
@@ -673,8 +673,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
 
         Returns None if the future is not done, was cancelled, or :term:`completed` without an exception.
         """
-        _, state, data = self._last_transition
-        return data if state is self.Failed else None
+        return self._last_transition[2] if self._last_transition[1] is self.Failed else None
 
     def result_or_none(self) -> T | None:
         """Returns the result of this future if it is done.
@@ -685,8 +684,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
             If your future can be successfully :term:`completed` with the value ``None``, this method is likely not
             useful (use :py:meth:`result()` with ``timeout=0`` and handle the error instead).
         """
-        _, state, data = self._last_transition
-        return data if state is self.Succeeded else None
+        return self._last_transition[2] if self._last_transition[1] is self.Succeeded else None
 
     def done(self) -> bool:
         """Returns True if this future has :term:`completed`, False otherwise.

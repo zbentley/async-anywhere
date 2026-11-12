@@ -48,7 +48,7 @@ def test_after_state_change_runs_under_the_lock_once_transitioned():
         Next: Final[State] = State(sources=Initial)
 
         def _after_state_change(self, old_state, new_state, data):
-            seen.append((self._condition._is_owned(), self.state, self._last_transition))
+            seen.append((self._condition._is_owned(), self.state, self.last_transition))
 
     Hooked()._transition(Hooked.Next, "data")
     assert seen == [(True, Hooked.Next, (Hooked.Initial, Hooked.Next, "data"))]
@@ -243,7 +243,7 @@ def test_require():
 def test_try_transition():
     inst = MyStateTracker()
     assert inst._try_transition(MyStateTracker.Second, "data")
-    assert inst._last_transition == (MyStateTracker.Initial, MyStateTracker.Second, "data")
+    assert inst.last_transition == (MyStateTracker.Initial, MyStateTracker.Second, "data")
     assert not inst._try_transition(MyStateTracker.Third) and inst.state is MyStateTracker.Second  # Refused
     with pytest.raises(TypeError, match="not one of this class's states"):
         inst._try_transition(MyWaitable.A)  # Not refused, but wrong

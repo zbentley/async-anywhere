@@ -271,8 +271,9 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
         r"""
         Args:
             thread_safe: If True, a per-instance thread-recursive lock is held by :py:func:`_transition`,
-                :py:func:`_try_transition`, and :py:func:`_after_state_change`. All other methods are lock-free and
-                thread-safe to call regardless of the value of this argument.
+                :py:func:`_try_transition`, :py:func:`_after_state_change`, and
+                :py:func:`WaitableStateTracker.wait_for_state`. All other methods are lock-free and thread-safe to call
+                regardless of the value of this argument.
 
                 If False, no locks are used (which means that a ``StateTracker`` can only be safely used from one thread
                 at a time).
