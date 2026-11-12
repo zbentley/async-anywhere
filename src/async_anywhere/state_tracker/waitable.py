@@ -76,7 +76,8 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
         blocked on with a timeout or ``await``\ ed on from ``async`` code.
 
         Args:
-            *states (including ``state``): one or more States to wait for. If supplied State(s) are not available on the invocant's
+            state: Treated like part of ``states``.
+            *states: One or more States to wait for. If supplied State(s) are not available on the invocant's
                 class, an error will be raised.
             ignore_current_state: If True, and the invocant is already in one of the requested ``states``, the returned
                 future will *not* be resolved. Instead, it will be resolved the next time the invocant transitions into
@@ -89,8 +90,8 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
 
             return_states:
                 If True, the returned future is resolved with a 3-tuple with the same contents as
-                :py:attr:`last_transition`: ``(old_state, new_state, data)``. If False, the returned future is resolved
-                with the ``data`` argument from the call to :py:func:`_transition` that caused the tracker to enter one
+                :py:obj:`StateTracker.last_transition`: ``(old_state, new_state, data)``. If False, the returned future is resolved
+                with the ``data`` argument from the call to :py:meth:`_transition` that caused the tracker to enter one
                 of ``states``
 
             **kwargs: Any additional keyword arguments to pass :py:class:`AwaitableFuture`\ s constructor when
@@ -141,7 +142,7 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
                 raise StateTrackerError(self, "Could not transition to state", self._check_state(target))
             self._last_transition = result = (old_state, target, data)
             old_waiters = self._waiters[target]
-            waiters = tuple(old_waiters)  # Not copy() because we don't need to hash -- TODO right? Or is copy faster even on weakset?
+            waiters = tuple(old_waiters)  # Not copy() because we don't need to hash
             old_waiters.clear()
             self._after_state_change(old_state, target, data)
 

@@ -9,3 +9,4 @@
     awaitable
     chain
     fork_safety
+    compatibility

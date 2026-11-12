@@ -60,11 +60,11 @@ WorkerStopped, not RuntimeError).
   Cancelling the future, or a task awaiting it, cancels the job, without waiting for it to finish cancelling.
 - Waiting on an unfinished call with result() or exception() on the worker's own loop raises RuntimeError, as nothing
   could finish it.
-- But it isn't a coroutine, nor an asyncio future: create_task(), TaskGroup.create_task() and asyncio.wait() reject it, and
-  inspect.iscoroutinefunction() is False for bridged functions (so frameworks may take them for synchronous). For APIs
-  that take asyncio futures, use call.as_async_future(), which (unlike asyncio.wrap_future(call)) cancels the job as
-  soon as it's cancelled. It can be awaited in a trio task too (anyio's, on trio, included), whose cancellation cancels
-  the job, as on asyncio.
+- But it isn't a coroutine, nor an asyncio future: create_task() and TaskGroup.create_task() reject it, asyncio.wait()
+  can hang on it (when it finishes on another thread), and inspect.iscoroutinefunction() is False for bridged functions
+  (so frameworks may take them for synchronous). For APIs that take asyncio futures, use call.as_async_future(), which
+  (unlike asyncio.wrap_future(call)) cancels the job as soon as it's cancelled. It can be awaited in a trio task too
+  (anyio's, on trio, included), whose cancellation cancels the job, as on asyncio.
 - The job runs in a task of its own on the worker's loop, with a copy of the caller's context variables as they were when
   the call was made, bar sniffio's record of the caller's async library (which anyio.run() sets): anyio, in the job,
   finds asyncio. Changes it makes to them don't reach the caller. Library state the copy carries, tied to

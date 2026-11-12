@@ -49,6 +49,8 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     - Several other convenience methods to save code for common future-related tasks (including lock-free accessors and
       mutators, improved tools for observing future state, and more).
 
+    See :ref:`future_compatibility` for how the standard library's future handling treats ``AwaitableFuture``\ s.
+
     """
 
     # Running is as an executor's job is once started, which can't be cancelled. Once done, it never transitions again.
@@ -114,20 +116,11 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
                 when waited upon.
 
                 Note:
-                    ``ignore_cancel=True``\ 's behavior may cause unexpected side effects:
-
-                    - Some code in the stdlib that waits on futures (like :py:func:`concurrent.futures.wait`,
-                      :py:func:`asyncio.wait`, and :py:func:`asyncio.gather`) will do the "correct" thing and, after
-                      calling ``.cancel()`` on a future, wait for it to complete. With ``ignore_cancel=True`` set, those
-                      functions will then wait forever (or until the ``AwaitableFuture`` is completed some other way).
-                    - Some *other* code in the stdlib (e.g. :py:obj:`asyncio.TaskGroup`, :py:func:`asyncio.wait`, and
-                      :py:func:`asyncio.timeout`) internally repeatedly converts arguments to `asyncio.Future`\ s and
-                      attaches callbacks to them. If passed an ``AwaitableFuture`` with ``ignore_cancel=True``, such
-                      functions may internally create a large number of never-completed transient wrapper futures,
-                      which will take up memory, and will lead to many spurious "exception was never retrieved" logs
-                      when the wrapping/waiting function finally completes. If you encounter this behavior or need to
-                      use troublesome stdlib future-wrapping functions with ``ignore_cancel=True``, pass the result of
-                      :py:meth:`as_async_future` to those functions directly.
+                    ``ignore_cancel=True``\ 's behavior may cause unexpected side effects: code that calls ``.cancel()``
+                    on a future and then waits for it to complete (e.g. with :py:func:`concurrent.futures.wait`) will
+                    wait until the ``AwaitableFuture`` is completed some other way. Cancelling a task that awaits it,
+                    directly or through a function like :py:func:`asyncio.gather`, ends that wait at once, but leaves
+                    the ``AwaitableFuture`` un-completed.
 
             done_callbacks: Any done callbacks to attach to this future at construction time (which can be done much
                 faster than with :py:meth:`add_done_callback`). Callbacks will be added with equivalent behavior to
