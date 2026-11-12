@@ -3,6 +3,8 @@
 AwaitableFuture todos:
 - call graph support
 - "task cannot await on itself" for AFs that correspond to/wrap Tasks
+- CompletedFuture, no locks, cached for None and empty string and such
+- On complete wipes out the locks and unregisters from fork safety?
 
 EventLoopExecutor todos;
 - decorate loop-only methods

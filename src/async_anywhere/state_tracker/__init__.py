@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 import threading
-from abc import ABC
+from abc import ABC, ABCMeta
 from collections import defaultdict
 from threading import RLock
 from typing import Any, ClassVar, Collection, ContextManager, Iterable, Self, TypeAlias, Union, final, Literal
@@ -25,9 +25,24 @@ _binding_lock = threading.Lock()
 
 @attr.define(frozen=True, eq=False, repr=False, str=False, hash=False, init=False)
 class State:
-    """
+    r"""
     The state of a StateTracker. Declare States as class variables on a class which extends StateTracker, and the
     StateTracker will use them to model its internal state machine/graph.
+
+    Annotate States as :py:obj:`~typing.Final` on ordinary subclasses, and ``ClassVar[Final[State]]`` on subclasses
+    that use ``attrs``, ``dataclass`` or other class-creation factories.
+
+    Warning:
+        Setting ``State``\ s on a ``StateTracker`` at any point after class declaration time (e.g.
+        ``MyTracker.Foo = State()``) is not allowed.
+
+    Example:
+        >>> class MyTracker(StateTracker):
+        >>>     First: Final[State] = State(initial=True)
+        >>>
+        >>> @attrs.define
+        >>> class MyAttrsTracker(StateTracker):
+        >>>     First: ClassVar[Final[State]] = State(initial=True)
 
     Note:
         A State is only ever equal to itself. States with the same parameters from two different StateTrackers
@@ -42,9 +57,9 @@ class State:
     
     Example:
         >>> class MyTracker(StateTracker):
-        >>>     Foo = State()
-        >>>     First = State(initial=True, destinations=[Foo])
-        >>>     Bar = State(sources=[First])
+        >>>     Foo: Final[State] = State()
+        >>>     First: Final[State] = State(initial=True, destinations=[Foo])
+        >>>     Bar: Final[State] = State(sources=[First])
         >>>
         >>> assert not MyTracker.First.terminal
         >>> assert MyTracker.Bar.terminal
@@ -58,7 +73,7 @@ class State:
     Example:
     
         >>> class Foo(StateTracker):
-        >>>     MyFirstState = State(initial=True)
+        >>>     MyFirstState: Final[State] = State(initial=True)
         >>>
         >>> assert Foo.MyFirstState.name == "MyFirstState"
 
@@ -161,7 +176,26 @@ class State:
         return f"<{self.__class__.__qualname__} {name}>"
 
 
-class StateTracker(ABC):
+class _StateTrackerMeta(ABCMeta):
+    # __set_name__ only runs when a class is created, so assignments to the class afterwards are caught here
+    def __setattr__(cls, name: str, value: Any):
+        _structural_invariant(
+            cls,
+            not isinstance(value, State) and not isinstance(inspect.getattr_static(cls, name, None), State),
+            f"Cannot set {name}; States can't be rebound, or added to a class after it's declared"
+        )
+        super().__setattr__(name, value)
+
+    def __delattr__(cls, name: str):
+        _structural_invariant(
+            cls,
+            not isinstance(inspect.getattr_static(cls, name, None), State),
+            f"Cannot delete {name}; States can't be removed from a class after it's declared"
+        )
+        super().__delattr__(name)
+
+
+class StateTracker(ABC, metaclass=_StateTrackerMeta):
     r"""
     An abstract class which contains one or more :py:class:`State`\ s as class variables, and can move between them in
     a thread-safe way. Instances have a field :py:attr:`state` which contains the current ``State`` of the instance,
@@ -180,8 +214,8 @@ class StateTracker(ABC):
     Example:
 
         >>> class MyStateTracker(StateTracker):
-        >>>    InitialState = State(initial=True)
-        >>>    OtherState = State(sources=[InitialState])
+        >>>    InitialState: Final[State] = State(initial=True)
+        >>>    OtherState: Final[State] = State(sources=[InitialState])
         >>>
         >>>    def foo(self):
         >>>         self._transition(self.OtherState, "some data")
@@ -209,27 +243,20 @@ class StateTracker(ABC):
         All concrete StateTracker subclasses must declare States. Abstract StateTracker subclasses must be extended by a
         concrete class which declares States.
 
+        StateTracker's metaclass derives from :py:class:`abc.ABCMeta`, so to also inherit from a class with another
+        ``ABCMeta``-derived metaclass (e.g. a :py:class:`typing.Protocol`), declare a metaclass combining both, like
+        ``class Meta(type(StateTracker), type(MyProtocol)): ...``, and pass it as ``metaclass=Meta``.
+
         If subclasses use ``attrs``, ``dataclass`` or other class-creation factories, all State objects declared at the class
-        level should be annotated with :py:obj:`ClassVar`, otherwise subclass declaration may fail.
+        level must be annotated with ``ClassVar[Final[State]]``, otherwise subclass declaration may fail.
+
+    Warning:
+        Setting ``State``\ s on a ``StateTracker`` at any point after class declaration time (e.g.
+        ``MyTracker.Foo = State()``) is not allowed.
 
     .. admonition:: Fork Safety
 
-        ``StateTracker`` itself is safe to use in the presence of :py:func:`os.fork` in that it *will not crash or
-        deadlock* in either the parent or child process. However, there are two important caveats when using this class
-        with forking code.
-
-        1. If the ``lock`` constructor parameter cannot be safely reset/re-constructed in a child process, behavior is
-           undefined.
-        2. If forking happens from another thread while a ``StateTracker`` is calling :py:func:`_transition`, some, all,
-        or none of the following may be true when the tracker is used in a forked child process:
-
-        - It might be as if the call to ``_transition`` never occurred. ``_transition``\ s side effects are only
-          guaranteed if it has *returned* by the time ``os.fork`` is called.
-        - ``StateTracker.state`` might point to the new State, but ``_after_state_change`` may be skipped in the forked child.
-        - *Some* code in ``_after_state_change`` may have run, but that method may have never completed/returned,
-          leaving any data it mutated in an undefined/indeterminate state.
-
-        Forking and continuing to use a StateTracker in the parent process requires no special consideration.
+        See :ref:`state_tracker_fork_safety`.
     """
 
     states: ClassVar[frozenset[State]]

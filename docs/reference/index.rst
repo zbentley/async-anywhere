@@ -22,6 +22,7 @@ API
     *
     executors/index
     futures/index
+    state_tracker/index
 
 .. |all| replace:: ``__all__``
 .. _all: https://docs.python.org/3/tutorial/modules.html#importing-from-a-package

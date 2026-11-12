@@ -4,7 +4,7 @@ from concurrent.futures._base import CANCELLED_AND_NOTIFIED, FINISHED, PENDING, 
 from math import isinf
 from threading import Thread
 from time import monotonic
-from typing import Any, Awaitable, Callable, Self, Collection, TypeVar, Iterable
+from typing import Any, Awaitable, Callable, Self, Collection, TypeVar, Iterable, Final
 
 from async_anywhere._util import AnyEventLoop, BlockingChecker, BlockingNotAllowed, Condition, futures_logger
 from async_anywhere._util.trio import TrioRuntime
@@ -52,11 +52,11 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     """
 
     # Running is as an executor's job is once started, which can't be cancelled. Once done, it never transitions again.
-    Pending = State(initial=True)
-    Running = State(sources=Pending)
-    Cancelled = State(sources=(Pending, Running))  # From Running only in a forked process: see _fork_safety
-    Succeeded = State(sources=(Pending, Running))  # Its transition's data is the result
-    Failed = State(sources=(Pending, Running))  # Its transition's data is the exception
+    Pending: Final[State] = State(initial=True)
+    Running: Final[State] = State(sources=Pending)
+    Cancelled: Final[State] = State(sources=(Pending, Running))  # From Running only in a forked process: see _fork_safety
+    Succeeded: Final[State] = State(sources=(Pending, Running))  # Its transition's data is the result
+    Failed: Final[State] = State(sources=(Pending, Running))  # Its transition's data is the exception
     # See _state. Cancelling notifies concurrent.futures' waiters at once, so it's never just CANCELLED.
     _CF_STATES = {
         Pending: PENDING, Running: RUNNING, Cancelled: CANCELLED_AND_NOTIFIED, Succeeded: FINISHED, Failed: FINISHED

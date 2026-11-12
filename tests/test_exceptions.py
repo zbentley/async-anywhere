@@ -9,6 +9,7 @@ import pickle
 import subprocess
 import sys
 from abc import ABC
+from typing import Final
 
 import pytest
 
@@ -28,7 +29,7 @@ from async_anywhere.state_tracker import State, StateTracker
 
 
 class Tracker(StateTracker):
-    Only = State(initial=True)
+    Only: Final[State] = State(initial=True)
 
 
 EXCEPTIONS = {

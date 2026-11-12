@@ -7,7 +7,7 @@ from datetime import timedelta
 from functools import cached_property, partial, update_wrapper
 from inspect import isawaitable
 from threading import Thread, current_thread, main_thread
-from typing import Any, Callable, ClassVar, Coroutine, Literal, ParamSpec, TypeVar, final, Collection
+from typing import Any, Callable, ClassVar, Coroutine, Final, Literal, ParamSpec, TypeVar, final, Collection
 
 from attrs import Factory, define, field, setters, validators
 from sniffio import current_async_library_cvar
@@ -200,7 +200,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     _runner: AwaitableFuture[asyncio.Task] = field(init=False, factory=AwaitableFuture)
     _expiry: Timer = field(init=False, default=Factory(_timer_factory, takes_self=True))
 
-    Running: ClassVar[State] = State(initial=True)
+    Running: ClassVar[Final[State]] = State(initial=True)
     """
     Observing executor state:
         An EventLoopExecutor is a WaitableStateTracker whose state moves linearly, thus:
@@ -216,9 +216,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         If users want to externally react to executor state changes, the AwaitableFutures returned from wait_for_state can
         be used directly, or subscribed to via AwaitableFuture.add_done_callback.
     """
-    Stopping: ClassVar[State] = State(sources=Running)
+    Stopping: ClassVar[Final[State]] = State(sources=Running)
     """This state is entered once, when :py:meth:`shutdown()` is called or the executor stops for any other reason."""
-    Shutdown: ClassVar[State] = State(sources=Stopping)
+    Shutdown: ClassVar[Final[State]] = State(sources=Stopping)
     """This state is entered once, after the executor has shut down its event loop and has joined its captive thread."""
 
 
