@@ -13,6 +13,10 @@ from async_anywhere._util.fork_safety import ForkSafeInstanceTracker
 from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.exceptions import WouldBlock
 
+
+async def wait_forever(*_):
+    await asyncio.Future()
+
 def AnyEventLoop() -> bool:
     """Sentinel for the ``prevent_blocking_wait_when`` parameter of :py:meth:`AwaitableFuture.__init__`: raises
     :py:class:`.WouldBlock` instead of blocking if any event loop or :doc:`Trio <trio:index>` task is running."""
