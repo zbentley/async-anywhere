@@ -12,6 +12,7 @@ Glossary
         will shut itself down as soon as its main task finishes.
 
     job
+    jobs
         User-supplied Python code that executes in the captive thread of an EventLoopExecutor, besides the :term:`main task`. Either of:
             #. Code passed to the executor via ``executor.submit()``.
             #. Code decorated with ``@executor.bridge``.

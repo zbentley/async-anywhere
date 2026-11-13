@@ -1,4 +1,4 @@
-.. py:currentmodule:: async_anywhere.futures.awaitable
+.. py:currentmodule:: async_anywhere.futures
 
 .. _future_compatibility:
 

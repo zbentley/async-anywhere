@@ -12,7 +12,8 @@ from typing import Any, Callable, ClassVar, Coroutine, Final, Literal, ParamSpec
 from attrs import Factory, define, field, setters, validators
 from sniffio import current_async_library_cvar
 
-from async_anywhere._util import BlockingChecker, ConditionProtected, validate_coroutine_function, Toggleable
+from async_anywhere._util import BlockingChecker, ConditionProtected, validate_coroutine_function, Toggleable, \
+    wait_forever
 from async_anywhere.exceptions import CleanStop, EventLoopExecutorBroken, JobCancelledByExecutorShutdown, EventLoopExecutorStopped, EventLoopExecutorForked
 from async_anywhere.executors import _fork_safety
 from async_anywhere.executors._job import _ExecutorJob
@@ -24,10 +25,6 @@ from async_anywhere.state_tracker.waitable import WaitableStateTracker
 # Not PEP 695 type params, which Sphinx mistakes for typing's own TypeVars and drops from docs. TODO: file Sphinx bug
 P = ParamSpec("P")
 T = TypeVar("T")
-
-
-async def _wait_forever(_):
-    await asyncio.Future()
 
 def _seconds(timeout: float | timedelta) -> float:
     return timeout.total_seconds() if isinstance(timeout, timedelta) else timeout
@@ -136,7 +133,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     # TODO: its validator's errors name _parent_task, not its "main" alias
     _parent_task: Callable[[EventLoopExecutor], Coroutine[Any, Any, Any]] = field(
         alias="main",
-        default=_wait_forever,
+        default=wait_forever,
         validator=validate_coroutine_function
     )
     """The executor's :term:`main task`. A coroutine function (``async def``) that will be wrapped in an 
