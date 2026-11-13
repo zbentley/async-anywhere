@@ -61,16 +61,22 @@ fut = AwaitableFuture(
     # Don't allow calls to .result() if this loop is running; that'll deadlock.
     prevent_blocking_wait_when=[asyncio.get_event_loop()],
 )
+# 
 fut.add_done_callback(lambda f: print(f"Future {f} is done!"), run_in_forked_child=True)
 
 async def foo():
     print(await fut)
 
-Thread(target=asyncio.run, args=(foo(),)).start() # Wait from one event loop
-Thread(target=asyncio.run, args=(foo(),)).start() # ... two event loops
+# Wait from one event loop:
+Thread(target=asyncio.run, args=(foo(),)).start() 
+# ... two event loops:
+Thread(target=asyncio.run, args=(foo(),)).start() 
+# Set the result from anywhere:
 Thread(target=fut.set_result, args=("All done!",)).start()
-asyncio.run(foo()) # ... three event loops
-print(fut.result(timeout=1)) # ... or synchronously.
+# Wait from event loops without a wrapper:
+asyncio.run(fut) 
+# ... or synchronously:
+print(fut.result(timeout=1))
 ```
 
 ### `EventLoopExecutor`
