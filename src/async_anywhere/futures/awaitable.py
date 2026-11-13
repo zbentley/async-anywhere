@@ -55,14 +55,14 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
 
     # Running is as an executor's job is once started, which can't be cancelled. Once done, it never transitions again.
     # So once a lock-free read of _last_transition finds it done, rereading it for that state's data can't tear
-    Pending: Final[State] = State(initial=True)
-    Running: Final[State] = State(sources=Pending)
-    Cancelled: Final[State] = State(sources=(Pending, Running))  # From Running only in a forked process: see _fork_safety
-    Succeeded: Final[State] = State(sources=(Pending, Running))  # Its transition's data is the result
-    Failed: Final[State] = State(sources=(Pending, Running))  # Its transition's data is the exception
+    _Pending: Final[State] = State(initial=True)
+    _Running: Final[State] = State(sources=_Pending)
+    _Cancelled: Final[State] = State(sources=(_Pending, _Running))  # From Running only in a forked process: see _fork_safety
+    _Succeeded: Final[State] = State(sources=(_Pending, _Running))  # Its transition's data is the result
+    _Failed: Final[State] = State(sources=(_Pending, _Running))  # Its transition's data is the exception
     # See _state. Cancelling notifies concurrent.futures' waiters at once, so it's never just CANCELLED.
     _CF_STATES = {
-        Pending: PENDING, Running: RUNNING, Cancelled: CANCELLED_AND_NOTIFIED, Succeeded: FINISHED, Failed: FINISHED
+        _Pending: PENDING, _Running: RUNNING, _Cancelled: CANCELLED_AND_NOTIFIED, _Succeeded: FINISHED, _Failed: FINISHED
     }
     # For prevent_blocking_wait_when: refusing blocking waits in any running event loop or trio task, or anywhere
     AnyEventLoop = staticmethod(AnyEventLoop)
@@ -180,17 +180,17 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         # Our repr is similar to, but not the same as, concurrent.futures.Future's repr.
         _, state, data = self.last_transition
         outcome = "" if data is None else f"[{type(data).__name__}]"
-        return f"<{type(self).__qualname__} at {id(self):#x} {state.name}{outcome}>"
+        return f"<{type(self).__qualname__} at {id(self):#x} {state.name[1:]}{outcome}>"  # Without its private prefix
 
     def _after_state_change(self, old_state: State, new_state: State, data: Any):
         # Under _condition, so concurrent.futures.wait() and as_completed(), which add their waiters under it, miss nothing
-        if new_state is self.Running:
+        if new_state is self._Running:
             return
         self._completed_at = monotonic()
         for waiter in self._waiters:
-            if new_state is self.Succeeded:
+            if new_state is self._Succeeded:
                 waiter.add_result(self)
-            elif new_state is self.Failed:
+            elif new_state is self._Failed:
                 waiter.add_exception(self)
             else:
                 waiter.add_cancelled(self)
@@ -315,7 +315,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         """
 
         # Lock-free unless it's pending, as Executor.map() cancels every future once it has its result
-        if not self._ignore_cancel and self.state is self.Pending and self._cancel():
+        if not self._ignore_cancel and self.state is self._Pending and self._cancel():
             return True
         return self.cancelled()
 
@@ -324,19 +324,19 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         # under _condition, reentrant, as _transition() takes it too. Callbacks run without it.
         with self._condition:
             # It started, finished, or was cancelled, meanwhile
-            if not (even_running or self.state is self.Pending) or not self._try_transition(self.Cancelled):
+            if not (even_running or self.state is self._Pending) or not self._try_transition(self._Cancelled):
                 return False
         self._invoke_callbacks()
         return True
 
     def _get_result(self, expect_success: bool, timeout: float | None):
         try:
-            match self._last_transition[1]:  # Rereads below can't tear: see the note above Pending
-                case self.Succeeded if expect_success: return self._last_transition[2]
-                case self.Succeeded: return None
-                case self.Failed if expect_success: raise self._last_transition[2].with_traceback(self._exception_tb)
-                case self.Failed: return self._last_transition[2]
-                case self.Cancelled: raise concurrent.futures.CancelledError
+            match self._last_transition[1]:  # Rereads below can't tear: see the note above _Pending
+                case self._Succeeded if expect_success: return self._last_transition[2]
+                case self._Succeeded: return None
+                case self._Failed if expect_success: raise self._last_transition[2].with_traceback(self._exception_tb)
+                case self._Failed: return self._last_transition[2]
+                case self._Cancelled: raise concurrent.futures.CancelledError
             if self._blocking_checker is not None and (timeout is None or timeout > 0):  # Else it only polls
                 self._blocking_checker.check(self)
             # Convert positive infinity to None/wait-forever
@@ -568,7 +568,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
                 self.set_exception(ex)
                 del self, result  # So the traceback of what this raises, now its exception, holds neither
                 raise
-        self._transition(self.Succeeded, result)
+        self._transition(self._Succeeded, result)
         self._invoke_callbacks()
 
     def set_exception(self, exception: BaseException):
@@ -604,7 +604,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         with self._condition: # Recursive lock, so _transition works within it
             if not self.state.terminal:
                 self._exception_tb = exception.__traceback__
-            self._transition(self.Failed, exception)
+            self._transition(self._Failed, exception)
         self._invoke_callbacks()
 
     def raise_if_failed(self):
@@ -616,7 +616,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         """
         if error := self.exception_or_none():
             raise error.with_traceback(self._exception_tb)
-        if self.state is self.Cancelled:
+        if self.state is self._Cancelled:
             raise concurrent.futures.CancelledError
 
     def set_result_if_not_done(self, result: T) -> bool:
@@ -666,7 +666,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
 
         Returns None if the future is not done, was cancelled, or :term:`completed` without an exception.
         """
-        return self._last_transition[2] if self._last_transition[1] is self.Failed else None
+        return self._last_transition[2] if self._last_transition[1] is self._Failed else None
 
     def result_or_none(self) -> T | None:
         """Returns the result of this future if it is done.
@@ -677,7 +677,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
             If your future can be successfully :term:`completed` with the value ``None``, this method is likely not
             useful (use :py:meth:`result()` with ``timeout=0`` and handle the error instead).
         """
-        return self._last_transition[2] if self._last_transition[1] is self.Succeeded else None
+        return self._last_transition[2] if self._last_transition[1] is self._Succeeded else None
 
     def done(self) -> bool:
         """Returns True if this future has :term:`completed`, False otherwise.
@@ -687,7 +687,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     def cancelled(self) -> bool:
         """Returns True if this future was :term:`completed` by being cancelled False otherwise.
         """
-        return self._last_transition[1] is self.Cancelled
+        return self._last_transition[1] is self._Cancelled
 
     # For Executor API compliance
     @property
@@ -706,7 +706,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
             This method exists to satisfy part of the concurrent.futures.Executor/as_completed/wait API and should NOT
             be called by user code.
         """
-        return self.state is self.Running
+        return self.state is self._Running
 
     # For Executor API compliance
     def set_running_or_notify_cancel(self) -> bool:
@@ -719,5 +719,5 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         with self._condition:
             if self.cancelled():
                 return False
-            self._transition(self.Running)  # Refused once it's running or finished
+            self._transition(self._Running)  # Refused once it's running or finished
         return True

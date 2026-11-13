@@ -7,6 +7,5 @@
     :maxdepth: 4
 
     awaitable
-    chain
     fork_safety
     compatibility

@@ -652,7 +652,7 @@ def test_futures_left_pending_in_a_forked_process_are_readied_again_in_processes
 @FORKS
 def test_a_forked_process_lets_go_of_futures_that_had_finished_as_it_forked():
     future = AwaitableFuture()
-    future._transition(future.Succeeded, "finished")  # As set_result() does, before it runs callbacks and unregisters it
+    future._transition(future._Succeeded, "finished")  # As set_result() does, before it runs callbacks and unregisters it
     assert future in _fork_safety.futures
     with forked() as f:
         if f.child:
