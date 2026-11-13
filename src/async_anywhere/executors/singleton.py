@@ -110,11 +110,12 @@ class SingletonEventLoopExecutor(Executor):
                     new._expiry.reset(new._idle_timeout)
                     return await main(new)
 
-            return stored.replace_value(EventLoopExecutor(
-                main=gated,
-                _blocking_checker=self._blocking_checker,
+            kwargs = {
                 **self._kwargs,
-            ))
+                "_blocking_checker": self._blocking_checker,
+                "main": gated,
+            }
+            return stored.replace_value(EventLoopExecutor(**kwargs))
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> AwaitableFuture[EventLoopExecutorStopped | None]:
         """As EventLoopExecutor.shutdown(), for get()'s executor; or, called on one of its executors (one it has replaced,
