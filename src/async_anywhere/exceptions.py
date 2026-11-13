@@ -91,7 +91,7 @@ class WouldBlock(AsyncAnywhereException, RuntimeError):
 
     For example, this is raised from :py:meth:`.AwaitableFuture.result` when that method needs to synchronously wait for
     a future to complete from a thread or event loop that the user marked as forbidden for blocking waits via the
-    ``prevent_blocking_wait_when`` parameter of :py:meth:`.AwaitableFuture.__init__`.
+    ``prevent_blocking_wait_in`` parameter of :py:meth:`.AwaitableFuture.__init__`.
     """
     def __init__(self, subject, environment) -> None:
         """:meta private:"""
@@ -100,7 +100,7 @@ class WouldBlock(AsyncAnywhereException, RuntimeError):
             environment = f"- AwaitableFuture.{environment.__name__}"
         else:
             environment = f"in {environment!r}"
-        super().__init__(f"Waiting for {subject!r} would deadlock {environment} (configured via prevent_blocking_wait_when)")
+        super().__init__(f"Waiting for {subject!r} would deadlock {environment} (configured via prevent_blocking_wait_in)")
 
 
 # State trackers

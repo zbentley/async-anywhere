@@ -16,10 +16,10 @@ How :py:class:`AwaitableFuture` works with the standard library's functions for 
       - Notes
     * - :py:func:`concurrent.futures.as_completed`
       - Yes
-      - Ignores ``prevent_blocking_wait_when``, so can wait forever.
+      - Ignores ``prevent_blocking_wait_in``, so can wait forever.
     * - :py:func:`concurrent.futures.wait`
       - Yes
-      - Ignores ``prevent_blocking_wait_when``, so can wait forever.
+      - Ignores ``prevent_blocking_wait_in``, so can wait forever.
     * - :py:func:`asyncio.wait`
       - No (Planned)
       - Can hang when a future finishes on a thread other than the waiting loop's.

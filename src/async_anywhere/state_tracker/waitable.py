@@ -119,7 +119,7 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
         # whole (old state, new state, data) triple.
         # NB: cancelling the returned future does nothing.
         # NB: if your done callbacks are slow, you'll break stuff (here and everywhere)
-        # NB: kwargs go to AwaitableFuture() (prevent_blocking_wait_when, say), bar ignore_cancel,
+        # NB: kwargs go to AwaitableFuture() (prevent_blocking_wait_in, say), bar ignore_cancel,
         # transform_result and done_callbacks: those are errors
         states = [self._check_state(state) for state in (state, *states)]
         future = AwaitableFuture(  # Giving up on it leaves it, and other waiters, alone

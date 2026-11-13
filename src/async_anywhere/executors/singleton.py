@@ -22,12 +22,12 @@ T = TypeVar("T")
 @final
 class SingletonEventLoopExecutor(Executor):
     """A proxy for a single :py:class:`EventLoopExecutor` which can lazily construct it or replace it (when it is
-    :ref:`stopped`) on-demand.
+    :ref:`stopped <stopping>`) on-demand.
 
     ``EventLoopExecutor``, unlike other ``concurrent.future.Executor`` subclasses, will not automatically restart or
     scale out its internal workers: it is intended to support use-cases where having at *most* a single executing thread
     is important (e.g. network clients to external systems that only support a single connection at a time). Because
-    of that, when an ``EventLoopExecutor`` is :ref:`stopped`, that is "forever": it cannot be started again.
+    of that, when an ``EventLoopExecutor`` is :ref:`stopped <stopping>`, that is "forever": it cannot be started again.
 
     For some use cases, that constraint is inconvenient: if an ``EventLoopExecutor`` expires or is stopped due to an
     error, and then work needs to be done later on, it can be a hassle to ensure the executor is replaced and restarted:
@@ -108,12 +108,12 @@ class SingletonEventLoopExecutor(Executor):
 
         If no instance has been created due to ``lazy=True``, an instance is constructed now.
 
-        If a previously-constructed instance is not :ref:`stopped`, it is returned.
+        If a previously-constructed instance is not :ref:`stopped <stopping>`, it is returned.
 
-        If a previously-constructed instance is stopped or stopping, it is signalled to shut down (optionally cancelling
-        any outstanding :term:`jobs`; see the ``cancel_futures_on_stopping_executors`` constructor parameter for
-        details) and a new instance is constructed. The new instance will not run any jobs or its :term:`main task`
-        until the old instance finishes shutting down."""
+        If a previously-constructed instance is stopped or stopping, it is signalled to shut down (optionally
+        :ref:`cancelling <cancellation>` any outstanding :term:`jobs`; see the ``cancel_futures_on_stopping_executors``
+        constructor parameter for details) and a new instance is constructed. The new instance will not run any jobs or
+        its :term:`main task` until the old instance finishes shutting down."""
         # fut = AwaitableFuture(cancel_pending_in_forked_child=True)
         with self._wrapped_executor as executor:
             if executor is not None:

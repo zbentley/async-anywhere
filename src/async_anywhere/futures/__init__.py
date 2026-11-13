@@ -36,7 +36,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     - Any number of event loops, async tasks, or threads can wait on an ``AwaitableFuture`` simultaneously.
     - Users can specify threads or event loops upon which blocking waits are not allowed. This turns a common cause
       of deadlocks (erroneously synchronously waiting for an incomplete future on the loop which was intended to
-      complete it) into an error. See the ``prevent_blocking_wait_when`` constructor parameter for more information.
+      complete it) into an error. See the ``prevent_blocking_wait_in`` constructor parameter for more information.
     - Unified and configurable cancellation behavior across asynchronous and synchronous waiters. This
       improves on the underspecified and inconsistent semantics regarding cancellation of
       linked :py:obj:`concurrent.futures.Future`\ s and :py:obj:`asyncio.Future`\ s.
@@ -54,7 +54,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     Example:
         >>> fut = AwaitableFuture(
         ...     # Don't allow calls to .result() if this loop is running; that'll deadlock.
-        ...     prevent_blocking_wait_when=[asyncio.get_event_loop()],
+        ...     prevent_blocking_wait_in=[asyncio.get_event_loop()],
         ... )
         >>> #
         >>> fut.add_done_callback(lambda f: print(f"Future {f} is done!"), run_in_forked_child=True)
@@ -82,7 +82,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     _Succeeded: Final[State] = State(sources=(_Pending, _Running))  # Its transition's data is the result
     _Failed: Final[State] = State(sources=(_Pending, _Running))  # Its transition's data is the exception
 
-    # For prevent_blocking_wait_when: refusing blocking waits in any running event loop or trio task, or anywhere
+    # For prevent_blocking_wait_in: refusing blocking waits in any running event loop or trio task, or anywhere
     AnyEventLoop = staticmethod(AnyEventLoop)
     BlockingNotAllowed = staticmethod(BlockingNotAllowed)
 
@@ -100,7 +100,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         self,
         *,
         # TODO fix doc type hint
-        prevent_blocking_wait_when: Collection[asyncio.AbstractEventLoop | Thread] | None = None,
+        prevent_blocking_wait_in: Collection[asyncio.AbstractEventLoop | Thread] | None = None,
         ignore_cancel: bool = False,
         cancel_pending_in_forked_child: bool = False,
         transform_result: Callable[[Any], T] | None = None,
@@ -113,7 +113,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         stdlib does.
 
         Args:
-            prevent_blocking_wait_when: a Collection of :py:obj:`asyncio.AbstractEventLoop`\ s or
+            prevent_blocking_wait_in: a Collection of :py:obj:`asyncio.AbstractEventLoop`\ s or
                 :py:obj:`threading.Thread`\ s, or None. When a collection is passed, this future refuses to be blocked
                 on from callers in it: when :py:meth:`result` is called from one of those loops or threads and this
                 future is incomplete, an error will be raised instead of allowing ``.result()`` to synchronously block.
@@ -172,12 +172,12 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         StateTracker.__init__(self)
         # Not making a BlockingChecker for None (most futures) saves its call: these are made on hot paths
         # Or a checker made already, passed in, as an executor's are
-        if prevent_blocking_wait_when is None or isinstance(prevent_blocking_wait_when, BlockingChecker):
-            self._blocking_checker = prevent_blocking_wait_when
-        elif len(prevent_blocking_wait_when) == 0:
+        if prevent_blocking_wait_in is None or isinstance(prevent_blocking_wait_in, BlockingChecker):
+            self._blocking_checker = prevent_blocking_wait_in
+        elif len(prevent_blocking_wait_in) == 0:
             self._blocking_checker = None
         else:
-            self._blocking_checker = BlockingChecker(prevent_blocking_wait_when)
+            self._blocking_checker = BlockingChecker(prevent_blocking_wait_in)
         self._ignore_cancel = ignore_cancel
         self._cancel_pending_in_forked_child = cancel_pending_in_forked_child
         self._transform_result = transform_result
@@ -375,7 +375,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
         If this future has not yet :term:`completed` when this method is called, one of several things happens:
 
         #. If timeout is zero, :py:obj:`TimeoutError` is raised.
-        #. If any of the threads or event loops passed to the ``prevent_blocking_wait_when`` constructor parameter is
+        #. If any of the threads or event loops passed to the ``prevent_blocking_wait_in`` constructor parameter is
            the thread or event loop running in the caller of this method, :py:class:`.WouldBlock` is raised.
         #. Otherwise, waits for ``timeout`` seconds for this future to complete. If it succeeds, its result is returned.
            If it fails with an exception or is cancelled, that error is raised. If it doesn't complete in time,
@@ -390,7 +390,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
             :py:obj:`TimeoutError`: if waiting for completion times out.
 
             :py:class:`WouldBlock`: if this future is incomplete *and* blocking is not allowed (per the
-                ``prevent_blocking_wait_when`` constructor parameter) on the calling event loop or thread *and*
+                ``prevent_blocking_wait_in`` constructor parameter) on the calling event loop or thread *and*
                 ``timeout`` is greater than zero.
 
             :py:obj:`concurrent.futures.CancelledError`: if this future is cancelled before or during this method.
@@ -415,7 +415,7 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
             :py:obj:`TimeoutError`: if waiting for completion times out.
 
             :py:class:`WouldBlock`: if this future is incomplete  *and* blocking is not allowed (per the
-                ``prevent_blocking_wait_when`` constructor parameter) on the calling event loop or thread *and*
+                ``prevent_blocking_wait_in`` constructor parameter) on the calling event loop or thread *and*
                 ``timeout`` is greater than zero.
 
             :py:obj:`concurrent.futures.CancelledError`: if this future is cancelled before or during this method.

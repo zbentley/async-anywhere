@@ -18,13 +18,13 @@ async def wait_forever(*_):
     await asyncio.Future()
 
 def AnyEventLoop() -> bool:
-    """Sentinel for the ``prevent_blocking_wait_when`` parameter of :py:meth:`AwaitableFuture.__init__`: raises
+    """Sentinel for the ``prevent_blocking_wait_in`` parameter of :py:meth:`AwaitableFuture.__init__`: raises
     :py:class:`.WouldBlock` instead of blocking if any event loop or :doc:`Trio <trio:index>` task is running."""
     return asyncio._get_running_loop() is not None or TrioRuntime.in_task()
 
 
 def BlockingNotAllowed() -> bool:
-    """Sentinel for the ``prevent_blocking_wait_when`` parameter of :py:meth:`AwaitableFuture.__init__`: raises
+    """Sentinel for the ``prevent_blocking_wait_in`` parameter of :py:meth:`AwaitableFuture.__init__`: raises
     :py:class:`.WouldBlock` instead of blocking in all cases."""
     return True
 

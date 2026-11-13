@@ -869,7 +869,7 @@ def test_submission_the_loop_never_runs_fails_instead_of_hanging(monkeypatch):
         # has closed.
         if worker.is_current_executor():
             with worker._condition as jobs:
-                late.append(future := _ExecutorJob(prevent_blocking_wait_when=worker._blocking_checker))
+                late.append(future := _ExecutorJob(prevent_blocking_wait_in=worker._blocking_checker))
                 future._target = worker._job(asyncio.sleep, (0,), {}, future)  # As submit() sets it
                 jobs.add(future)
                 worker._loop.call_soon_threadsafe(future.start, worker._loop)

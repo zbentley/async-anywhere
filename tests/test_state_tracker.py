@@ -337,13 +337,13 @@ def test_dropped_waiters_are_not_resolved():
     inst._transition(MyWaitable.B)
     assert len(resolved) == 0
 
-async def test_prevent_blocking_wait_when():
+async def test_prevent_blocking_wait_in():
     inst, here = MyWaitable(), (asyncio.get_running_loop(),)
     with pytest.raises(RuntimeError, match="would deadlock"):
-        inst.wait_for_state(MyWaitable.B, prevent_blocking_wait_when=here).result(1)
+        inst.wait_for_state(MyWaitable.B, prevent_blocking_wait_in=here).result(1)
     with pytest.raises(TimeoutError):  # Only the futures given it check
         inst.wait_for_state(MyWaitable.B).result(0)
-    done = inst.wait_for_state(MyWaitable.A, prevent_blocking_wait_when=here)
+    done = inst.wait_for_state(MyWaitable.A, prevent_blocking_wait_in=here)
     assert done.result(0) is None  # Done, so not checked
 
 @pytest.mark.parametrize(

@@ -337,7 +337,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # Performance: re-use the blocking checker rather than passing in this executor's loop/thread. This path is
             # hot, so saving here has an impact.
             _ExecutorJob(
-                prevent_blocking_wait_when=self._blocking_checker,
+                prevent_blocking_wait_in=self._blocking_checker,
                 done_callbacks=(self._cancellation_forwarder,),  # Cheaper than add_done_callback(), which locks
             ),
             copy_context(),
@@ -493,7 +493,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         self,
         state: State,
         *states: State,
-        prevent_blocking_wait_when: Collection[asyncio.AbstractEventLoop | Thread] | None = None,
+        prevent_blocking_wait_in: Collection[asyncio.AbstractEventLoop | Thread] | None = None,
         **kwargs,
     ):
         """Behaves identically to :py:meth:`.WaitableStateTracker.wait_for_state`, with the added invariant that
@@ -502,9 +502,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         yet done.
         """
         checker = self._blocking_checker
-        if prevent_blocking_wait_when is not None:
-            checker = checker.copy(add=prevent_blocking_wait_when)
-        return super().wait_for_state(state, *states, prevent_blocking_wait_when=checker, **kwargs)
+        if prevent_blocking_wait_in is not None:
+            checker = checker.copy(add=prevent_blocking_wait_in)
+        return super().wait_for_state(state, *states, prevent_blocking_wait_in=checker, **kwargs)
 
     def shutdown(self, wait=True, *, cancel_futures=False) -> AwaitableFuture[EventLoopExecutorStopped]:
         r"""
