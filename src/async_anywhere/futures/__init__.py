@@ -51,6 +51,27 @@ class AwaitableFuture(concurrent.futures.Future[T], StateTracker, Awaitable[T]):
 
     See :ref:`future_compatibility` for how the standard library's future handling treats ``AwaitableFuture``\ s.
 
+    Example:
+        >>> fut = AwaitableFuture(
+        ...     # Don't allow calls to .result() if this loop is running; that'll deadlock.
+        ...     prevent_blocking_wait_when=[asyncio.get_event_loop()],
+        ... )
+        >>> #
+        >>> fut.add_done_callback(lambda f: print(f"Future {f} is done!"), run_in_forked_child=True)
+        >>> async def foo():
+        ...     print(await fut)
+        ...
+        >>> # Wait from one event loop:
+        >>> Thread(target=asyncio.run, args=(foo(),)).start()
+        >>> # ... two event loops:
+        >>> Thread(target=asyncio.run, args=(foo(),)).start()
+        >>> # Set the result from anywhere:
+        >>> Thread(target=fut.set_result, args=("All done!",)).start()
+        >>> # Wait from event loops without a wrapper:
+        >>> asyncio.run(fut)
+        >>> # ... or synchronously:
+        >>> print(fut.result(timeout=1))
+
     """
 
     # Running is as an executor's job is once started, which can't be cancelled. Once done, it never transitions again.

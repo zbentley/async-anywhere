@@ -1,6 +1,7 @@
 """An EventLoopExecutor that's replaced once it stops (by expiry, a crash, or a fork, say), for a client that should
 outlive any one executor: a database connection, for one. Only one of its executors runs user code (its :term:`main task`, and :term:`jobs <job>`)
 at a time: a replacement is made at once, but runs nothing until the executor it replaces has finished."""
+import logging
 from functools import partial, update_wrapper
 from inspect import iscoroutinefunction
 from typing import Any, Callable, Coroutine, ParamSpec, TypeVar, final
@@ -13,7 +14,7 @@ from async_anywhere.futures import AwaitableFuture
 
 # What shutdown() returns when there's no executor to stop: before the first get(), and in a forked process
 _NO_EXECUTOR = AwaitableFuture()
-_NO_EXECUTOR.set_result(None)
+_NO_EXECUTOR.set_result(EventLoopExecutorStopped("SingletonEventLoopExecutor never started an EventLoopExecutor"))
 P = ParamSpec("P")
 T = TypeVar("T")
 
@@ -38,6 +39,28 @@ class SingletonEventLoopExecutor(Executor):
     To address those concerns, this class exists. It wraps a single :py:class:`EventLoopExecutor` instance, and
     automatically (re)starts it when :term:`jobs` are submitted, returning futures that wait for previous executors to
     shut down before running requested work on fresh instances.
+
+    Example:
+
+        >>> singleton = SingletonEventLoopExecutor(lazy=True)
+        >>>
+        >>> async def foo(): ...
+        >>>
+        >>> @singleton.bridge
+        >>> async def bar(): ...
+        >>>
+        >>> # Run jobs on a lazily-constructed executor via .submit or @bridge:
+        >>> singleton.submit(foo).result()
+        >>> await singleton.submit(foo)
+        >>> await bar()
+        >>>
+        >>> # Retrieve executor instances:
+        >>> executor = singleton.get()
+        >>> executor.shutdown()
+        >>> # New executors are automatically re-created after waiting for old ones to shut down:
+        >>> singleton.submit(foo).result()
+        >>> # Shut down singleton executor until next job is requested:
+        >>> await singleton.shutdown()
 
     """
     def __init__(
@@ -102,6 +125,12 @@ class SingletonEventLoopExecutor(Executor):
 
             async def gated(new: EventLoopExecutor):  # Its main: run on its loop before anything else
                 if previous is not None:
+                    new._log(
+                        logging.DEBUG,
+                        "SingletonEventLoopExecutor: replacement executor %r waiting for previous executor %r to finish shutting down...",
+                        new,
+                        previous,
+                    )
                     previous.join()  # Blocking its loop, so that calls made to it wait too: an await would let them run
                 with stored as current:  # Once get() has stored it: which it never will if interrupted (by Ctrl+C, say)
                     begin = current is new
@@ -117,10 +146,27 @@ class SingletonEventLoopExecutor(Executor):
             }
             return stored.replace_value(EventLoopExecutor(**kwargs))
 
-    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> AwaitableFuture[EventLoopExecutorStopped | None]:
-        """As EventLoopExecutor.shutdown(), for get()'s executor; or, called on one of its executors (one it has replaced,
-        say), for that one, so that this never makes one. Each executor shuts down after those it replaced. Not for good:
-        the next get() makes a new executor. With no executor to stop, it resolves with None at once."""
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> AwaitableFuture[EventLoopExecutorStopped]:
+        """
+        Ensures the :py:class:`EventLoopExecutor` instance inside the invocant singleton is shut down.
+
+        Args:
+            wait: Synchronously blocks until the executor is shut down. See :py:meth:`EventLoopExecutor.shutdown`.
+            cancel_futures: Calls cancel on all outstanding :term:`jobs` and the :term:`main task`.
+                See :py:meth:`EventLoopExecutor.shutdown`.
+
+        Returns:
+            An AwaitableFuture whose result is a :py:class:`EventLoopExecutorStopped` instance containing details about
+            the conditions under which the executor was stopped.
+
+            If the :py:class:`EventLoopExecutor` instance inside the invocant singleton was not running or was never
+            constructed, returns a completed AwaitableFuture.
+
+            If ``wait=True``, returns a completed AwaitableFuture.
+
+            Otherwise, returns an AwaitableFuture which will be completed once the singleton's executor instance has
+            stopped.
+        """
         executor = EventLoopExecutor.current()
         if executor is None or executor._blocking_checker is not self._blocking_checker:  # Not one of its executors
             with self._wrapped_executor as executor:
@@ -132,8 +178,24 @@ class SingletonEventLoopExecutor(Executor):
     def submit(
         self, fn: Callable[P, Coroutine[Any, Any, T]], /, *args: P.args, **kwargs: P.kwargs
     ) -> AwaitableFuture[T]:
-        """As EventLoopExecutor.submit(), to get()'s executor; or, if that has stopped since get(), refusing the job, to
-        its replacement, which get() makes once more."""
+        """
+        Waits for the invocant's captive :py:class:`EventLoopExecutor` instance to be running and then calls
+        :py:meth:`EventLoopExecutor.submit` to run a job on it.
+
+        Args:
+            fn:
+            *args:
+            **kwargs: See :py:meth:`EventLoopExecutor.submit`.
+
+        Raises:
+            See :py:meth:`EventLoopExecutor.submit`.
+
+        Returns:
+            An AwaitableFuture which will :term:`complete` when:
+                1. Any stopping or broken executor previously stored on the invocant has finished shutting down *and*
+                2. A running executor has been constructed, started, and stored on the invocant (see :py:meth:`get`) *and*
+                3. ``fn`` has executed on the stored executor's captive thread and event loop via :py:meth:`EventLoopExecutor.submit`.
+        """
         executor = self.get()
         try:
             return executor.submit(fn, *args, **kwargs)
@@ -141,5 +203,9 @@ class SingletonEventLoopExecutor(Executor):
             return self.get().submit(fn, *args, **kwargs)
 
     def bridge(self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
-        """As EventLoopExecutor.bridge(), its jobs going through submit() above."""
+        """Wraps an async function and returns a wrapper which, when called, invokes the wrapped function on the
+        invocant's executor via :py:meth:`submit`.
+
+        See :py:meth:`EventLoopExecutor.bridge` for more details.
+        """
         return update_wrapper(partial(self.submit, func), func)

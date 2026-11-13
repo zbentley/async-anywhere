@@ -71,14 +71,23 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
         >>> executor = EventLoopExecutor()
         >>>
-        >>> async def foo(arg, kwarg=None): ...
+        >>> async def foo(arg, kwarg=None):
+        >>>     return 6
         >>>
         >>> @executor.bridge
-        >>> async def bar(arg, kwarg=None): ...
+        >>> async def bar(arg, kwarg=None):
+        >>>     return 7
         >>>
-        >>> executor.submit(foo, "arg", kwarg=True)  # Runs foo() on the captive loop and returns an AwaitableFuture
-        >>> bar("arg", kwarg=True) # Runs bar() on the captive loop and returns an AwaitableFuture
-        >>> executor.map(foo, [[1], [2]], timeout=1)  # Works as a concurrent.futures.Executor
+        >>> # Runs foo() on the captive loop and returns an AwaitableFuture:
+        >>> a = executor.submit(foo, "arg", kwarg=True)
+        >>> # Runs bar() on the captive loop and returns an AwaitableFuture
+        >>> b = bar("arg", kwarg=True)
+        >>> # AwaitableFutures can be waited on synchronously:
+        >>> assert (6, 7) == (a.result(timeout=1), b.result(timeout=float('inf')))
+        >>> # ...or asynchronously:
+        >>> assert 6 == await a
+        >>> # Also works as a concurrent.futures.Executor:
+        >>> executor.map(foo, [[1], [2]], timeout=1)
 
         Jobs will be cancelled inside the executor when the future used to wait on them is cancelled.
 
