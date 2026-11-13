@@ -4,10 +4,10 @@ at a time: a replacement is made at once, but runs nothing until the executor it
 from functools import partial, update_wrapper
 from inspect import iscoroutinefunction
 from typing import Any, Callable, Coroutine, ParamSpec, TypeVar, final
-
-from async_anywhere._util import BlockingChecker, ConditionProtected
+from concurrent.futures import Executor
+from async_anywhere._util import BlockingChecker, ConditionProtected, wait_forever
 from async_anywhere.exceptions import EventLoopExecutorStopped
-from async_anywhere.executors import EventLoopExecutor, _wait_forever
+from async_anywhere.executors import EventLoopExecutor
 from async_anywhere.executors._fork_safety import executors
 from async_anywhere.futures import AwaitableFuture
 
@@ -19,18 +19,52 @@ T = TypeVar("T")
 
 
 @final
-class SingletonEventLoopExecutor:
+class SingletonEventLoopExecutor(Executor):
+    """A proxy for a single :py:class:`EventLoopExecutor` which can lazily construct it or replace it (when it is
+    :ref:`stopped`) on-demand.
+
+    ``EventLoopExecutor``, unlike other ``concurrent.future.Executor`` subclasses, will not automatically restart or
+    scale out its internal workers: it is intended to support use-cases where having at *most* a single executing thread
+    is important (e.g. network clients to external systems that only support a single connection at a time). Because
+    of that, when an ``EventLoopExecutor`` is :ref:`stopped`, that is "forever": it cannot be started again.
+
+    For some use cases, that constraint is inconvenient: if an ``EventLoopExecutor`` expires or is stopped due to an
+    error, and then work needs to be done later on, it can be a hassle to ensure the executor is replaced and restarted:
+    swapping out its instance in a globally-observable way is tricky, waiting for stopping executors to finish shutting
+    down from synchronous or asynchronous code is tricky, preventing endless restart loops when executors cannot
+    initialize is tricky, and handling those concerns everywhere an executor's futures can be waited on leads to
+    cluttered code.
+
+    To address those concerns, this class exists. It wraps a single :py:class:`EventLoopExecutor` instance, and
+    automatically (re)starts it when :term:`jobs` are submitted, returning futures that wait for previous executors to
+    shut down before running requested work on fresh instances.
+
+    """
     def __init__(
         self,
         *,
         lazy: bool = True,
         cancel_futures_on_stopping_executors: bool = True,
-        main: Callable[[EventLoopExecutor], Coroutine[Any, Any, Any]] = _wait_forever,
         **kwargs,
     ):
-        """kwargs are EventLoopExecutor's, for each executor, as main is. With lazy=False, the first is made at once;
-        otherwise, by the first get(). A stopping executor is shut down with
-        shutdown(cancel_futures=cancel_futures_on_stopping_executors)."""
+        """
+        Construct a singleton proxy for one :py:class:`EventLoopExecutor`, optionally also constructing and starting
+        the thread/event loop of the wrapped executor.
+
+        Args:
+            lazy: If True, the executor will be constructed and started on first use (e.g. when :py:meth:`get` or
+                :py:meth:`submit` is called). If False, it will be constructed and started before this constructor
+                returns.
+            cancel_futures_on_stopping_executors: If True (the default), whenever users request an executor from this
+                class (e.g. when :py:meth:`get` or :py:meth:`submit` is called) and the stored executor is stopping,
+                all outstanding :term:`jobs` on the stopping executor will be cancelled (as if
+                ``EventLoopExecutor.shutdown(cancel_futures=True)`` were called) before this class waits for that
+                executor to stop, constructs and starts a new one, and then forwards the user's request on to it.
+            **kwargs: Keyword arguments to forward to the constructor of :py:class:`EventLoopExecutor` to construct the
+                executor instances used by this class.
+        """
+        super().__init__()  # In case stdlib ever adds a constructor (probably won't)
+        main = kwargs.setdefault("main", wait_forever)
         if not iscoroutinefunction(main):  # Here, as the executors are given get()'s wrapper of it
             raise TypeError(f"main must be a coroutine function (an async def), not {main!r}")
         self._main, self._kwargs = main, kwargs
@@ -47,10 +81,17 @@ class SingletonEventLoopExecutor:
         self._wrapped_executor.replace_value(None)
 
     def get(self) -> EventLoopExecutor:
-        """The executor. If it has stopped, a new one, which runs nothing (its :term:`main task`, or its :term:`jobs <job>`) until the old one
-        has shut down, and its thread finished: the old one is shut down, if it's stopping, but not waited for.
-        Blocking waits for any of its executors' futures, on any of its executors' threads, raise WouldBlock: they could
-        be waiting for a replacement that's waiting for them. Raises what EventLoopExecutor's constructor does."""
+        """Retrieves the stored :py:class:`EventLoopExecutor` instance.
+
+        If no instance has been created due to ``lazy=True``, an instance is constructed now.
+
+        If a previously-constructed instance is not :ref:`stopped`, it is returned.
+
+        If a previously-constructed instance is stopped or stopping, it is signalled to shut down (optionally cancelling
+        any outstanding :term:`jobs`; see the ``cancel_futures_on_stopping_executors`` constructor parameter for
+        details) and a new instance is constructed. The new instance will not run any jobs or its :term:`main task`
+        until the old instance finishes shutting down."""
+        # fut = AwaitableFuture(cancel_pending_in_forked_child=True)
         with self._wrapped_executor as executor:
             if executor is not None:
                 if executor.state is EventLoopExecutor.Running:
