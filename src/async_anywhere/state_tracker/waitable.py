@@ -14,7 +14,7 @@ T = TypeVar("T")
 # Old state and data are None for the initial state, which no transition entered
 
 class WaitableStateTracker(StateTracker, ABC, Generic[T]):
-    """A :py:class:`StateTracker` which can be waited on, synchronously or asynchronously, via :py:func:`wait_for_state`.
+    """A :py:class:`StateTracker` which can be waited on, synchronously or asynchronously, via :py:meth:`wait_for_state`.
 
     Like :py:class:`StateTracker`, this class is intended to be subclassed by users who attach one or more
     :py:class:`State` objects to it.
@@ -90,7 +90,7 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
 
             return_states:
                 If True, the returned future is resolved with a 3-tuple with the same contents as
-                :py:obj:`StateTracker.last_transition`: ``(old_state, new_state, data)``. If False, the returned future is resolved
+                :py:obj:`last_transition`: ``(old_state, new_state, data)``. If False, the returned future is resolved
                 with the ``data`` argument from the call to :py:meth:`_transition` that caused the tracker to enter one
                 of ``states``
 
@@ -102,7 +102,7 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
                     ``AwaitableFuture``\ 's constructor are `not` accepted.
         Returns:
             An :py:class:`AwaitableFuture` that will be automatically resolved when the invocant transitions into one of
-            ``states``. The future will be resolved with either the data payload to :py:func:`_transition` or the value
+            ``states``. The future will be resolved with either the data payload to :py:meth:`_transition` or the value
             of :py:attr:`last_transition`, depending on ``return_states=``.
 
             If the invocant is already in one of ``states`` and ``ignore_current_state`` is not set, the returned
@@ -119,7 +119,7 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
         # whole (old state, new state, data) triple.
         # NB: cancelling the returned future does nothing.
         # NB: if your done callbacks are slow, you'll break stuff (here and everywhere)
-        # NB: kwargs go to AwaitableFuture() (prevent_blocking_wait_in, say), bar ignore_cancel,
+        # NB: kwargs go to AwaitableFuture() (prevent_blocking_wait_within, say), bar ignore_cancel,
         # transform_result and done_callbacks: those are errors
         states = [self._check_state(state) for state in (state, *states)]
         future = AwaitableFuture(  # Giving up on it leaves it, and other waiters, alone
@@ -136,6 +136,21 @@ class WaitableStateTracker(StateTracker, ABC, Generic[T]):
 
     @final
     def _transition(self, target: State, data: T | None = None) -> State:
+        """See :py:meth:`StateTracker._transition`.
+
+        :meta public:
+
+        Args:
+            target: See :py:meth:`StateTracker._transition`.
+            data: See :py:meth:`StateTracker._transition`.
+
+        Raises:
+            <Various Exceptions>: See :py:meth:`StateTracker._transition`.
+
+        Returns:
+            The :py:class:`State` that the invocant transitioned *from*.
+
+        """
         with self._condition:
             old_state = self.state
             if target not in old_state._destinations:

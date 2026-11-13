@@ -59,7 +59,7 @@ import asyncio
 
 fut = AwaitableFuture(
     # Don't allow calls to .result() if this loop is running; that'll deadlock.
-    prevent_blocking_wait_in=[asyncio.get_event_loop()],
+    prevent_blocking_wait_within=[asyncio.get_event_loop()],
 )
 # 
 fut.add_done_callback(lambda f: print(f"Future {f} is done!"), run_in_forked_child=True)

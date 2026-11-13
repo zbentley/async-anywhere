@@ -63,7 +63,8 @@ def cleans_up_until(release: AwaitableFuture, ran: list | None = None):
 @pytest.mark.parametrize("lazy", [True, False])
 def test_makes_its_first_executor_on_the_first_get_unless_lazy(lazy):
     with running_singleton(lazy=lazy) as singleton:
-        assert (singleton.shutdown().result(0) is None) is lazy  # Stopping the worker made at once, if any
+        stopped = singleton.shutdown().result(0)  # Stopping the worker made at once, if any
+        assert (type(stopped) is EventLoopExecutorStopped) is lazy
         worker = singleton.get()
         assert worker.state is worker.Running and singleton.get() is worker
 
@@ -94,6 +95,7 @@ def test_a_replacement_runs_nothing_until_the_executor_it_replaces_has_finished(
     # Not interrupting first again as it's replaced, which would cut its cleanup short
     with running_singleton(main=main, cancel_futures_on_stopping_executors=False) as singleton:
         first = singleton.get()
+        first.submit(work).result(5)  # Its main has started, which it won't once stopping
         first.shutdown(wait=False)  # Its main cleaning up until released
         first.wait_for_state(first.Stopping).result(5)
         second = singleton.get()  # Made, and handed out, at once
@@ -213,6 +215,7 @@ def test_an_executor_whose_get_was_interrupted_as_it_was_made_runs_nothing():
         main=cleans_up_until(release, ran), loop_factory=loop_factory, cancel_futures_on_stopping_executors=False
     ) as singleton:
         first = singleton.get()
+        first.submit(work).result(5)  # Its main has started, which it won't once stopping
         first.shutdown(wait=False)  # Its main cleaning up until released
         first.wait_for_state(first.Stopping).result(5)
         before = set(_fork_safety.executors)
@@ -267,7 +270,7 @@ def test_a_forked_process_can_use_it_though_a_thread_that_isnt_there_held_its_lo
 
 def test_shutdown_without_an_executor_returns_at_once():
     stopped = SingletonEventLoopExecutor().shutdown()
-    assert stopped.done() and stopped.result() is None
+    assert stopped.done() and type(stopped.result()) is EventLoopExecutorStopped
 
 
 def test_shutdown_waits_for_the_executor_to_shut_down():

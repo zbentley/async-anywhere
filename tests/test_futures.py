@@ -57,11 +57,11 @@ def test_awaiting_a_done_future_needs_no_loop():
 @pytest.mark.parametrize("method", ["result", "exception"])
 async def test_waiting_synchronously_on_its_own_loop_is_an_error(owner, method):
     here = asyncio.get_running_loop()
-    future = AwaitableFuture(prevent_blocking_wait_in=(owner, here))
+    future = AwaitableFuture(prevent_blocking_wait_within=(owner, here))
     with pytest.raises(WouldBlock, match=f"would deadlock in {re.escape(repr(here))} "):
         getattr(future, method)(1)
     with pytest.raises(TimeoutError):
-        getattr(AwaitableFuture(prevent_blocking_wait_in=(owner,)), method)(0.01)  # Not this loop: waits
+        getattr(AwaitableFuture(prevent_blocking_wait_within=(owner,)), method)(0.01)  # Not this loop: waits
     with pytest.raises(TimeoutError):
         getattr(AwaitableFuture(), method)(0.01)
     future.set_result("done")
@@ -70,7 +70,7 @@ async def test_waiting_synchronously_on_its_own_loop_is_an_error(owner, method):
 
 @pytest.mark.parametrize("method", ["result", "exception"])
 async def test_waits_that_cant_block_are_never_refused(method):
-    future = AwaitableFuture(prevent_blocking_wait_in=(AwaitableFuture.BlockingNotAllowed,))
+    future = AwaitableFuture(prevent_blocking_wait_within=(AwaitableFuture.BlockingNotAllowed,))
     for timeout in 0, -1:  # Polls
         with pytest.raises(TimeoutError):
             getattr(future, method)(timeout)
@@ -80,13 +80,13 @@ async def test_waits_that_cant_block_are_never_refused(method):
 
 @pytest.mark.parametrize("collection", [list, set, frozenset, tuple])
 async def test_where_to_refuse_blocking_waits_can_be_any_collection(collection):
-    future = AwaitableFuture(prevent_blocking_wait_in=collection([asyncio.get_running_loop()]))
+    future = AwaitableFuture(prevent_blocking_wait_within=collection([asyncio.get_running_loop()]))
     with pytest.raises(WouldBlock):
         future.result(1)
 
 
 async def test_refusing_blocking_waits_on_a_thread_refuses_them_there_only_in_or_out_of_a_loop():
-    future = AwaitableFuture(prevent_blocking_wait_in=[here := threading.current_thread()])
+    future = AwaitableFuture(prevent_blocking_wait_within=[here := threading.current_thread()])
     with pytest.raises(WouldBlock, match=f"would deadlock in {re.escape(repr(here))} "):
         future.result(1)
     with pytest.raises(TimeoutError):  # On another thread: waits
@@ -94,14 +94,14 @@ async def test_refusing_blocking_waits_on_a_thread_refuses_them_there_only_in_or
 
     def refused_there():  # Outside any loop
         with pytest.raises(WouldBlock):
-            AwaitableFuture(prevent_blocking_wait_in=[threading.current_thread()]).result(1)
+            AwaitableFuture(prevent_blocking_wait_within=[threading.current_thread()]).result(1)
 
     await asyncio.to_thread(refused_there)
 
 
 @pytest.mark.backends("asyncio", "uvloop", "trio")
 async def test_refusing_blocking_waits_in_any_event_loop_refuses_them_in_any_loop_or_trio_task_only():
-    future = AwaitableFuture(prevent_blocking_wait_in=[AwaitableFuture.AnyEventLoop])
+    future = AwaitableFuture(prevent_blocking_wait_within=[AwaitableFuture.AnyEventLoop])
     with pytest.raises(WouldBlock, match=r"would deadlock - AwaitableFuture\.AnyEventLoop "):
         future.result(1)
     with pytest.raises(TimeoutError):  # Outside any loop: waits
@@ -109,7 +109,7 @@ async def test_refusing_blocking_waits_in_any_event_loop_refuses_them_in_any_loo
 
 
 async def test_refusing_all_blocking_waits_refuses_them_anywhere():
-    future = AwaitableFuture(prevent_blocking_wait_in=[AwaitableFuture.BlockingNotAllowed])
+    future = AwaitableFuture(prevent_blocking_wait_within=[AwaitableFuture.BlockingNotAllowed])
     with pytest.raises(WouldBlock, match=r"would deadlock - AwaitableFuture\.BlockingNotAllowed "):
         future.result(1)
     with pytest.raises(WouldBlock):  # Outside any loop too
@@ -120,13 +120,13 @@ async def test_where_to_refuse_blocking_waits_is_given_as_a_collection_of_loops_
     loop = asyncio.get_running_loop()
     for given in loop, threading.current_thread(), AwaitableFuture.BlockingNotAllowed, iter([loop]), "all", [lambda: True], [None]:
         with pytest.raises(TypeError):  # Not a collection, or of what can't refuse waits
-            AwaitableFuture(prevent_blocking_wait_in=given)
+            AwaitableFuture(prevent_blocking_wait_within=given)
 
 
 def test_futures_keep_the_loops_and_threads_they_refuse_blocking_waits_in_only_while_they_live():
     loop, thread = asyncio.new_event_loop(), threading.Thread(target=lambda: None)
     loop.close()
-    future = AwaitableFuture(prevent_blocking_wait_in=(loop, thread))
+    future = AwaitableFuture(prevent_blocking_wait_within=(loop, thread))
     refs = weakref.ref(loop), weakref.ref(thread)
     del loop, thread, future
     gc.collect()
@@ -299,7 +299,7 @@ async def test_a_finished_future_lets_go_of_its_async_futures():
     ],
 )
 def test_what_it_raises_doesnt_hold_it(method, finish, raises):
-    future = AwaitableFuture(prevent_blocking_wait_in=[AwaitableFuture.BlockingNotAllowed] if finish == "refuse" else None)
+    future = AwaitableFuture(prevent_blocking_wait_within=[AwaitableFuture.BlockingNotAllowed] if finish == "refuse" else None)
     holder = []
     if finish == "fail":
         future.set_exception(ValueError())

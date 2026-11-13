@@ -99,7 +99,7 @@ class State:
                 and only one State in a StateTracker must be marked with ``initial=True``.
 
                 If you need the initial state to be customizable e.g. at ``StateTracker`` construction time, set a
-                private/unreachable state with ``initial=True`` and call :py:func:`_transition` as appropriate at
+                private/unreachable state with ``initial=True`` and call :py:meth:`StateTracker._transition` as appropriate at
                 initialization time.
 
             destinations: States which the StateTracker can transition *to* from this State. Accepts another
@@ -110,7 +110,7 @@ class State:
                 including itself.
 
                 If ``typing.Self`` is present, this state can be transitioned to itself (doing so will trigger a
-                transition event and will wake up any :py:func:`WaitableStateTracker.wait_for_state` calls subscribed
+                transition event and will wake up any :py:meth:`WaitableStateTracker.wait_for_state` calls subscribed
                 to that transition).
 
                 A transition is allowed if it is listed either in ``sources`` or ``destinations``; it doesn't need to be
@@ -203,7 +203,7 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
     a thread-safe way. Instances have a field :py:attr:`state` which contains the current ``State`` of the instance,
     and have several other methods to inspect and assert on states and transitions between them.
 
-    Users can call :py:func:`_transition` or :py:func:`_try_transition` to move a ``StateTracker`` between states.
+    Users can call :py:meth:`_transition` or :py:meth:`_try_transition` to move a ``StateTracker`` between states.
 
     Users are intended to subclass StateTracker for their own use-cases. When subclassing StateTracker, users must
     declare one or more State objects as class-level fields.
@@ -270,9 +270,9 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
     def __init__(self, thread_safe: bool = True) -> None:
         r"""
         Args:
-            thread_safe: If True, a per-instance thread-recursive lock is held by :py:func:`_transition`,
-                :py:func:`_try_transition`, :py:func:`_after_state_change`, and
-                :py:func:`WaitableStateTracker.wait_for_state`. All other methods are lock-free and thread-safe to call
+            thread_safe: If True, a per-instance thread-recursive lock is held by :py:meth:`_transition`,
+                :py:meth:`_try_transition`, :py:meth:`_after_state_change`, and
+                :py:meth:`WaitableStateTracker.wait_for_state`. All other methods are lock-free and thread-safe to call
                 regardless of the value of this argument.
 
                 If False, no locks are used (which means that a ``StateTracker`` can only be safely used from one thread
@@ -299,7 +299,7 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
 
         1. The :py:class:`State` that the StateTracker was in before its most recent transition.
         2. The :py:class:`State` that this StateTracker was transitioned *into*, as returned by :py:attr:`state`.
-        3. The data payload passed to :py:func:`_transition` during the last successful transition event, or None if no
+        3. The data payload passed to :py:meth:`_transition` during the last successful transition event, or None if no
            data was passed or no transition has yet been performed.
 
         Note:
@@ -385,7 +385,7 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
         Does nothing by default; can optionally be overridden by subclasses (``super()`` does not need to be called by
         overriders).
 
-        This method is called by :py:func:`_transition` while the lock (see the ``thread_safe`` constructor parameter)
+        This method is called by :py:meth:`_transition` while the lock (see the ``thread_safe`` constructor parameter)
         is held, and will thus never be called concurrently on the same StateTracker instance. If you instead want to
         react to state changes without the lock being held, override ``_transition`` in a subclass instead.
 
@@ -394,7 +394,7 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
             new_state: the :py:class:`State` that the invocant was transitioned *into*. Depending on concurrency and the
                 ``thread_safe`` constructor parameter, this may or may not be the same value as the
                 :py:attr:`state` attribute.
-            data: the value that was supplied to :py:func:`_transition` when transitioning from ``old_state`` to
+            data: the value that was supplied to :py:meth:`_transition` when transitioning from ``old_state`` to
                 ``new_state``, or None if a value was not supplied.
         """
 
@@ -410,6 +410,8 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
 
     def _transition(self, target: State, data: object = None) -> State:
         r"""
+        :meta public:
+
         Move the invocant ``StateTracker`` from its current State (stored in :py:attr:`state`) to the specified
         ``target`` State, storing an optional data payload related to the transition.
 
@@ -426,7 +428,7 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
 
         Args:
             target: the State that the invocant should be transitioned into.
-            data: a payload to attach to the transition event. Will be provided to :py:func:`_after_state_change` and
+            data: a payload to attach to the transition event. Will be provided to :py:meth:`_after_state_change` and
                 returned by :py:attr:`last_transition`. ``data`` is stored on the invocant (and thus not garbage
                 collected) until the next successful call to ``_transition``.
 
@@ -451,11 +453,11 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
     @final
     def _try_transition(self, target: State, data: object = None) -> State | Literal[False]:
         r"""
-        Tries to call :py:func:`_transition` and returns False if it raises :py:class:`StateTrackerError`.
+        Tries to call :py:meth:`_transition` and returns False if it raises :py:class:`StateTrackerError`.
 
         Args:
-            target: see :py:func:`_transition`.
-            data: see :py:func:`_transition`.
+            target: see :py:meth:`_transition`.
+            data: see :py:meth:`_transition`.
 
         Raises:
             :py:class:`TypeError`: if ``target`` is not one of the invocant's declared :py:class:`State`\ s.

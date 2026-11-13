@@ -1,6 +1,3 @@
-"""An EventLoopExecutor that's replaced once it stops (by expiry, a crash, or a fork, say), for a client that should
-outlive any one executor: a database connection, for one. Only one of its executors runs user code (its :term:`main task`, and :term:`jobs <job>`)
-at a time: a replacement is made at once, but runs nothing until the executor it replaces has finished."""
 import logging
 from functools import partial, update_wrapper
 from inspect import iscoroutinefunction
@@ -87,12 +84,16 @@ class SingletonEventLoopExecutor(Executor):
                 executor instances used by this class.
         """
         super().__init__()  # In case stdlib ever adds a constructor (probably won't)
+
+        # Validate main() now, since we'll be using it in .get() and lazy=True might not validate it inside the executor
+        # constructor:
         main = kwargs.setdefault("main", wait_forever)
-        if not iscoroutinefunction(main):  # Here, as the executors are given get()'s wrapper of it
+        if not iscoroutinefunction(main):
             raise TypeError(f"main must be a coroutine function (an async def), not {main!r}")
         self._main, self._kwargs = main, kwargs
+
         self._cancel_futures_on_stopping_executors = cancel_futures_on_stopping_executors
-        self._wrapped_executor = ConditionProtected(None)  # The executor, once get() has made one
+        self._wrapped_executor: ConditionProtected[None | EventLoopExecutor] = ConditionProtected(None)
         # Shared by its executors, each adding its own thread, so that their futures refuse blocking waits on any of them
         self._blocking_checker = BlockingChecker()
         executors.ensure_registered(self)
@@ -133,8 +134,8 @@ class SingletonEventLoopExecutor(Executor):
                     )
                     previous.join()  # Blocking its loop, so that calls made to it wait too: an await would let them run
                 with stored as current:  # Once get() has stored it: which it never will if interrupted (by Ctrl+C, say)
-                    begin = current is new
-                if begin:  # Else it returns, stopping the executor
+                    ...
+                if current is new and new.state is new.Running:  # Else it returns, stopping the executor
                     # Restarting its idle countdown, from run(), as this blocked: in the same step, so it can't fire first
                     new._expiry.reset(new._idle_timeout)
                     return await main(new)
@@ -155,6 +156,9 @@ class SingletonEventLoopExecutor(Executor):
             cancel_futures: Calls cancel on all outstanding :term:`jobs` and the :term:`main task`.
                 See :py:meth:`EventLoopExecutor.shutdown`.
 
+        Raises:
+            <Various Exceptions>: See :py:meth:`EventLoopExecutor.shutdown`.
+
         Returns:
             An AwaitableFuture whose result is a :py:class:`EventLoopExecutorStopped` instance containing details about
             the conditions under which the executor was stopped.
@@ -168,7 +172,9 @@ class SingletonEventLoopExecutor(Executor):
             stopped.
         """
         executor = EventLoopExecutor.current()
-        if executor is None or executor._blocking_checker is not self._blocking_checker:  # Not one of its executors
+        # If the current executor isn't the one managed by this instance, use the "with" result on _wrapped_executor to
+        # set "executor" to the one we manage:
+        if executor is None or executor._blocking_checker is not self._blocking_checker:
             with self._wrapped_executor as executor:
                 pass
         if executor is None:
@@ -188,7 +194,7 @@ class SingletonEventLoopExecutor(Executor):
             **kwargs: See :py:meth:`EventLoopExecutor.submit`.
 
         Raises:
-            See :py:meth:`EventLoopExecutor.submit`.
+            <Various Exceptions>: See :py:meth:`EventLoopExecutor.submit`.
 
         Returns:
             An AwaitableFuture which will :term:`complete` when:

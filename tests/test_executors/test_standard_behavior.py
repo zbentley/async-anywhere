@@ -330,9 +330,9 @@ async def test_waiting_synchronously_for_a_state_on_the_executors_own_loop_is_an
     other = asyncio.get_running_loop()  # The test's, never the worker's
     kwargs = {
         "nothing": {},
-        "loops": {"prevent_blocking_wait_in": (other,)},
-        "threads": {"prevent_blocking_wait_in": (threading.current_thread(),)},
-        "any loop": {"prevent_blocking_wait_in": (AwaitableFuture.AnyEventLoop,)},
+        "loops": {"prevent_blocking_wait_within": (other,)},
+        "threads": {"prevent_blocking_wait_within": (threading.current_thread(),)},
+        "any loop": {"prevent_blocking_wait_within": (AwaitableFuture.AnyEventLoop,)},
         "something else": {"cancel_pending_in_forked_child": True},
     }[given]
     async with running(WaitsForItsState) as worker:
@@ -344,7 +344,7 @@ async def test_an_executors_state_waits_refuse_blocking_waits_in_the_loops_given
     here = (asyncio.get_running_loop(),)
     async with running(Works) as worker:
         with pytest.raises(RuntimeError, match="would deadlock"):
-            worker.wait_for_state(worker.Shutdown, prevent_blocking_wait_in=here).result(1)
+            worker.wait_for_state(worker.Shutdown, prevent_blocking_wait_within=here).result(1)
         with pytest.raises(TimeoutError):  # Off the worker's loop, nothing else is refused by default
             worker.wait_for_state(worker.Shutdown).result(0)
 
@@ -355,8 +355,8 @@ async def test_blocking_waits_on_the_executors_thread_are_refused_outside_its_lo
     other = asyncio.get_running_loop()  # The test's, never the worker's
     kwargs = {
         "nothing": {},
-        "loops": {"prevent_blocking_wait_in": (other,)},
-        "any loop": {"prevent_blocking_wait_in": (AwaitableFuture.AnyEventLoop,)},  # Outside any loop, this alone refuses nothing
+        "loops": {"prevent_blocking_wait_within": (other,)},
+        "any loop": {"prevent_blocking_wait_within": (AwaitableFuture.AnyEventLoop,)},  # Outside any loop, this alone refuses nothing
     }[given]
     async with running(Works) as worker:
         call = worker.waits_for(AwaitableFuture())  # In flight, so pending until the stop interrupts it

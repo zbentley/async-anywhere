@@ -43,6 +43,7 @@ autodoc_default_options = {
 }
 html_theme = "furo"
 nitpicky = True  # Warn about every cross-reference that doesn't resolve, which Sphinx is otherwise silent about
+nitpick_ignore = [('py:exc', '<Various Exceptions>')]  # Raises: placeholder for "whatever the referenced method raises"
 
 
 def _colliding_module_name(cls):
@@ -105,6 +106,16 @@ def qualify_stdlib_names(app, doctree):
             text.parent.replace(text, nodes.Text(target))
 
 
+def auto_dot(app, env, node, contnode):
+    # Retry an unresolved bare Python ref as though dotted: suffix search, with the domain's own ambiguity warning
+    if node['refdomain'] != 'py' or node.get('refspecific'):
+        return None
+    node['refspecific'] = True
+    return env.domains.python_domain.resolve_xref(
+        env, node['refdoc'], app.builder, node['reftype'], node['reftarget'], node, contnode
+    )
+
+
 def attrs_init_param_docs(app, what, name, obj, options, lines):  # noqa: PLR0917
     # Feed attrs fields' attribute docstrings (string after, or #: before) into the generated __init__'s :param <alias>: fields
     # Python functions, as attrs makes: not inherited C slot wrappers (BaseException.__init__), which lack __module__
@@ -155,6 +166,7 @@ def setup(app):
     app.connect('autodoc-process-docstring', attrs_init_param_docs)
     app.connect('autodoc-process-docstring', executor_map_doc)
     app.connect('doctree-read', qualify_stdlib_names)
+    app.connect('missing-reference', auto_dot, priority=501)  # After intersphinx (500): exact external names win
     # Separate registrations of the same class: overriding one leaves the other as stock PyClasslike
     app.add_directive_to_domain('py', 'class', AbstractAwarePyClasslike, override=True)
     app.add_directive_to_domain('py', 'exception', AbstractAwarePyClasslike, override=True)
