@@ -8,6 +8,7 @@ API Usage Guidelines
     * The same is true for modules with ``_private`` names. Do not import symbols from those modules, even if the symbols' names are public. If your IDE auto-import functionality generates imports from those modules, update your code to import from public modules instead; public symbols should be re-exported via |all|_.  If IDE generated auto-imports of needed symbols frequently resolve to ``_private`` submodules and cause issues, file an issue.
     * A ``_private`` member with a docstring is still private unless documented otherwise.
 * Some things provided by this package may be :py:obj:`dataclasses` or :py:mod:`attrs`-based classes. Whether an exported class does or does not do this is an implementation detail and not part of its public contract; do not rely on e.g. an exported class using ``@dataclass`` internally.
+* Some APIs in this package may be annotated with a type lower than the one they return. Always write code against the annotated type, not the concrete type.
 
 API
 ---

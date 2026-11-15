@@ -229,6 +229,17 @@ def test_an_executor_whose_get_was_interrupted_as_it_was_made_runs_nothing():
         assert ran == [first, third] and singleton.get() is third
 
 
+def test_is_current_executor_and_current_job_see_only_its_own_executors():
+    async def seen(singleton):
+        return singleton.is_current_executor(), singleton.current_job()
+
+    with running_singleton() as singleton, running_singleton() as other:
+        call = singleton.submit(seen, singleton)
+        assert call.result(5) == (True, call)
+        assert other.submit(seen, singleton).result(5) == (False, None)
+        assert asyncio.run(seen(singleton)) == (False, None)
+
+
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
 def test_a_forked_process_makes_an_executor_of_its_own():
     with running_singleton(lazy=False) as singleton:

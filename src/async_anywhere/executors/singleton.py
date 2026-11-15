@@ -147,6 +147,33 @@ class SingletonEventLoopExecutor(Executor):
             }
             return stored.replace_value(EventLoopExecutor(**kwargs))
 
+    def _current_executor(self) -> EventLoopExecutor | None:
+        executor = EventLoopExecutor.current()
+        if executor is not None and executor._blocking_checker is self._blocking_checker:
+            return executor
+        return None
+
+    def is_current_executor(self) -> bool:
+        """
+        Passed through to :py:meth:`EventLoopExecutor.is_current_executor` on the wrapped executor inside the invocant.
+
+        Returns:
+            True if called from the captive thread of an executor this singleton made (including ones it has
+            since replaced). False otherwise.
+        """
+        return bool(self._current_executor())
+
+    def current_job(self) -> AwaitableFuture | None:
+        """
+        Passed through to :py:meth:`EventLoopExecutor.current_job` on the wrapped executor inside the invocant.
+
+        Returns:
+            The current job running on this singleton's executor, or None if no job is running.
+        """
+        if executor := self._current_executor():
+            return executor.current_job()
+        return None
+
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> AwaitableFuture[EventLoopExecutorStopped]:
         """
         Ensures the :py:class:`EventLoopExecutor` instance inside the invocant singleton is shut down.
@@ -174,7 +201,7 @@ class SingletonEventLoopExecutor(Executor):
         executor = EventLoopExecutor.current()
         # If the current executor isn't the one managed by this instance, use the "with" result on _wrapped_executor to
         # set "executor" to the one we manage:
-        if executor is None or executor._blocking_checker is not self._blocking_checker:
+        if not self._current_executor():
             with self._wrapped_executor as executor:
                 pass
         if executor is None:
