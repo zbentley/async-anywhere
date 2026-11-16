@@ -9,3 +9,4 @@
     Fork Safety <fork_safety>
     Stdlib Compatibility <compatibility>
     awaitable
+    uncancellable

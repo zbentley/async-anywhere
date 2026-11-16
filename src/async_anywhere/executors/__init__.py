@@ -1,7 +1,6 @@
 import asyncio
 import concurrent.futures
 import logging
-from contextlib import suppress
 from contextvars import Context, ContextVar, copy_context
 from datetime import timedelta
 from functools import cached_property, partial, update_wrapper
@@ -13,12 +12,13 @@ from attrs import Factory, define, field, setters, validators
 from sniffio import current_async_library_cvar
 
 from async_anywhere._util import BlockingChecker, ConditionProtected, validate_coroutine_function, Toggleable
-from async_anywhere.misc import wait_forever
-from async_anywhere.exceptions import CleanStop, EventLoopExecutorBroken, JobCancelledByExecutorShutdown, EventLoopExecutorStopped, EventLoopExecutorForked
+from async_anywhere.exceptions import CleanStop, EventLoopExecutorBroken, JobCancelledByExecutorShutdown, \
+    EventLoopExecutorStopped, EventLoopExecutorForked
 from async_anywhere.executors import _fork_safety
 from async_anywhere.executors._job import _ExecutorJob
 from async_anywhere.executors._timer import Timer
-from async_anywhere.futures import AwaitableFuture
+from async_anywhere.futures import AwaitableFuture, UncancellableAwaitableFuture
+from async_anywhere.misc import wait_forever
 from async_anywhere.state_tracker import State
 from async_anywhere.state_tracker.waitable import WaitableStateTracker
 
@@ -118,6 +118,11 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         to the executor's futures must not block, and must not raise :py:obj:`BaseException`\ s other than
         :py:obj:`KeyboardInterrupt` or :py:obj:`SystemExit`. If they do, they risk breaking the executor's
         invariants and corrupting or deadlocking it.
+
+    Warning:
+        Code within :term:`job`\ s or the :term:`main task` must not stop, close, or replace the running event loop, or
+        manually create and run any tasks on a new event loop for any reason. Doing so may corrupt the executor's state
+        and render it unusable.
 
     .. seealso::
 
@@ -503,7 +508,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             checker = checker.copy(add=prevent_blocking_wait_within)
         return super().wait_for_state(state, *states, prevent_blocking_wait_within=checker, **kwargs)
 
-    def shutdown(self, wait=True, *, cancel_futures=False) -> AwaitableFuture[EventLoopExecutorStopped]:
+    def shutdown(self, wait=True, *, cancel_futures=False) -> UncancellableAwaitableFuture[EventLoopExecutorStopped]:
         r"""
         Immediately signal the executor to stop accepting jobs, and begin the process of shutting down its captive event
         loop and thread. See :ref:`stopping` for details.
@@ -568,8 +573,10 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             if cancel_futures:  # Once stopped, as _job() then reads why, and before the loop gets to calls not yet started
                 self._interrupted.set()
         if cancel_futures or not busy:  # Otherwise the last call to end does: see _job()
-            with suppress(RuntimeError):  # RuntimeError: the loop has closed, so the executor has already stopped
+            try:
                 self._loop.call_soon_threadsafe(self._interrupt, cancel_futures)
+            except RuntimeError:
+                pass # the loop has closed, so the executor has already stopped
         stopped = self.wait_for_state(self.Shutdown)
         if wait:
             stopped.result()

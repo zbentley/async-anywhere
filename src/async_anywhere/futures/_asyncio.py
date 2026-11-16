@@ -23,7 +23,7 @@ class AsyncioAwaitableFuture[T](asyncio.Future[T]):
             1. Cancels the underlying concurrent.futures.Future right away, rather than in a later loop iteration.
             2. Refuses cancellation (returns False) if the underlying concurrent.futures.Future is already done,
                finishing this one as it did, if it hasn't yet.
-        If the underlying future refuses cancellation while pending (running, or made with ignore_cancel=True), this one
+        If the underlying future refuses cancellation while pending (running, or an UncancellableAwaitableFuture), this one
         alone is cancelled, and the underlying one lets go of it.
         """
         if self.done():

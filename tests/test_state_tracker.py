@@ -348,8 +348,8 @@ async def test_prevent_blocking_wait_within():
 
 @pytest.mark.parametrize(
     "kwargs",
-    [{"ignore_cancel": False}, {"transform_result": str}, {"nonsense": True}],
-    ids=["ignore_cancel", "transform_result", "unknown"],
+    [{"transform_result": str}, {"done_callbacks": []}, {"nonsense": True}],
+    ids=["transform_result", "done_callbacks", "unknown"],
 )
 def test_wait_for_state_refuses_kwargs_its_futures_cannot_take(kwargs):
     with pytest.raises(TypeError):

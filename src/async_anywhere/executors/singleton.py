@@ -7,11 +7,11 @@ from async_anywhere._util import BlockingChecker, ConditionProtected
 from async_anywhere.exceptions import EventLoopExecutorStopped
 from async_anywhere.executors import EventLoopExecutor
 from async_anywhere.executors._fork_safety import executors
-from async_anywhere.futures import AwaitableFuture
+from async_anywhere.futures import AwaitableFuture, UncancellableAwaitableFuture
 from async_anywhere.misc import wait_forever
 
 # What shutdown() returns when there's no executor to stop: before the first get(), and in a forked process
-_NO_EXECUTOR = AwaitableFuture()
+_NO_EXECUTOR = UncancellableAwaitableFuture()
 _NO_EXECUTOR.set_result(EventLoopExecutorStopped("SingletonEventLoopExecutor never started an EventLoopExecutor"))
 
 
@@ -173,7 +173,9 @@ class SingletonEventLoopExecutor(Executor):
             return executor.current_job()
         return None
 
-    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> AwaitableFuture[EventLoopExecutorStopped]:
+    def shutdown(
+        self, wait: bool = True, *, cancel_futures: bool = False
+    ) -> UncancellableAwaitableFuture[EventLoopExecutorStopped]:
         """
         Ensures the :py:class:`EventLoopExecutor` instance inside the invocant singleton is shut down.
 

@@ -18,7 +18,7 @@ import anyio
 import pytest
 
 from async_anywhere.executors import EventLoopExecutor
-from async_anywhere.futures import AwaitableFuture
+from async_anywhere.futures import AwaitableFuture, UncancellableAwaitableFuture
 
 
 # For tests whose short timings an overloaded machine can upset: reran on failure, but not after a hang
@@ -61,7 +61,7 @@ class Harness:
             raise AttributeError(name)
         return getattr(self.worker, name)
 
-    def reached(self, name, times=1) -> AwaitableFuture:
+    def reached(self, name, times=1) -> UncancellableAwaitableFuture:
         """Resolved, with what mark() was given, once `name` has been marked `times` times: bridged methods are marked
         as their jobs start; _run() as it starts ("_run") and ends ("_run ended"); the worker as it stops and shuts down,
         by done callbacks on wait_for_state()'s futures (never run in forked processes), with what they saw ("stopped" and "shutdown");
@@ -69,7 +69,7 @@ class Harness:
         say, for what a harness awaits until the test releases it)."""
         # Uncancellable, as a cancelled task awaiting one would cancel it for every other waiter. setdefault(), as tests'
         # threads call this too.
-        return self._marks.setdefault((name, times), AwaitableFuture(ignore_cancel=True))
+        return self._marks.setdefault((name, times), UncancellableAwaitableFuture())
 
     def mark(self, name, value=None):
         times = self._counts[name] = self._counts.get(name, 0) + 1  # Each name only ever on one thread
@@ -149,7 +149,7 @@ def reason(worker: EventLoopExecutor | Harness) -> str:
     return worker.wait_for_state(worker.Stopping, worker.Shutdown).result().args[0]
 
 
-def stop_begun(worker: EventLoopExecutor | Harness, cancel_futures=False) -> AwaitableFuture:
+def stop_begun(worker: EventLoopExecutor | Harness, cancel_futures=False) -> UncancellableAwaitableFuture:
     """Shuts the worker down without waiting, returning a future for the stop having begun, rather than shutdown()'s, for
     the worker having finished."""
     worker.shutdown(wait=False, cancel_futures=cancel_futures)

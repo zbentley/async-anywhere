@@ -6,7 +6,7 @@ from typing import Literal, overload, final
 from weakref import WeakSet
 
 from async_anywhere.exceptions import StateTrackerError
-from async_anywhere.futures import AwaitableFuture
+from async_anywhere.futures import UncancellableAwaitableFuture
 from async_anywhere.state_tracker import State, StateTracker
 
 _data = itemgetter(2)  # A transition's data, from its (old state, new state, data) triple
@@ -51,7 +51,7 @@ class WaitableStateTracker[T](StateTracker, ABC):
             accesses to this class are always thread-safe.
         """
         super().__init__()
-        self._waiters: dict[State, WeakSet[AwaitableFuture[T]]] = {s: WeakSet() for s in self.states}
+        self._waiters: dict[State, WeakSet[UncancellableAwaitableFuture[T]]] = {s: WeakSet() for s in self.states}
 
     @overload
     def wait_for_state(
@@ -61,15 +61,15 @@ class WaitableStateTracker[T](StateTracker, ABC):
         ignore_current_state: bool = False,
         return_states: Literal[False] = False,
         **kwargs,
-    ) -> AwaitableFuture[T]: ...
+    ) -> UncancellableAwaitableFuture[T]: ...
     @overload
     def wait_for_state(
         self, state: State, *states: State, ignore_current_state: bool = False, return_states: Literal[True], **kwargs
-    ) -> AwaitableFuture[tuple[State | None, State, T]]: ...
+    ) -> UncancellableAwaitableFuture[tuple[State | None, State, T]]: ...
     @final
     def wait_for_state(
         self, state: State, *states: State, ignore_current_state: bool = False, return_states: bool = False, **kwargs
-    ) -> AwaitableFuture[T]:
+    ) -> UncancellableAwaitableFuture[T]:
         r"""
         Wait for the invocant ``WaitableStateTracker`` to enter one or more states. Returns a future that can be
         blocked on with a timeout or ``await``\ ed on from ``async`` code.
@@ -93,14 +93,14 @@ class WaitableStateTracker[T](StateTracker, ABC):
                 with the ``data`` argument from the call to :py:meth:`_transition` that caused the tracker to enter one
                 of ``states``
 
-            **kwargs: Any additional keyword arguments to pass :py:class:`AwaitableFuture`\ s constructor when
+            **kwargs: Any additional keyword arguments to pass :py:class:`.UncancellableAwaitableFuture`\ s constructor when
                 constructing the return value.
 
                 Note:
-                    The ``ignore_cancel``, ``transform_result``, and ``done_callbacks`` arguments to
-                    ``AwaitableFuture``\ 's constructor are `not` accepted.
+                    The ``transform_result`` and ``done_callbacks`` arguments to
+                    ``UncancellableAwaitableFuture``\ 's constructor are `not` accepted.
         Returns:
-            An :py:class:`AwaitableFuture` that will be automatically resolved when the invocant transitions into one of
+            An :py:class:`.UncancellableAwaitableFuture` that will be automatically resolved when the invocant transitions into one of
             ``states``. The future will be resolved with either the data payload to :py:meth:`_transition` or the value
             of :py:attr:`last_transition`, depending on ``return_states=``.
 
@@ -110,20 +110,10 @@ class WaitableStateTracker[T](StateTracker, ABC):
             Cancelling the returned future has no effect. Completing the returned future some other way is allowed, in
             which case it will not be completed by the state tracker.
         """
-        # NB: the future returned here will be resolved once the StateTracker has passed through the given state, even
-        # if it is no longer in that state. If an executor transitions twice in rapid succession, or a waiter is attached
-        # and then not waited on until later, after the executor has passed through *states, it'll still resolve.
-        # NB: ignore_current_state=True always waits, for the next transition into *states, even if already in one.
-        # NB: it resolves with that transition's data (None for the initial state); with return_states=True, with its
-        # whole (old state, new state, data) triple.
-        # NB: cancelling the returned future does nothing.
-        # NB: if your done callbacks are slow, you'll break stuff (here and everywhere)
-        # NB: kwargs go to AwaitableFuture() (prevent_blocking_wait_within, say), bar ignore_cancel,
-        # transform_result and done_callbacks: those are errors
         states = [self._check_state(state) for state in (state, *states)]
-        future = AwaitableFuture(  # Giving up on it leaves it, and other waiters, alone
+        future = UncancellableAwaitableFuture(  # Giving up on it leaves it, and other waiters, alone
             # No done_callbacks: resolved below under the lock, they'd run under it too
-            **kwargs, ignore_cancel=True, transform_result=None if return_states else _data, done_callbacks=None
+            **kwargs, transform_result=None if return_states else _data, done_callbacks=None
         )
         with self._condition:
             if not ignore_current_state and self.state in states:

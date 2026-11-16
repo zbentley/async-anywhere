@@ -51,11 +51,15 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
 
     Example:
         >>> fut = AwaitableFuture(
-        ...     # Don't allow calls to .result() if this loop is running; that'll deadlock.
+        ...     # Don't allow accidental calls to .result() within a given event loop
+        ...     # or thread, to prevent deadlocks.
         ...     prevent_blocking_wait_within=[asyncio.get_event_loop()],
         ... )
         >>> #
-        >>> fut.add_done_callback(lambda f: print(f"Future {f} is done!"), run_in_forked_child=True)
+        >>> fut.add_done_callback(
+        ...     lambda f: print(f"Future {f} is done!"),
+        ...     run_in_forked_child=True, # Optionally allow callbacks in subprocesses
+        ... )
         >>> async def foo():
         ...     print(await fut)
         ...
@@ -86,7 +90,6 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
 
     __slots__ = (
         '_blocking_checker',  # Refuses blocking waits where they'd deadlock (see BlockingChecker), or None
-        '_ignore_cancel',
         '_cancel_pending_in_forked_child',
         '_transform_result',
         '_completed_at',
@@ -99,7 +102,6 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         *,
         # TODO fix doc type hint
         prevent_blocking_wait_within: Collection[asyncio.AbstractEventLoop | Thread] | None = None,
-        ignore_cancel: bool = False,
         cancel_pending_in_forked_child: bool = False,
         transform_result: Callable[[Any], T] | None = None,
         done_callbacks: Iterable[Callable[[Self], Any]] | None = None,
@@ -107,8 +109,8 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         r"""
         Cancelling ``await``\ s on this class or on :py:obj:`asyncio.Future`-like objects produced by it
         *immediately* cancels the underlying :py:obj:`concurrent.futures.Future` (if cancellation is allowed; see
-        ``ignore_cancel`` below), rather than postponing cancellation until a later event loop iteration as the
-        stdlib does.
+        :py:class:`UncancellableAwaitableFuture`), rather than postponing cancellation until a later event loop
+        iteration as the stdlib does.
 
         Args:
             prevent_blocking_wait_within: a Collection of :py:obj:`asyncio.AbstractEventLoop`\ s or
@@ -122,22 +124,6 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
                 Only weak references to supplied event loops and threads are tracked internally.
 
                 If None or an empty collection is passed, no blocking-allowed checks are performed.
-            ignore_cancel: If True, calls to :py:meth:`cancel` this future or its descendants from asynchronous or
-                synchronous code will return False and the future will not enter the cancelled state. If False,
-                cancellation behavior is the same as the behavior of futures in the stdlib.
-
-                :py:obj:`asyncio.Future`\ s can be :py:func:`asyncio.shield`\ ed to deflect cancellations, but
-                :py:obj:`concurrent.futures.Future`\ s have no equivalent functionality. This parameter unifies that
-                behavior: ``AwaitableFuture``\ s with ``ignore_cancel=True`` behave as though ``asyncio.shield``\ ed
-                when waited upon.
-
-                Note:
-                    ``ignore_cancel=True``\ 's behavior may cause unexpected side effects: code that calls ``.cancel()``
-                    on a future and then waits for it to complete (e.g. with :py:func:`concurrent.futures.wait`) will
-                    wait until the ``AwaitableFuture`` is completed some other way. Cancelling a task that awaits it,
-                    directly or through a function like :py:func:`asyncio.gather`, ends that wait at once, but leaves
-                    the ``AwaitableFuture`` un-completed.
-
             done_callbacks: Any done callbacks to attach to this future at construction time (which can be done much
                 faster than with :py:meth:`add_done_callback`). Callbacks will be added with equivalent behavior to
                 calling ``add_done_callback(cb)`` with default keyword argument values.
@@ -176,7 +162,6 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             self._blocking_checker = None
         else:
             self._blocking_checker = BlockingChecker(prevent_blocking_wait_within)
-        self._ignore_cancel = ignore_cancel
         self._cancel_pending_in_forked_child = cancel_pending_in_forked_child
         self._transform_result = transform_result
         self._exception_tb = None
@@ -327,11 +312,11 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
 
         Returns:
             True if the cancellation was recieved/accepted, False otherwise (e.g. if the future has already
-            :term:`completed` or if ``ignore_cancel`` is True).
+            :term:`completed` or if it is an :py:class:`UncancellableAwaitableFuture`).
         """
 
         # Lock-free unless it's pending, as Executor.map() cancels every future once it has its result
-        if not self._ignore_cancel and self.state is self._Pending and self._cancel():
+        if self.state is self._Pending and self._cancel():
             return True
         return self.cancelled()
 
@@ -747,4 +732,37 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         return True
 
 
-__all__ = ["AwaitableFuture"]
+class UncancellableAwaitableFuture[T](AwaitableFuture[T]):
+    r"""An :py:class:`AwaitableFuture` which ignores cancellation.
+
+    :py:obj:`asyncio.Future`\ s can be :py:func:`asyncio.shield`\ ed to deflect cancellations, but
+    :py:obj:`concurrent.futures.Future`\ s have no equivalent functionality. This class unifies that
+    behavior: ``UncancellableAwaitableFuture``\ s behave as though ``asyncio.shield``\ ed
+    when waited upon.
+
+    Calling to :py:meth:`cancel` on an ``UncancellableAwaitableFuture`` or on futures returned from
+    ``UncancellableAwaitableFuture.as_async_future()`` will return False and the future will not enter the cancelled
+    state.
+
+    Note:
+        ``UncancellableAwaitableFuture``\ 's behavior may cause unexpected side effects: code that calls ``.cancel()``
+        on a future and then waits for it to complete (e.g. with :py:func:`concurrent.futures.wait`) will
+        wait until the ``UncancellableAwaitableFuture`` is completed some other way. Cancelling a task that awaits it,
+        directly or through a function like :py:func:`asyncio.gather`, ends that wait at once, but leaves
+        the ``UncancellableAwaitableFuture`` un-completed.
+    """
+
+    __slots__ = ()
+
+    def cancel(self) -> bool:
+        """
+        Refuses cancellation.
+
+        Returns:
+            True if this future was cancelled in a forked subprocess via the ``cancel_pending_in_forked_child``
+            constructor parameter. False otherwise.
+        """
+        return self.cancelled()  # Only _fork_safety cancels these, via _cancel()
+
+
+__all__ = ["AwaitableFuture", "UncancellableAwaitableFuture"]

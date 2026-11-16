@@ -33,7 +33,7 @@ How :py:class:`AwaitableFuture` works with the standard library's functions for 
     * - :py:func:`asyncio.shield`
       - No
       - Wraps ``AwaitableFuture``\ s in :py:class:`asyncio.Task`\ s which can be left running in the background.
-        Use ``ignore_cancel=True`` without ``shield()``, or :py:meth:`as_async_future` with ``shield()``, instead.
+        Use :py:class:`UncancellableAwaitableFuture` without ``shield()``, or :py:meth:`as_async_future` with ``shield()``, instead.
     * - :py:func:`asyncio.timeout`
       - Yes
       -

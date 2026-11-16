@@ -16,7 +16,7 @@ import pytest
 import trio
 
 from async_anywhere.exceptions import WouldBlock
-from async_anywhere.futures import AwaitableFuture, _fork_safety
+from async_anywhere.futures import AwaitableFuture, UncancellableAwaitableFuture, _fork_safety
 from tests.test_executors.utils import forked
 
 
@@ -243,15 +243,28 @@ async def test_an_awaiter_cancelled_as_the_future_finishes_leaves_other_waiters_
     assert await other == "done"
 
 
+def running_future():
+    future = AwaitableFuture()
+    assert future.set_running_or_notify_cancel()  # Running, as an executor's job would be, so it can't be cancelled
+    return future
+
+
+# Futures that refuse cancel()
+UNCANCELLABLE = pytest.mark.parametrize(
+    "uncancellable", [running_future, UncancellableAwaitableFuture], ids=["running", "UncancellableAwaitableFuture"]
+)
+
+
+@UNCANCELLABLE
 @pytest.mark.parametrize(
     "awaitable", [lambda future: future, lambda future: future.as_async_future()], ids=["awaited", "as_async_future"]
 )
-async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_waiters_alone(awaitable):
+async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_waiters_alone(uncancellable, awaitable):
     """Cancelling a waiting task cancels the asyncio.Future it awaits, which passes it on to the source, through its
-    concurrent.futures.Future.cancel(), which the source refuses if it's running: as an executor's job is, once started.
-    Only the giving-up waiter's own asyncio.Future is then cancelled."""
-    future = AwaitableFuture()
-    assert future.set_running_or_notify_cancel()  # Running, as an executor's job would be, so it can't be cancelled
+    concurrent.futures.Future.cancel(), which the source refuses if it's running (as an executor's job is, once started)
+    or an UncancellableAwaitableFuture. Only the giving-up waiter's own asyncio.Future is then cancelled."""
+    future = uncancellable()
+    assert not future.cancel() and not future.cancelled()
 
     async def wait():
         return await awaitable(future)
@@ -259,6 +272,7 @@ async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_waiters
     other = asyncio.ensure_future(wait())
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(wait(), 0.05)
+    assert not future.cancelled()
     assert len(future._done_callbacks) == 1  # Only other's, as the one given up on was dropped
     future.set_result("done")
     assert await other == "done"
@@ -381,27 +395,6 @@ def test_a_future_that_started_just_after_cancel_found_it_pending_isnt_cancelled
     assert future.result(0) == "finished"
 
 
-@pytest.mark.parametrize(
-    "awaitable", [lambda future: future, lambda future: future.as_async_future()], ids=["awaited", "as_async_future"]
-)
-async def test_giving_up_waiting_on_a_future_that_ignores_cancel_leaves_other_waiters_alone(awaitable):
-    # Unlike one that's running: see the expected failure above
-    future = AwaitableFuture(ignore_cancel=True)
-    assert not future.cancel() and not future.cancelled()
-
-    async def wait():
-        return await awaitable(future)
-
-    other = asyncio.ensure_future(wait())
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(wait(), 0.05)
-    assert not future.cancelled()
-    assert len(future._done_callbacks) == 1  # Only other's, as the one given up on was dropped
-    future.set_result("done")
-    assert await other == "done"
-    assert await wait() == "done"
-
-
 def test_completed_at_is_when_it_finished():
     done, failed, cancelled = futures = [AwaitableFuture() for _ in range(3)]
     seen = []
@@ -416,11 +409,8 @@ def test_completed_at_is_when_it_finished():
     assert all(before <= future.completed_at <= after for future in futures)
     assert seen == [future.completed_at for future in futures]  # Set before its callbacks run
     assert cancelled.cancel() and seen[2] == cancelled.completed_at  # Not again
-    running = AwaitableFuture()
-    assert running.set_running_or_notify_cancel()
-    assert not running.cancel() and running.completed_at is None  # Refused, so it hasn't finished
-    refusing = AwaitableFuture(ignore_cancel=True)
-    assert not refusing.cancel() and refusing.completed_at is None
+    for refusing in running_future(), UncancellableAwaitableFuture():
+        assert not refusing.cancel() and refusing.completed_at is None  # Refused, so it hasn't finished
 
 
 def test_done_callbacks_given_to_the_constructor_run_as_if_added_first():
@@ -496,11 +486,10 @@ async def test_trio_futures_cancel_the_future():
 
 
 @pytest.mark.backends("trio")
-async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_trio_waiters_alone():
+@UNCANCELLABLE
+async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_trio_waiters_alone(uncancellable):
     # As asyncio's waiters do: see the asyncio test above
-    future = AwaitableFuture()
-    assert future.set_running_or_notify_cancel()  # Running, as an executor's job would be, so it can't be cancelled
-    results = []
+    future, results = uncancellable(), []
 
     async def wait():
         results.append(await future)
@@ -518,7 +507,7 @@ async def test_giving_up_waiting_on_an_uncancellable_future_leaves_other_trio_wa
 
 @pytest.mark.backends("trio")
 async def test_giving_up_on_a_trio_future_leaves_its_other_awaits_alone():
-    future = AwaitableFuture(ignore_cancel=True)
+    future = UncancellableAwaitableFuture()
     here, results = future.as_async_future(), []
 
     async def wait():
@@ -571,7 +560,7 @@ FORKS = pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
 @FORKS
 def test_a_forked_process_cancels_only_the_pending_futures_asked_to_running_only_the_callbacks_meant_for_it():
     pending, running = (AwaitableFuture(cancel_pending_in_forked_child=True) for _ in range(2))
-    uncancellable = AwaitableFuture(ignore_cancel=True, cancel_pending_in_forked_child=True)
+    uncancellable = UncancellableAwaitableFuture(cancel_pending_in_forked_child=True)
     kept = AwaitableFuture()  # Left pending in a forked process, as a concurrent.futures.Future would be
     assert running.set_running_or_notify_cancel()
     ran = []
@@ -580,7 +569,7 @@ def test_a_forked_process_cancels_only_the_pending_futures_asked_to_running_only
         future.add_done_callback(lambda done: ran.append(("kept", done)), run_in_forked_child=True)
     with forked() as f:
         if f.child:
-            assert pending.cancelled() and running.cancelled() and uncancellable.cancelled()  # ignore_cancel or not
+            assert pending.cancelled() and running.cancelled() and uncancellable.cancelled()  # uncancellable or not
             assert ran == [("kept", pending)] and not kept.done()
             kept.set_result("finished here")
             assert ran == [("kept", pending), ("kept", kept)]
@@ -622,7 +611,7 @@ def test_a_forked_process_can_finish_futures_other_threads_were_using_as_it_fork
 
 @FORKS
 def test_a_forked_process_drops_async_futures_waits_on_futures_it_doesnt_cancel(owner):
-    future = AwaitableFuture(ignore_cancel=True)
+    future = UncancellableAwaitableFuture()
     waiting = future.as_async_future(owner, require_running_loop=False)
     with forked() as f:
         if f.child:

@@ -88,8 +88,8 @@ An :py:class:`AwaitableFuture`, such as one returned by :py:meth:`EventLoopExecu
 - **The awaiting Trio code is cancelled**: if a cancel scope enclosing the ``await`` is cancelled (e.g. its nursery is
   cancelled, or a :py:func:`trio.move_on_after` deadline passes), the ``await`` raises :py:obj:`trio.Cancelled`, as any
   other Trio checkpoint would, and the ``AwaitableFuture`` is cancelled too. If the future is a :term:`job`'s, this
-  cancels the job as usual. If the future refuses cancellation (e.g. it was created with
-  ``ignore_cancel=True``), the Trio code still receives :py:obj:`trio.Cancelled` and stops waiting, but the future is
+  cancels the job as usual. If the future refuses cancellation (e.g. it is an
+  :py:class:`.UncancellableAwaitableFuture`), the Trio code still receives :py:obj:`trio.Cancelled` and stops waiting, but the future is
   left as it was.
 - **The AwaitableFuture is cancelled elsewhere**: if the future is cancelled by anything other than the awaiting Trio
   code's own cancel scopes (e.g. by a call to its ``cancel()`` method, or by the job's caller), the ``await`` raises
