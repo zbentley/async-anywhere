@@ -31,7 +31,10 @@ intersphinx_mapping = {
     'trio': ('https://trio.readthedocs.io/en/stable', None),
     'attrs': ('https://www.attrs.org/en/stable', None),
     'uvloop': ('https://uvloop.readthedocs.io', None),  # Its pages only: it documents no Python objects
+    'anyio': ('https://anyio.readthedocs.io/en/stable', None),
 }
+html_static_path = ['_static']
+html_css_files = ['custom.css']
 autodoc_class_signature = "separated"
 autodoc_default_options = {
     'show-inheritance': True,

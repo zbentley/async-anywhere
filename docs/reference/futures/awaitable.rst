@@ -1,6 +1,3 @@
-``AwaitableFuture``
-===================
-
 .. autoclass:: async_anywhere.futures.AwaitableFuture
     :members:
     :exclude-members: AnyEventLoop, BlockingNotAllowed, __weakref__, __new__
