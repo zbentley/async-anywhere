@@ -22,6 +22,10 @@ class _ForkAllowedDoneCallbackToken(_DoneCallbackToken):
     __slots__ = ()
 
 
+# completed_future()'s futures completed with None, one per class
+_COMPLETED_WITH_NONE: dict[type, AwaitableFuture] = {}
+
+
 class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T]):
     r"""A future that can be waited on by synchronous *or* asynchronous code; acts like a hybrid of
     :py:obj:`concurrent.futures.Future` and :py:obj:`asyncio.Future`.
@@ -175,6 +179,25 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         # removed by those methods.
         self._waiters = []
         _fork_safety.futures.ensure_registered(self)  # Until it has finished
+
+    @classmethod
+    def completed_future(cls, val: T | None = None) -> AwaitableFuture[T]:
+        """Returns a completed ``AwaitableFuture`` or a subclass thereof that is :term:`completed`.
+
+        Note:
+            Returned futures may not be unique. Their :py:attr:`completed_at` is not meaningful, and will have an
+            undefined positive value.
+
+        Args:
+            val: The result to complete the returned future with. Defaults to None.
+        """
+        if val is None and (cached := _COMPLETED_WITH_NONE.get(cls)) is not None:
+            return cached
+        future = cls()
+        future.set_result(val)
+        if val is None:  # setdefault(), so threads racing to make the first one all get the one stored
+            future = _COMPLETED_WITH_NONE.setdefault(cls, future)
+        return future
 
     def __repr__(self):
         # Unlike concurrent.futures.Future, we don't need to take the lock for repr, since reading the field is atomic.

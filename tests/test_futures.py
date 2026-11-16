@@ -662,6 +662,22 @@ def test_results_are_kept_as_given_unless_transformed():
     assert plain.result(0) is result and transformed.result(0) == [result] and transformed.result_or_none() == [result]
 
 
+@pytest.mark.parametrize("cls", [AwaitableFuture, UncancellableAwaitableFuture])
+async def test_completed_futures_are_of_the_invocant_type_and_done_with_the_given_result(cls):
+    result = object()
+    default, given = cls.completed_future(), cls.completed_future(result)
+    assert type(default) is cls and type(given) is cls
+    assert default.done() and default.result(0) is None
+    assert given.done() and given.result(0) is result and await given is result
+
+
+@pytest.mark.parametrize("cls", [AwaitableFuture, UncancellableAwaitableFuture])
+def test_futures_completed_with_none_are_shared_per_class_and_cancelling_them_changes_nothing(cls):
+    shared = cls.completed_future()
+    assert cls.completed_future() is shared and cls.completed_future(None) is shared
+    assert not shared.cancel() and not shared.cancelled() and shared.result(0) is None
+
+
 async def test_awaiters_get_the_transformed_result():
     pending, done = AwaitableFuture(transform_result=str), AwaitableFuture(transform_result=str)
     done.set_result(1)

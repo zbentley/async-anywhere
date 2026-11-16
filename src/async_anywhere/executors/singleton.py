@@ -11,8 +11,9 @@ from async_anywhere.futures import AwaitableFuture, UncancellableAwaitableFuture
 from async_anywhere.misc import wait_forever
 
 # What shutdown() returns when there's no executor to stop: before the first get(), and in a forked process
-_NO_EXECUTOR = UncancellableAwaitableFuture()
-_NO_EXECUTOR.set_result(EventLoopExecutorStopped("SingletonEventLoopExecutor never started an EventLoopExecutor"))
+_NO_EXECUTOR = UncancellableAwaitableFuture.completed_future(
+    EventLoopExecutorStopped("SingletonEventLoopExecutor never started an EventLoopExecutor")
+)
 
 
 @final
