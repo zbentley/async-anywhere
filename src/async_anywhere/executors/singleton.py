@@ -3,11 +3,12 @@ from functools import partial, update_wrapper
 from inspect import iscoroutinefunction
 from typing import Any, Callable, Coroutine, ParamSpec, TypeVar, final
 from concurrent.futures import Executor
-from async_anywhere._util import BlockingChecker, ConditionProtected, wait_forever
+from async_anywhere._util import BlockingChecker, ConditionProtected
 from async_anywhere.exceptions import EventLoopExecutorStopped
 from async_anywhere.executors import EventLoopExecutor
 from async_anywhere.executors._fork_safety import executors
 from async_anywhere.futures import AwaitableFuture
+from async_anywhere.misc import wait_forever
 
 # What shutdown() returns when there's no executor to stop: before the first get(), and in a forked process
 _NO_EXECUTOR = AwaitableFuture()

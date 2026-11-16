@@ -4,12 +4,20 @@
 ``async_anywhere.executors`` contains classes which provide :py:obj:`concurrent.futures.Executor` implementations
 which accept asynchronous Python jobs, and run those jobs on an isolated, captive thread and event loop.
 
-.. toctree::
-    :maxdepth: 4
+.. list-table::
+    :header-rows: 1
 
-    EventLoopExecutor
-    SingletonEventLoopExecutor
-    cancellation
-    stopping
-    fork_safety
+    * - API Reference
+      - Additional Resources
+    * - .. toctree::
+            :maxdepth: 4
 
+            EventLoopExecutor
+            SingletonEventLoopExecutor
+
+      - .. toctree::
+            :maxdepth: 4
+
+            Cancellation <cancellation>
+            Stopping <stopping>
+            Fork Safety <fork_safety>

@@ -27,24 +27,19 @@ See "Examples" below, or [the API documentation]() for more information.
 
 ## Installation and Requirements
 
-[//]: # (You can install _async-anywhere_ from [PyPI]&#40;https://pypi.org/project/async-anywhere/&#41;:)
+PyPi packages are not yet available. **PyPi packaging is [being actively worked on](https://github.com/zbentley/async-anywhere/issues/11)**.
 
-[//]: # ()
-[//]: # (```console)
+Until PyPi packaging support lands, this module can be installed from source, with `pip`:
 
-[//]: # ($ pip install async-anywhere)
+```console
+pip install git+https://github.com/zbentley/async-anywhere.git@main
+```
 
-[//]: # (```)
+Or via `uv`:
 
-[//]: # ()
-[//]: # (Or with [`uv`]&#40;https://docs.astral.sh/uv/&#41;:)
-
-[//]: # ()
-[//]: # (```console)
-
-[//]: # ($ uv add async-anywhere)
-
-[//]: # (```)
+```console
+uv add git+https://github.com/zbentley/async-anywhere.git@main
+```
 
 `async-anywhere` is a pure-Python module with no compiled components, and aims to have as few pure-python transitive dependencies as possible.
 

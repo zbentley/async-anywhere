@@ -2,8 +2,8 @@
 
 .. _fork_safety:
 
-``EventLoopExecutor`` Fork Safety
----------------------------------
+:py:class:`EventLoopExecutor` Fork Safety
+-----------------------------------------
 
 .. warning::
 

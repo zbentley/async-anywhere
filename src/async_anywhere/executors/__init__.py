@@ -12,8 +12,8 @@ from typing import Any, Callable, ClassVar, Coroutine, Final, Literal, ParamSpec
 from attrs import Factory, define, field, setters, validators
 from sniffio import current_async_library_cvar
 
-from async_anywhere._util import BlockingChecker, ConditionProtected, validate_coroutine_function, Toggleable, \
-    wait_forever
+from async_anywhere._util import BlockingChecker, ConditionProtected, validate_coroutine_function, Toggleable
+from async_anywhere.misc import wait_forever
 from async_anywhere.exceptions import CleanStop, EventLoopExecutorBroken, JobCancelledByExecutorShutdown, EventLoopExecutorStopped, EventLoopExecutorForked
 from async_anywhere.executors import _fork_safety
 from async_anywhere.executors._job import _ExecutorJob

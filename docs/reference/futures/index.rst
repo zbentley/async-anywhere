@@ -6,6 +6,6 @@
 .. toctree::
     :maxdepth: 4
 
+    Fork Safety <fork_safety>
+    Stdlib Compatibility <compatibility>
     awaitable
-    fork_safety
-    compatibility

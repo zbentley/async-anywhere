@@ -6,7 +6,7 @@
 .. toctree::
     :maxdepth: 4
 
+    Fork Safety <fork_safety>
     State
     StateTracker
     WaitableStateTracker
-    fork_safety

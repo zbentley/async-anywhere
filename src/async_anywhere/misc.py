@@ -2,7 +2,10 @@
 Miscellaneous utility functions.
 """
 import asyncio
-from typing import Awaitable, Literal, TypeVar, overload
+import sys
+from typing import Awaitable, Literal, TypeVar, overload, Never
+
+from async_anywhere._util.trio import TrioRuntime
 
 T = TypeVar("T")
 
@@ -26,3 +29,24 @@ async def gather(*coros: Awaitable[T], return_exceptions: bool = False) -> tuple
     if len(coros) == 0:
         return ()
     return tuple(await asyncio.gather(*coros, return_exceptions=return_exceptions))
+
+
+async def wait_forever(*unused) -> Never:
+    """
+    Waits forever until cancelled or the interpreter shuts down. Works if called from trio/asyncio/anyio.
+
+    Args:
+        *unused: ignored.
+
+    Returns:
+        Never returns.
+    """
+    del unused  # Remove references to allow GC
+
+    if TrioRuntime.in_task():
+        await sys.modules["trio"].sleep_forever()
+    elif sys.modules.get("anyio") is not None:  # None is how an import is blocked
+        await sys.modules["anyio"].sleep_forever()
+    else:
+        await asyncio.Future()
+    raise RuntimeError("Invariant violation: wait_forever returned somehow!")
