@@ -1,7 +1,7 @@
 import logging
 from functools import partial, update_wrapper
 from inspect import iscoroutinefunction
-from typing import Any, Callable, Coroutine, ParamSpec, TypeVar, final
+from typing import Any, Callable, Coroutine, final
 from concurrent.futures import Executor
 from async_anywhere._util import BlockingChecker, ConditionProtected
 from async_anywhere.exceptions import EventLoopExecutorStopped
@@ -13,8 +13,6 @@ from async_anywhere.misc import wait_forever
 # What shutdown() returns when there's no executor to stop: before the first get(), and in a forked process
 _NO_EXECUTOR = AwaitableFuture()
 _NO_EXECUTOR.set_result(EventLoopExecutorStopped("SingletonEventLoopExecutor never started an EventLoopExecutor"))
-P = ParamSpec("P")
-T = TypeVar("T")
 
 
 @final
@@ -209,7 +207,7 @@ class SingletonEventLoopExecutor(Executor):
             return _NO_EXECUTOR
         return executor.shutdown(wait, cancel_futures=cancel_futures)
 
-    def submit(
+    def submit[**P, T](
         self, fn: Callable[P, Coroutine[Any, Any, T]], /, *args: P.args, **kwargs: P.kwargs
     ) -> AwaitableFuture[T]:
         """
@@ -236,7 +234,7 @@ class SingletonEventLoopExecutor(Executor):
         except EventLoopExecutorStopped:
             return self.get().submit(fn, *args, **kwargs)
 
-    def bridge(self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
+    def bridge[**P, T](self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
         """Wraps an async function and returns a wrapper which, when called, invokes the wrapped function on the
         invocant's executor via :py:meth:`submit`.
 

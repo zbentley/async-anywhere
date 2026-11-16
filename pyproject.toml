@@ -48,6 +48,7 @@ dev = [
   "ruff>=0.17.1",
   "sphinx>=9.1.0",
   "sphinx-autobuild>=2025.8.25",
+  "sphinx-autodoc-typehints>=3.17.5",
   "trio>=0.34.0",
   "typeguard>=4.6.0",
   "uvloop>=0.23.0",

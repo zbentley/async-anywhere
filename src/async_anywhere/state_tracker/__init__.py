@@ -13,7 +13,7 @@ from async_anywhere._util import ConditionProtected
 from async_anywhere.exceptions import StateTrackerError
 
 # NB: in this instance, we mean "the literal class object for the typing.Self type", not "the type of the invocant".
-Transition: TypeAlias = Union["State", type[Any], type[Self]]
+Transition: TypeAlias = Union["State", Literal[Any, Self]]
 
 
 def _structural_invariant(cls: type, cond: Any, msg: str):

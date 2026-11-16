@@ -7,7 +7,7 @@ from datetime import timedelta
 from functools import cached_property, partial, update_wrapper
 from inspect import isawaitable
 from threading import Thread, current_thread, main_thread
-from typing import Any, Callable, ClassVar, Coroutine, Final, Literal, ParamSpec, TypeVar, final, Collection
+from typing import Any, Callable, ClassVar, Coroutine, Final, Literal, final, Collection
 
 from attrs import Factory, define, field, setters, validators
 from sniffio import current_async_library_cvar
@@ -22,9 +22,6 @@ from async_anywhere.futures import AwaitableFuture
 from async_anywhere.state_tracker import State
 from async_anywhere.state_tracker.waitable import WaitableStateTracker
 
-# Not PEP 695 type params, which Sphinx mistakes for typing's own TypeVars and drops from docs. TODO: file Sphinx bug
-P = ParamSpec("P")
-T = TypeVar("T")
 
 def _seconds(timeout: float | timedelta) -> float:
     return timeout.total_seconds() if isinstance(timeout, timedelta) else timeout
@@ -193,7 +190,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     """
     # Where waiting for its futures would deadlock: its own thread, which it adds, and wherever else it's given (the
     # threads of a SingletonEventLoopExecutor's other executors, say, which share one)
-    _blocking_checker: BlockingChecker = field(alias="_blocking_checker", factory=BlockingChecker)
+    _blocking_checker = field(alias="_blocking_checker", factory=BlockingChecker)
 
     # The lock transitions take, around the calls accepted, started or not, until their jobs end: what a stop drains or
     # interrupts, and what holds off expiry. So none is added once the executor has stopped. _finalize() fails what's
@@ -268,7 +265,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         self._blocking_checker.add(rv)  # Prevent blocking waits on the captive thread
         return rv
 
-    def submit(
+    def submit[**P, T](
         self, func: Callable[P, Coroutine[Any, Any, T]], /, *args: P.args, **kwargs: P.kwargs
     ) -> AwaitableFuture[T]:
         r"""
@@ -388,7 +385,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             raise
         return future
 
-    def bridge(self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
+    def bridge[**P, T](self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
         """
         Decorator version of :py:meth:`submit`, for convenience.
 

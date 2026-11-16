@@ -12,6 +12,7 @@ from docutils import nodes
 from sphinx import addnodes
 from sphinx.domains.python import PyClasslike
 from sphinx.pycode import ModuleAnalyzer
+import sphinx.util.typing
 from sphinx.util.typing import restify
 
 
@@ -21,11 +22,15 @@ copyright = "2026, Zac Bentley"  # noqa: A001
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
+    "sphinx_autodoc_typehints",
     'sphinx.ext.intersphinx',
     "myst_parser",
     "pytest_doctestplus.sphinx.doctestplus",
 ]
 autodoc_typehints = "both"
+# sphinx_autodoc_typehints strips signature annotations by default: keep them
+typehints_use_signature = True
+typehints_use_signature_return = True
 intersphinx_mapping = {
     'python': ('https://docs.python.org/3', None),
     'trio': ('https://trio.readthedocs.io/en/stable', None),
@@ -47,6 +52,8 @@ autodoc_default_options = {
 html_theme = "furo"
 nitpicky = True  # Warn about every cross-reference that doesn't resolve, which Sphinx is otherwise silent about
 nitpick_ignore = [('py:exc', '<Various Exceptions>')]  # Raises: placeholder for "whatever the referenced method raises"
+# Type params: Sphinx has nothing to link them to
+nitpick_ignore_regex = [(r'py:(class|obj)', r'(.*\.)?[PT](\.args|\.kwargs)?')]
 
 
 def _colliding_module_name(cls):
@@ -64,6 +71,10 @@ def _colliding_module_name(cls):
                 return ':py:class:`{}.{}<python:{}>`'.format(mod, name, name)
             return ':py:class:`{}.{}`'.format(mod, name)
     return cls
+
+# PEP 695 type params claim __module__ 'typing', so Sphinx takes them for typing's own and strips them (Awaitable[T] -> Awaitable)
+sphinx.util.typing.is_system_TypeVar = lambda typ: isinstance(typ, typing.TypeVar) and getattr(typing, typ.__name__, None) is typ
+
 
 def process_bases_hook(*args):
 
@@ -146,7 +157,7 @@ class AbstractAwarePyClasslike(PyClasslike):
         qualname = [*filter(None, [self.env.ref_context.get('py:class')]), self.arguments[0].split('(')[0].strip()]
         try:
             obj = functools.reduce(
-                getattr, '.'.join(qualname).split('.'), importlib.import_module(self.env.ref_context.get('py:module'))
+                getattr, '.'.join(qualname).split('.'), importlib.import_module(self.options.get('module', self.env.ref_context.get('py:module')))
             )
         except (ImportError, AttributeError, TypeError):
             obj = None
@@ -165,7 +176,8 @@ def expand_sidebar(app, pagename, templatename, context, doctree):  # noqa: PLR0
 
 def setup(app):
     # https://www.sphinx-doc.org/en/master/usage/extensions/autodoc.html#event-autodoc-process-bases
-    app.connect('autodoc-process-bases', process_bases_hook)
+    # Before sphinx_autodoc_typehints' handler (default 500), which turns every base into a string
+    app.connect('autodoc-process-bases', process_bases_hook, priority=499)
     app.connect('autodoc-process-docstring', attrs_init_param_docs)
     app.connect('autodoc-process-docstring', executor_map_doc)
     app.connect('doctree-read', qualify_stdlib_names)

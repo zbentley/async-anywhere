@@ -3,20 +3,18 @@ Miscellaneous utility functions.
 """
 import asyncio
 import sys
-from typing import Awaitable, Literal, TypeVar, overload, Never
+from typing import Awaitable, Literal, overload, Never
 
 from async_anywhere._util.trio import TrioRuntime
-
-T = TypeVar("T")
 
 
 @overload
 async def gather(*, return_exceptions: bool = False) -> tuple[()]: ...
 @overload
-async def gather(*coros: Awaitable[T], return_exceptions: Literal[False] = False) -> tuple[T, ...]: ...
+async def gather[T](*coros: Awaitable[T], return_exceptions: Literal[False] = False) -> tuple[T, ...]: ...
 @overload
-async def gather(*coros: Awaitable[T], return_exceptions: bool) -> tuple[T | BaseException, ...]: ...
-async def gather(*coros: Awaitable[T], return_exceptions: bool = False) -> tuple[T | BaseException, ...]:
+async def gather[T](*coros: Awaitable[T], return_exceptions: bool) -> tuple[T | BaseException, ...]: ...
+async def gather[T](*coros: Awaitable[T], return_exceptions: bool = False) -> tuple[T | BaseException, ...]:
     """
     Convenience wrapper for asyncio.gather which behaves exactly as it does. Exists for two reasons:
 

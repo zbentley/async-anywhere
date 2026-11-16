@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC
 from operator import itemgetter
-from typing import Generic, Literal, TypeVar, overload, final
+from typing import Literal, overload, final
 from weakref import WeakSet
 
 from async_anywhere.exceptions import StateTrackerError
@@ -10,10 +10,9 @@ from async_anywhere.futures import AwaitableFuture
 from async_anywhere.state_tracker import State, StateTracker
 
 _data = itemgetter(2)  # A transition's data, from its (old state, new state, data) triple
-T = TypeVar("T")
 # Old state and data are None for the initial state, which no transition entered
 
-class WaitableStateTracker(StateTracker, ABC, Generic[T]):
+class WaitableStateTracker[T](StateTracker, ABC):
     """A :py:class:`StateTracker` which can be waited on, synchronously or asynchronously, via :py:meth:`wait_for_state`.
 
     Like :py:class:`StateTracker`, this class is intended to be subclassed by users who attach one or more

@@ -24,6 +24,8 @@ Vs anyio:
 - BlockingPortal's submit methods wait for the portal to accept the job, blocking the caller until it does. If the portal is blocked, this can cause hangs or deadlocks.
 - BlockingPortal is designed to run, well, *blocking* code. EventLoopExecutor is designed to run nonblocking/awaitable code concurrently (though it can run blocking code--necessarily in serial--as well).
 
+Use when: juggling multiple event loops, but they can be stopped/nonrunning at times (e.g. asgiref) and this breaks stuff like heartbeats.
+
 # Docs to incorporate into executor
 
 Invariants
