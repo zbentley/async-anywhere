@@ -118,6 +118,7 @@ def test_a_replacements_idle_countdown_starts_once_it_runs():
 
     with running_singleton(main=main, idle_timeout=timeout, cancel_futures_on_stopping_executors=False) as singleton:
         first = singleton.get()
+        first.submit(work).result(5)  # Its main has started, which it won't once stopping
         first.shutdown(wait=False)
         first.wait_for_state(first.Stopping).result(5)
         second = singleton.get()
@@ -413,6 +414,7 @@ def test_shutdown_while_replacing_an_executor_stops_the_replacement_after_calls_
 
     with running_singleton(main=cleans_up_until(release), cancel_futures_on_stopping_executors=False) as singleton:
         first = singleton.get()
+        first.submit(work).result(5)  # Its main has started, which it won't once stopping
         first.shutdown(wait=False)
         first.wait_for_state(first.Stopping).result(5)
         second = singleton.get()  # Running nothing until first has finished
