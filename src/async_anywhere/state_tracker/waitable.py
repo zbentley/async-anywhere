@@ -91,7 +91,7 @@ class WaitableStateTracker[T](StateTracker, ABC):
                 If True, the returned future is resolved with a 3-tuple with the same contents as
                 :py:obj:`last_transition`: ``(old_state, new_state, data)``. If False, the returned future is resolved
                 with the ``data`` argument from the call to :py:meth:`_transition` that caused the tracker to enter one
-                of ``states``
+                of ``states``. Defaults to False.
 
             **kwargs: Any additional keyword arguments to pass :py:class:`.UncancellableAwaitableFuture`\ s constructor when
                 constructing the return value.
@@ -125,21 +125,6 @@ class WaitableStateTracker[T](StateTracker, ABC):
 
     @final
     def _transition(self, target: State, data: T | None = None) -> State:
-        """See :py:meth:`StateTracker._transition`.
-
-        :meta public:
-
-        Args:
-            target: See :py:meth:`StateTracker._transition`.
-            data: See :py:meth:`StateTracker._transition`.
-
-        Raises:
-            <Various Exceptions>: See :py:meth:`StateTracker._transition`.
-
-        Returns:
-            The :py:class:`State` that the invocant transitioned *from*.
-
-        """
         with self._condition:
             old_state = self.state
             if target not in old_state._destinations:

@@ -16,13 +16,13 @@ async def gather[T](*coros: Awaitable[T], return_exceptions: Literal[False] = Fa
 async def gather[T](*coros: Awaitable[T], return_exceptions: bool) -> tuple[T | BaseException, ...]: ...
 async def gather[T](*coros: Awaitable[T], return_exceptions: bool = False) -> tuple[T | BaseException, ...]:
     """
-    Convenience wrapper for asyncio.gather which behaves exactly as it does. Exists for two reasons:
+    Convenience wrapper for :py:func:`asyncio.gather` which behaves exactly as it does. Exists for two reasons:
 
-    1. asyncio.gather without any awaitables is somewhat costly to call just to get an empty tuple back. This method
-       is cheaper to call.
-    2. asyncio.gather isn't a true async method; it's a synchronous method that returns a Future. That's usually
-       desirable, but occasionally it makes some wrapping tools (e.g. asgiref.async_to_sync) not work, and also
-       can confuse some type checkers. This is a regular async method, which helps with those situations.
+    1. :py:func:`asyncio.gather` without any awaitables is somewhat costly to call just to get an empty tuple back. This
+       method is cheaper to call.
+    2. :py:func:`asyncio.gather` isn't a true async method; it's a synchronous method that returns a ``Future``. That's
+       usually desirable, but occasionally it makes some wrapping tools (e.g. ``asgiref.async_to_sync``) not work, and
+       also can confuse some type checkers. This is a regular async method, which helps with those situations.
     """
     if len(coros) == 0:
         return ()
@@ -31,7 +31,8 @@ async def gather[T](*coros: Awaitable[T], return_exceptions: bool = False) -> tu
 
 async def wait_forever(*unused) -> Never:
     """
-    Waits forever until cancelled or the interpreter shuts down. Works if called from trio/asyncio/anyio.
+    Waits forever until cancelled or the interpreter shuts down. Works when called from any async runtime
+    (e.g. Trio/AnyIO/``asyncio``).
 
     Args:
         *unused: ignored.

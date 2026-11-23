@@ -27,6 +27,7 @@ extensions = [
     "myst_parser",
     "pytest_doctestplus.sphinx.doctestplus",
 ]
+myst_enable_extensions = ["alert"]  # GitHub-style "> [!NOTE]" admonitions, so .md pages render in both places
 autodoc_typehints = "both"
 # sphinx_autodoc_typehints strips signature annotations by default: keep them
 typehints_use_signature = True

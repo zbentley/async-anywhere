@@ -4,7 +4,7 @@ Note:
 
     - Do not subclass or manually construct :py:class:`AsyncAnywhereException` or any subclass thereof from user code.
     - Treat instances of :py:class:`AsyncAnywhereException` as immutable. Changing any fields on them may break
-      functionality. Standard automatic mutation via the Python runtime (e.g. call stack manipulation) is permitted.
+      functionality. Standard automatic mutation via the Python runtime (e.g. call stack stitching) is permitted.
 
 """
 from __future__ import annotations
@@ -169,7 +169,7 @@ class JobCancelledByExecutorShutdown(AsyncAnywhereException, concurrent.futures.
         cls, cancelled: asyncio.CancelledError | EventLoopExecutorStopped, stopped: EventLoopExecutorStopped | None = None
     ) -> Self:
         """For a job cancelled by a stop: given its asyncio.CancelledError, and why the executor stopped; or, for a job
-        never started, just why the executor stopped. Raised from a copy of why.
+        never started, why the executor stopped. Always ``raise from`` -ed a copy of the original stop cause.
 
         :meta private:
         """

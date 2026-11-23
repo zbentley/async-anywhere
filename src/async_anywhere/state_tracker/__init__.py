@@ -205,14 +205,6 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
 
     Users can call :py:meth:`_transition` or :py:meth:`_try_transition` to move a ``StateTracker`` between states.
 
-    Users are intended to subclass StateTracker for their own use-cases. When subclassing StateTracker, users must
-    declare one or more State objects as class-level fields.
-
-    Warning:
-        Do not declare invalid (unreachable) States on a StateTracker subclass. At the moment, no topological validation
-        of the state graph is performed, but validation (and resulting validation errors) may be added in a future
-        release.
-
     Example:
 
         >>> class MyStateTracker(StateTracker):
@@ -235,26 +227,39 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
 
     .. admonition:: Subclassing
 
-        All of a StateTracker's States must be declared together on one class; they cannot be combined or layered across
-        subclasses. States may be declared in one of the following locations:
+        Users are intended to subclass StateTracker for their own use-cases, following these rules:
 
-        1. On a concrete StateTracker subclass, as explicit, literal class fields (not via descriptors or ``__class_getitem__``).
-        2. On any class that is inherited by a StateTracker subclass (as explicit, literal class fields). This allows for
-           common state graphs to be used by multiple different StateTracker subclasses via a mixin.
+        1. StateTracker subclasses **MUST** declare one or more State objects as class-level fields.
 
-        All concrete StateTracker subclasses must declare States. Abstract StateTracker subclasses must be extended by a
-        concrete class which declares States.
+           All of a StateTracker's States must be declared together on one class; they cannot be combined or layered across
+           subclasses. States may be declared in one of the following locations:
 
-        StateTracker's metaclass derives from :py:class:`abc.ABCMeta`, so to also inherit from a class with another
-        ``ABCMeta``-derived metaclass (e.g. a :py:class:`typing.Protocol`), declare a metaclass combining both, like
-        ``class Meta(type(StateTracker), type(MyProtocol)): ...``, and pass it as ``metaclass=Meta``.
+           a. On a concrete StateTracker subclass, as explicit, literal class fields (not via descriptors or ``__class_getitem__``).
+           b. On any class that is inherited by a StateTracker subclass (as explicit, literal class fields). This allows for
+              common state graphs to be used by multiple different StateTracker subclasses via a mixin.
 
-        If subclasses use ``attrs``, ``dataclass`` or other class-creation factories, all State objects declared at the class
-        level must be annotated with ``ClassVar[Final[State]]``, otherwise subclass declaration may fail.
+           All concrete StateTracker subclasses must declare States. Abstract StateTracker subclasses must be extended by a
+           concrete class which declares States.
+
+           If subclasses use ``attrs``, ``dataclass`` or other class-creation factories, all State objects declared at the class
+           level must be annotated with ``ClassVar[Final[State]]``, otherwise subclass declaration may fail.
+
+        2. StateTracker subclasses **MAY** override :py:meth:`_transition` to run code before or after a transition between
+           States is attempted. Code in ``_transition`` overrides is not thread-safe and may race with other concurrent
+           calls to ``_transition``.
+        3. StateTracker subclasses **MAY** override :py:meth:`_after_state_change` to run code after a successful transition.
+           Code in ``_after_state_change`` is thread-safe and will run before concurrent calls to ``_transition`` and
+           ``_after_state_change``.
 
     Warning:
         Setting ``State``\ s on a ``StateTracker`` at any point after class declaration time (e.g.
         ``MyTracker.Foo = State()``) is not allowed.
+
+    Warning:
+        Do not declare invalid (unreachable) States on a StateTracker subclass. At the moment, no topological validation
+        of the state graph is performed, but validation (and resulting validation errors) may be added in a future
+        release.
+
     """
 
     states: ClassVar[frozenset[State]]
@@ -287,7 +292,10 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
     @final
     @property
     def state(self) -> State:
-        """The current :py:class:`State` of the invocant StateTracker."""
+        """The current :py:class:`State` of the invocant StateTracker.
+
+        Read-only; to modify the state, call :py:meth:`_transition` or :py:meth:`_try_transition`.
+        """
         return self._last_transition[1]
 
     @final
@@ -379,6 +387,8 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
 
     def _after_state_change(self, old_state: State, new_state: State, data: object):
         """
+        :meta public:
+
         Called immediately after the invocant successfully transitions into a new State. *Not* called when the invocant
         is constructed in its initial state.
 
