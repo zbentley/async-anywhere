@@ -4,7 +4,6 @@ import threading
 from collections import deque
 from collections.abc import Callable, Collection
 from functools import cache
-from inspect import iscoroutinefunction
 from threading import RLock, Thread, current_thread
 from typing import final
 from weakref import ref
@@ -29,11 +28,6 @@ def BlockingNotAllowed() -> bool:
 # TODO better annotate: refer to it elsewhere.
 # TODO better annotate: inline in docs.
 type BlockingEnvironments = Collection[asyncio.AbstractEventLoop | Thread | Callable[[], bool]]
-
-def validate_coroutine_function(_, attribute, value):
-    if not iscoroutinefunction(value):
-        raise TypeError(f"{attribute.name} must be a coroutine function (an async def), not {value!r}")
-
 
 @cache
 def futures_logger() -> logging.Logger:

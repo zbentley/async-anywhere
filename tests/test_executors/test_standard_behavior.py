@@ -76,20 +76,18 @@ async def test_executors_state_can_be_required_and_waited_for():
         assert worker.require(worker.Running, worker.Shutdown) is worker.worker
 
 
-# A refused argument leaves the loop its timer made unclosed (attrs validates once every field is set): only the GC
-# closes it, warning as it does
-@pytest.mark.filterwarnings("ignore:unclosed event loop:ResourceWarning")
 @pytest.mark.parametrize(
     "kwargs, error, match",
     [
         # Making a coroutine, but not an async def
-        (dict(main=lambda worker: asyncio.sleep(0)), TypeError, "^_parent_task must be a coroutine function"),
-        (dict(main=print), TypeError, "^_parent_task must be a coroutine function"),
-        (dict(idle_timeout="1"), TypeError, "'_idle_timeout' must be"),
-        (dict(idle_timeout=0), ValueError, "^'_idle_timeout' must be > 0"),
-        (dict(idle_timeout=timedelta(0)), ValueError, "^'_idle_timeout' must be > 0"),
-        (dict(idle_timeout=timedelta(seconds=-1)), ValueError, "^'_idle_timeout' must be > 0"),
-        (dict(loop_factory=3), TypeError, "callable"),  # Called as the timer is made, before attrs validates it
+        (dict(main=lambda worker: asyncio.sleep(0)), TypeError, r"^main must be a coroutine function \(an async def\)"),
+        (dict(main=print), TypeError, "^main must be a coroutine function"),
+        (dict(idle_timeout="1"), TypeError, "^idle_timeout must be a number of seconds or a timedelta"),
+        (dict(idle_timeout=0), ValueError, "^idle_timeout must be positive"),
+        (dict(idle_timeout=float("nan")), ValueError, "^idle_timeout must be positive"),
+        (dict(idle_timeout=timedelta(0)), ValueError, "^idle_timeout must be positive"),
+        (dict(idle_timeout=timedelta(seconds=-1)), ValueError, "^idle_timeout must be positive"),
+        (dict(loop_factory=3), TypeError, "callable"),
         (dict(loop_factory=lambda: "not a loop"), TypeError, "^loop_factory must make a new event loop"),
         (
             dict(loop_factory=lambda: (loop := asyncio.new_event_loop()).close() or loop),
@@ -133,8 +131,20 @@ async def test_functions_can_be_bridged_whenever():
 
 def test_executors_are_slotted():
     with running() as worker:
-        assert vars(worker) == {}  # Executor's __dict__ (it has no __slots__) holds nothing: attrs slotted cached_property too
+        assert vars(worker) == {}  # Executor's __dict__ (it has no __slots__) holds nothing
         assert type(vars(EventLoopExecutor)["_loop"]).__name__ == "member_descriptor" and worker._loop is worker._loop
+
+
+def test_executors_are_frozen():
+    with running() as worker:
+        # Its own fields, what its bases keep, and anything else
+        for name in ("logger", "_loop", "_last_transition", "_condition", "_waiters", "unknown"):
+            with pytest.raises(AttributeError):
+                setattr(worker, name, None)
+            with pytest.raises(AttributeError):
+                delattr(worker, name)
+        worker.shutdown()  # Writing its state, which the freeze leaves to it
+        assert worker.state is worker.Shutdown
 
 
 async def test_the_parent_task_gets_the_executor_and_bridged_functions_just_their_callers_arguments():

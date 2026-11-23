@@ -10,9 +10,8 @@ import time
 import weakref
 
 import pytest
-from attrs import define, field
 
-from async_anywhere._util import AnyEventLoop, BlockingChecker, ConditionProtected, validate_coroutine_function
+from async_anywhere._util import AnyEventLoop, BlockingChecker, ConditionProtected
 from async_anywhere.exceptions import WouldBlock
 from tests.test_executors.utils import forked
 
@@ -157,19 +156,6 @@ def test_a_forked_process_resets_conditions_other_threads_held_or_waited_on_but_
         waited_on.notify_all()
     for thread in threads:
         thread.join(2)
-
-
-def test_only_coroutine_functions_are_valid():
-    @define
-    class Holder:
-        run: object = field(validator=validate_coroutine_function)
-
-    async def run(): ...
-
-    assert Holder(run).run is run
-    for invalid in (lambda: run(), None):  # noqa: PLW0108 (Returning a coroutine isn't enough: it must be an async def)
-        with pytest.raises(TypeError, match=r"^run must be a coroutine function \(an async def\), not "):
-            Holder(invalid)
 
 
 def test_blocking_checkers_and_their_copies_dont_share_later_adds():

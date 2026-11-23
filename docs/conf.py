@@ -3,15 +3,12 @@ from __future__ import annotations
 import functools
 import importlib
 import inspect
-import sys
 import typing
 from abc import ABC
 
-import attrs
 from docutils import nodes
 from sphinx import addnodes
 from sphinx.domains.python import PyClasslike
-from sphinx.pycode import ModuleAnalyzer
 import sphinx.util.typing
 from sphinx.util.typing import restify
 
@@ -42,6 +39,7 @@ intersphinx_mapping = {
 html_static_path = ['_static']
 html_css_files = ['custom.css']
 autodoc_class_signature = "separated"
+autodoc_preserve_defaults = True  # Defaults as written: <function ...> reprs break signature parsing (sphinx#13340)
 autodoc_default_options = {
     'show-inheritance': True,
     'member-order': 'bysource',
@@ -151,19 +149,12 @@ def auto_dot(app, env, node, contnode):
     )
 
 
-def attrs_init_param_docs(app, what, name, obj, options, lines):  # noqa: PLR0917
-    # Feed attrs fields' attribute docstrings (string after, or #: before) into the generated __init__'s :param <alias>: fields
-    # Python functions, as attrs makes: not inherited C slot wrappers (BaseException.__init__), which lack __module__
-    if what != "method" or not inspect.isfunction(obj) or obj.__name__ != "__init__":
-        return
-    owner = functools.reduce(getattr, obj.__qualname__.split(".")[:-1], sys.modules[obj.__module__])
-    if not attrs.has(owner) or owner.__init__ is not obj:
-        return
-    attr_docs = ModuleAnalyzer.for_module(owner.__module__).find_attr_docs()
-    for a in attrs.fields(owner):
-        doc = attr_docs.get((owner.__qualname__, a.name), [""])
-        if a.init and doc[0]:
-            lines.extend(["", f":param {a.alias}: {doc[0]}", *("   " + line for line in doc[1:])])
+def hide_private_parameters(app, obj, bound_method):
+    # Private (_-prefixed) parameters, like EventLoopExecutor's _blocking_checker, aren't part of the documented API.
+    # After autodoc_preserve_defaults has set __signature__, which autodoc's inspect.signature() call honors next.
+    sig = inspect.signature(obj)
+    if any(name.startswith('_') for name in sig.parameters):
+        obj.__signature__ = sig.replace(parameters=[p for p in sig.parameters.values() if not p.name.startswith('_')])
 
 
 def executor_map_doc(app, what, name, obj, options, lines):  # noqa: PLR0917
@@ -199,7 +190,7 @@ def setup(app):
     # https://www.sphinx-doc.org/en/master/usage/extensions/autodoc.html#event-autodoc-process-bases
     # Before sphinx_autodoc_typehints' handler (default 500), which turns every base into a string
     app.connect('autodoc-process-bases', process_bases_hook, priority=499)
-    app.connect('autodoc-process-docstring', attrs_init_param_docs)
+    app.connect('autodoc-before-process-signature', hide_private_parameters)
     app.connect('autodoc-process-docstring', executor_map_doc)
     app.connect('doctree-read', qualify_stdlib_names)
     app.connect('doctree-resolved', localize_hosted_links)

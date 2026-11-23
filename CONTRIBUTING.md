@@ -6,4 +6,4 @@
 
 # Guidelines on LLM usage
 
-Changes written with LLM assistance are welcome, but PRs with *only* LLM participation will not be accepted. I need a human to at least chime in and indicate that they've read, understand, and agree with the code being proposed before considering it for merge.
+Changes written with LLM assistance may be accepted, but PRs with *only* LLM participation will not be accepted. I need a human to at least chime in and indicate that they've read, understand, and agree with the code being proposed before I consider it for merge.

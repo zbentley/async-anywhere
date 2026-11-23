@@ -264,6 +264,19 @@ class MyWaitable(WaitableStateTracker):
     B: Final[State] = State(sources=[A])
     C: Final[State] = State(sources=[A, B])
 
+def test_waitable_trackers_can_be_frozen():
+    @attr.define(init=False, frozen=True)
+    class Frozen(WaitableStateTracker):
+        Start: ClassVar[Final[State]] = State(initial=True)
+        End: ClassVar[Final[State]] = State(sources=[Start])
+
+    inst = Frozen()
+    ended = inst.wait_for_state(Frozen.End)
+    with pytest.raises(AttributeError):
+        inst._last_transition = None
+    inst._transition(Frozen.End, "data")
+    assert inst.state is Frozen.End and ended.result(0) == "data"
+
 def test_wait_for_current_state_is_done():
     inst = MyWaitable()
     assert inst.wait_for_state(MyWaitable.A, MyWaitable.B, return_states=True).result(0) == (None, MyWaitable.A, None)

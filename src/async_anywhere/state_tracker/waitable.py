@@ -5,11 +5,14 @@ from operator import itemgetter
 from typing import Literal, overload, final
 from weakref import WeakSet
 
+from async_anywhere._util import ConditionProtected
 from async_anywhere.exceptions import StateTrackerError
 from async_anywhere.futures import UncancellableAwaitableFuture
 from async_anywhere.state_tracker import State, StateTracker
 
 _data = itemgetter(2)  # A transition's data, from its (old state, new state, data) triple
+# Slot writers that get past a frozen subclass's __setattr__ (EventLoopExecutor's, say), unlike assignment
+_set_last_transition, _set_condition = StateTracker._last_transition.__set__, StateTracker._condition.__set__
 # Old state and data are None for the initial state, which no transition entered
 
 class WaitableStateTracker[T](StateTracker, ABC):
@@ -40,6 +43,8 @@ class WaitableStateTracker[T](StateTracker, ABC):
         >>> fut = t.wait_for_state(MyTracker.Third)
         >>> fut.result(timeout=1)
     """
+    _waiters: dict[State, WeakSet[UncancellableAwaitableFuture[T]]]
+
     __slots__ = ('_waiters',)
 
     def __init__(self):
@@ -50,8 +55,10 @@ class WaitableStateTracker[T](StateTracker, ABC):
             Unlike its parent class ``StateTracker``, this class does not accept a ``thread_safe`` parameter. All
             accesses to this class are always thread-safe.
         """
-        super().__init__()
-        self._waiters: dict[State, WeakSet[UncancellableAwaitableFuture[T]]] = {s: WeakSet() for s in self.states}
+        # What StateTracker.__init__(thread_safe=True) does, but through the slot writers
+        _set_last_transition(self, self._initial_transition)
+        _set_condition(self, ConditionProtected(None))
+        _set_waiters(self, {s: WeakSet() for s in self.states})
 
     @overload
     def wait_for_state(
@@ -129,7 +136,8 @@ class WaitableStateTracker[T](StateTracker, ABC):
             old_state = self.state
             if target not in old_state._destinations:
                 raise StateTrackerError(self, "Could not transition to state", self._check_state(target))
-            self._last_transition = result = (old_state, target, data)
+            result = (old_state, target, data)
+            _set_last_transition(self, result)
             old_waiters = self._waiters[target]
             waiters = tuple(old_waiters)  # Not copy() because we don't need to hash
             old_waiters.clear()
@@ -138,6 +146,8 @@ class WaitableStateTracker[T](StateTracker, ABC):
         for future in waiters:
             future.set_result_if_not_done(result)
         return old_state
+
+_set_waiters = WaitableStateTracker._waiters.__set__
 
 
 __all__ = ["WaitableStateTracker"]

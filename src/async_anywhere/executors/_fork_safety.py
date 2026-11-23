@@ -10,4 +10,4 @@ class EventLoopExecutorForkSafety(ForkSafeInstanceTracker):
             instance._after_fork_in_child()
 
 
-executors = EventLoopExecutorForkSafety()  # Every executor, once constructed: see EventLoopExecutor.__attrs_post_init__()
+executors = EventLoopExecutorForkSafety()  # Every executor, once constructed: see EventLoopExecutor.__init__()

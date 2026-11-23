@@ -3,15 +3,15 @@ import concurrent.futures
 import logging
 from contextvars import Context, ContextVar, copy_context
 from datetime import timedelta
-from functools import cached_property, partial, update_wrapper
-from inspect import isawaitable
+from functools import partial, update_wrapper
+from inspect import isawaitable, iscoroutinefunction
 from threading import Thread, current_thread, main_thread
 from typing import Any, Callable, ClassVar, Coroutine, Final, Literal, final, Collection
 
-from attrs import Factory, define, field, setters, validators
+from attrs import define, field
 from sniffio import current_async_library_cvar
 
-from async_anywhere._util import BlockingChecker, ConditionProtected, validate_coroutine_function, Toggleable
+from async_anywhere._util import BlockingChecker, ConditionProtected, Toggleable
 from async_anywhere.exceptions import CleanStop, EventLoopExecutorBroken, JobCancelledByExecutorShutdown, \
     EventLoopExecutorStopped, EventLoopExecutorForked
 from async_anywhere.executors import _fork_safety
@@ -23,25 +23,15 @@ from async_anywhere.state_tracker import State
 from async_anywhere.state_tracker.waitable import WaitableStateTracker
 
 
-def _seconds(timeout: float | timedelta) -> float:
-    return timeout.total_seconds() if isinstance(timeout, timedelta) else timeout
-
-def _timer_factory(executor: EventLoopExecutor):
-    return Timer(
-        loop=executor._loop,
-        callback=lambda: executor._clean_stop("expired") and executor._interrupt(True),
-    )
-
-
 # Set by each executor in every context it runs code in, on its own thread: see EventLoopExecutor.current()
 _current_executor: ContextVar[EventLoopExecutor | None] = ContextVar("current_executor", default=None)
 
 
 @final
 @define(
-    kw_only=True,
+    init=False,  # See __init__(), which sets every field through __attrs_init__()
+    frozen=True,  # Every attribute: WaitableStateTracker writes its own past this
     eq=False, # Make equality and hashing use object identity alone.
-    on_setattr=setters.frozen, # Immutable fields. Not frozen=True, which would freeze the StateTracker's state too.
     repr=False, # Repr gets extremely verbose and not useful.
     auto_attribs=False,
 )
@@ -140,60 +130,19 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
           event loop <trio:guest-mode>`, e.g. :py:func:`trio.lowlevel.start_guest_run`.
     """
 
-    _parent_task: Callable[[EventLoopExecutor], Coroutine[Any, Any, Any]] = field(
-        alias="main",
-        default=wait_forever,
-        validator=validate_coroutine_function
-    )
-    """The executor's :term:`main task`. A coroutine function (``async def``) that will be wrapped in an 
-    :py:obj:`asyncio.Task` and started inside the executor during construction. When this function completes, the 
-    executor will stop itself via ``shutdown(wait=False, cancel_futures=True)``; "main" otherwise is treated like a long-running :term:`job`
-    submitted to the executor. Jobs run on the executor will run concurrently with this function.
-    
-    The supplied callable will be invoked only from within a running event loop, and must take a single parameter: the
-    executor itself.
-    
-    If no value is supplied, a coroutine that waits for ever is used by default. The default is sufficient for most 
-    users: unless you need to run code in the executor that has its own stateful, asynchronous setup and main loop, you
-    probably do not need to set this field. 
-    """
-    # TODO: its validators' errors name _idle_timeout, not its "idle_timeout" alias
-    _idle_timeout: float = field(
-        default=float("inf"),
-        converter=_seconds,  # Before the validators, so a timedelta's checked as its total_seconds()
-        validator=[validators.instance_of((int, float)), validators.gt(0)],
-    )
-    """An amount of time spent idle, after which the executor will stop itself via ``shutdown(wait=False)``.
-    The time-spend-idle tracker resets every time a job is submitted to an executor. An executor will never expire while
-    a job is running. Must be a positive ``datetime.timedelta`` or floating-point number of seconds. 
-    
-    Defaults to ``float("inf")``, i.e. never time out.
-    """
-    # Makes the executor's loop, once, as it's constructed: see _loop
-    _loop_factory: Callable[[], asyncio.AbstractEventLoop] = field(
-        default=asyncio.new_event_loop, validator=validators.is_callable()
-    )
-    """A callable which creates a new event loop that the executor will use in its captive thread. This callable must
-    not return a reference to a loop that is in use anywhere else, and must not return a loop that is in any way bound
-    to the current thread, as the executor may construct the loop in a different thread than the one that runs it.
-    
-    Defaults to ``asyncio.new_event_loop``.
-    """
-    logger: logging.Logger = field(
-        factory=lambda: logging.getLogger(EventLoopExecutor.__qualname__),
-    )
-    """A logger that the executor will use to log lifecycle events (certain failures and stop conditions). The executor 
-    will never use this logger across process boundaries in the event of a fork(2).
-    
-    Defaults to a new logger named after the executor.
-    
-    Note:
-        Using this logger must not unduly block the event loop. Loggers that wait on network services or slow disks can
-        cause the executor to hang.
-    """
+    _parent_task: Callable[[EventLoopExecutor], Coroutine[Any, Any, Any]] = field()
+    _idle_timeout: float = field()
+    logger: logging.Logger = field()
+    """The logger given to the constructor (see :py:meth:`__init__`), or its default."""
+    # Run by _main() on the executor's thread: until then, work is just queued on it.
+    _loop: asyncio.AbstractEventLoop = field()
+    _thread: Thread = field()
     # Where waiting for its futures would deadlock: its own thread, which it adds, and wherever else it's given (the
     # threads of a SingletonEventLoopExecutor's other executors, say, which share one)
-    _blocking_checker = field(alias="_blocking_checker", factory=BlockingChecker)
+    _blocking_checker: BlockingChecker = field()
+    _expiry: Timer = field()
+    # _forward_cancellations(), bound once: see submit()
+    _cancellation_forwarder: Callable[[_ExecutorJob], None] = field()
 
     # The lock transitions take, around the calls accepted, started or not, until their jobs end: what a stop drains or
     # interrupts, and what holds off expiry. So none is added once the executor has stopped. _finalize() fails what's
@@ -204,11 +153,11 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     _interrupted: Toggleable = field(init=False, factory=Toggleable)
     # The main task's task, once it has started, which the constructor waits for: see _main()
     _runner: AwaitableFuture[asyncio.Task] = field(init=False, factory=AwaitableFuture)
-    _expiry: Timer = field(init=False, default=Factory(_timer_factory, takes_self=True))
 
     Running: ClassVar[Final[State]] = State(initial=True)
     """
     Observing executor state:
+    
         An EventLoopExecutor is a WaitableStateTracker whose state moves linearly, thus:
         ``EventLoopExecutor.Running`` -> ``EventLoopExecutor.Stopping`` -> ``EventLoopExecutor.Shutdown``
 
@@ -228,45 +177,103 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     """This state is entered once, after the executor has shut down its event loop and has joined its captive thread."""
 
 
-    def __attrs_post_init__(self):
-        super().__init__()
-        self._condition.replace_value(set())  # Its jobs: see _condition
-        _fork_safety.executors.ensure_registered(self)
-        # Captured outside the try/except in case the code to prime these fields has errors
-        thread, runner = self._thread, self._runner
-        try:
-            thread.start()
-            runner.result() # Wait for the captive thread to signal that it's ready and running the event loop
-        except BaseException:
-            # Any error during construction (e.g. KeyboardInterrupt) risks leaving a background thread runnong on the
-            # system, expecting work. While this class can't be made interrupt-safe generally, it is easy to signal for
-            # thread shutdown when loop-existential errors occur early in the executor's lifecycle, so we do that here.
-            self.shutdown(wait=False)
-            raise
+    def __init__(
+        self,
+        *,
+        main: Callable[[EventLoopExecutor], Coroutine[Any, Any, Any]] = wait_forever,
+        idle_timeout: float | timedelta = float("inf"),
+        loop_factory: Callable[[], asyncio.AbstractEventLoop] = asyncio.new_event_loop,
+        logger: logging.Logger | None = None,
+        _blocking_checker=None, # Should not be set by external callers
+    ):
+        """
+        When constructed with no arguments, ``EventLoopExecutor`` will operate in the mode that most use-cases probably
+        expect: it will never expire or shut itself down, use a new ``asyncio`` event loop, and will allow calls to
+        :py:meth:`submit` or ``@bridge`` until :py:meth:`shutdown` is called.
 
-    @cached_property
-    def _loop(self) -> asyncio.AbstractEventLoop:
-        # Made by the fields that need it, as the executor's constructed, so on one thread. Run by _main() on the executor's
-        # thread: until then, work is just queued on it.
-        loop = self._loop_factory()
+        Args:
+            main: The executor's :term:`main task`. A coroutine function (``async def``) that will be wrapped in an
+                :py:obj:`asyncio.Task` and started inside the executor during construction. When this function completes,
+                the executor will stop itself via ``shutdown(wait=False, cancel_futures=True)``; "main" otherwise is
+                treated like a long-running :term:`job` submitted to the executor. Jobs run on the executor will run
+                concurrently with this function.
+
+                The supplied callable will be invoked only from within a running event loop, and must take a single
+                parameter: the executor itself.
+
+                If no value is supplied, a coroutine that waits for ever is used by default. The default is sufficient
+                for most users: unless you need to run code in the executor that has its own stateful, asynchronous
+                setup and main loop, you probably do not need to set this parameter.
+            idle_timeout: An amount of time spent idle, after which the executor will stop itself via
+                ``shutdown(wait=False)``. The time-spent-idle tracker resets every time a job is submitted to an
+                executor. An executor will never expire while a job is running. Must be a positive
+                ``datetime.timedelta`` or floating-point number of seconds.
+
+                Defaults to ``float("inf")``, i.e. never time out.
+            loop_factory: A callable which creates a new event loop that the executor will use in its captive thread.
+                This callable must not return a reference to a loop that is in use anywhere else, and must not return a
+                loop that is in any way bound to the current thread, as the executor may construct the loop in a
+                different thread than the one that runs it.
+
+                Defaults to ``asyncio.new_event_loop``.
+            logger: A logger that the executor will use to log lifecycle events (certain failures and stop conditions).
+                The executor will never use this logger across process boundaries in the event of a fork(2).
+
+                Defaults to a new logger named after the executor.
+
+                Note:
+                    Using this logger must not unduly block the event loop. Loggers that wait on network services or
+                    slow disks can cause the executor to hang.
+        """
+        # Checked before the loop is made, so that a refused argument leaves nothing to clean up
+        if not iscoroutinefunction(main):
+            raise TypeError(f"main must be a coroutine function (an async def), not {main!r}")
+        if isinstance(idle_timeout, timedelta):
+            idle_timeout = idle_timeout.total_seconds()
+        if not isinstance(idle_timeout, (int, float)):
+            raise TypeError(f"idle_timeout must be a number of seconds or a timedelta, not {idle_timeout!r}")
+        if not idle_timeout > 0:  # NaN too
+            raise ValueError(f"idle_timeout must be positive, not {idle_timeout!r}")
+        if logger is None:
+            logger = logging.getLogger(EventLoopExecutor.__qualname__)
+        loop = loop_factory()
         if not isinstance(loop, asyncio.AbstractEventLoop):
             raise TypeError(f"loop_factory must make a new event loop, not {loop!r}")
         if loop.is_running() or loop.is_closed():
             raise TypeError(f"loop_factory made a running or closed event loop: {loop!r}")
-        return loop
 
-    @cached_property
-    def _thread(self) -> Thread:
+        super().__init__()
+        self._condition.replace_value(set())  # Its jobs: see _condition
         # Explicitly given a fresh context, holding just the executor, which run()'s task copies (otherwise it's dependent
-        # on the widely-considered-surprising sys.thread_inherit_context flag). Made as __attrs_post_init__() starts it.
+        # on the widely-considered-surprising sys.thread_inherit_context flag).
         context = Context()
         context.run(_current_executor.set, self)
         # TODO: setting the executor in the context early/eagerly via the context= argument to Thread causes reference
         # loops, GC load, and potentially-immortal stopped executor instances, since thread context objects are not
         # garbage collected when we need them to be.
-        rv = Thread(target=context.run, args=(self._main,), name=self.logger.name, daemon=True)
-        self._blocking_checker.add(rv)  # Prevent blocking waits on the captive thread
-        return rv
+        thread = Thread(target=context.run, args=(self._main,), name=logger.name, daemon=True)
+        blocking_checker = BlockingChecker() if _blocking_checker is None else _blocking_checker
+        blocking_checker.add(thread)  # Prevent blocking waits on the captive thread
+        self.__attrs_init__(
+            parent_task=main,
+            idle_timeout=idle_timeout,
+            logger=logger,
+            loop=loop,
+            thread=thread,
+            blocking_checker=blocking_checker,
+            expiry=Timer(loop=loop, callback=lambda: self._clean_stop("expired") and self._interrupt(True)),
+            cancellation_forwarder=self._forward_cancellations,
+        )
+        _fork_safety.executors.ensure_registered(self)
+        try:
+            thread.start()
+            self._runner.result() # Wait for the captive thread to signal that it's ready and running the event loop
+        except BaseException:
+            # Any error during construction (e.g. KeyboardInterrupt) risks leaving a background thread running on the
+            # system, expecting work. While this class can't be made interrupt-safe generally, it is easy to signal for
+            # thread shutdown when loop-existential errors occur early in the executor's lifecycle, so we do that here.
+            self.shutdown(wait=False)
+            raise
 
     def submit[**P, T](
         self, func: Callable[P, Coroutine[Any, Any, T]], /, *args: P.args, **kwargs: P.kwargs
@@ -586,28 +593,23 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         with self._condition as jobs:  # As submit() adds jobs on other threads
             return [task for job in jobs if (task := job.task) is not None]
 
-    @cached_property
-    def _cancellation_forwarder(self) -> Callable[[_ExecutorJob], None]:
+    def _forward_cancellations(self, future: _ExecutorJob):
         # Each call's future's first done callback (see submit()), made once, for all: cancelling the future cancels its
         # job's task, on the loop, as its start() and _job() run there too. So no lock: a call cancelled before its job
         # starts has no task yet, and its job never runs (see _job()).
+        if future.cancelled():
 
-        def forward_cancellations(future: _ExecutorJob):
-            if future.cancelled():
-
-                def cancel():
-                    # Not once the executor has interrupted it: an interrupt also cancelling what awaits it (the
-                    # main task's TaskGroup cancelling its children, say) mustn't cancel it twice.
-                    if (task := future.task) is not None and not (self._interrupted and task.cancelling()):
-                        task.cancel()
-                # TODO can we call it directly if on the loop?
-                # TODO can we have a util method that decides call-soon/threadsafe/local-call?
-                try:
-                    self._loop.call_soon_threadsafe(cancel)
-                except RuntimeError:  # The loop has closed
-                    pass
-
-        return forward_cancellations
+            def cancel():
+                # Not once the executor has interrupted it: an interrupt also cancelling what awaits it (the
+                # main task's TaskGroup cancelling its children, say) mustn't cancel it twice.
+                if (task := future.task) is not None and not (self._interrupted and task.cancelling()):
+                    task.cancel()
+            # TODO can we call it directly if on the loop?
+            # TODO can we have a util method that decides call-soon/threadsafe/local-call?
+            try:
+                self._loop.call_soon_threadsafe(cancel)
+            except RuntimeError:  # The loop has closed
+                pass
 
     def _fail(self, future: AwaitableFuture, error: BaseException | None = None) -> bool:
         # Else a copy of why the executor stopped, per future: each raise adds its frames to the exception's traceback
