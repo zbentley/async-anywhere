@@ -18,7 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "attrs>=22.1.0",
+    "attrs>=23.2.0",
     "sniffio>=1.3.0,<2.0",
 ]
 description = "Interact with your async code from any thread or event loop"
