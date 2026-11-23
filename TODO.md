@@ -18,16 +18,6 @@ EventLoopExecutor todos;
 - ditch the term interrupt from all docs
 - Better trio support
 
-# Comparison
-
-Vs anyio:
-- BlockingPortal's submit methods wait for the portal to accept the job, blocking the caller until it does. If the portal is blocked, this can cause hangs or deadlocks.
-- BlockingPortal is designed to run, well, *blocking* code. EventLoopExecutor is designed to run nonblocking/awaitable code concurrently (though it can run blocking code--necessarily in serial--as well).
-
-Use when: juggling multiple event loops, but they can be stopped/nonrunning at times (e.g. asgiref) and this breaks stuff like heartbeats.
-
-Sync code/don't use when: TPE, multiprocessing.
-
 # Docs to incorporate into executor
 
 - The job runs in a task of its own on the worker's loop, with a copy of the caller's context variables as they were when
@@ -44,69 +34,8 @@ Sync code/don't use when: TPE, multiprocessing.
 
 You're not wrong that the need is common. But the hard part was never calling a coroutine on another loop; that's five lines of `run_coroutine_threadsafe`. Look at what took the time: cancellation in both directions, what a synchronous timeout should mean, stop policy, refusal races, crashes, forks, context, the `TaskGroup` double cancel, and deciding what a waiter learns when things go wrong. Each of those is a policy choice, not a mechanism. A general-purpose library has to choose for everyone, and a wrong default is worse than none, so most stop at the easy part. The semantics are the product here, the way a connection pool's value is its failure handling, not `get()` and `put()`.
 
-**Why nothing serves it well**
-- **asyncio assumes one loop that owns the program.** Objects tied to a loop are meant to stay on it. The cross-thread tools (`run_coroutine_threadsafe`, `wrap_future`) date from 3.4–3.5. Structured cancellation (`TaskGroup`, `timeout()`, `uncancel()`) arrived in 3.11, and the two were never reconciled. That's why we kept leaning on private details: `_convert_future_exc` turning cancellations into asyncio's, no `context` parameter, no notion of "in flight". Anything built on them inherits the mismatch.
-- **Each camp routes around the problem.**
-  - An app that's fully async under ASGI creates its client at startup on its single loop, and the problem never arises.
-  - A sync app uses sync clients.
-  - Django is the big hybrid, and asgiref is built for the mirror image of your problem: *sync* singletons, like database connections, pinned to one thread (`thread_sensitive`).
-
-
-**Your point 5 is real, and the mechanism is worse than thread hops.** In the installed asgiref 3.11.1, `async_to_sync` called from a plain thread creates a new single-thread `ThreadPoolExecutor` for that call. It then runs `asyncio.run()` in it, so each call gets a new thread and a new loop, both torn down afterwards. The thread hop isn't the expensive part. The real cost is that every loop-bound client gets rebuilt each time. Your NextCloud shim does exactly that by design: a new loop means a new adapter, a new connection pool, a new TLS handshake, and the server capabilities fetched again. A thread hop costs microseconds; a handshake plus auth costs tens of milliseconds. A long-lived worker loop pays those once. (Those figures are order-of-magnitude estimates; I didn't measure them.)
-
-  - Async pools such as asyncpg's and `psycopg_pool.AsyncConnectionPool` are tied to their loop too. Hybrid apps usually run one pool per loop, or use a sync driver with a thread-safe pool.
-  - Routing a whole pool through one worker loop caps throughput at that one thread. That's fine for a single precious connection, but a bottleneck for a pool...so says the usual rationale. BUT we have found that it's often much MORE expensive to do connection-per-thread: many network service drivers support efficient multiplexing and request/response batching via `async` APIs. Using multiples of those, even in separate threads/event loops that never block on or coordinate with each other, can be less efficient at the protocol level than using one shared across all threads in a process.
-
-- The problem sits where three things meet: a hybrid app, an async-only client, and a scarce connection.
-
-**You're right that this is common. Where I was wrong is why nobody serves it.** It's common but rarely gets *named*. Most people hit it in places where a cheap workaround is tolerable. And the maintainers who own each piece have explicitly chosen a different answer. I read the starred items below in full; the rest I've seen only as search excerpts, so treat their details accordingly.
-
-## Who else has hit this
-
-**The same bug, reported against many libraries.** It always shows up as a "Future attached to a different loop" or "Event loop is closed" error:
-- redis-py [#3351](https://github.com/redis/redis-py/issues/3351): an async pool kept in Django settings fails as soon as two requests run concurrently.
-- httpx discussions [#2959](https://github.com/encode/httpx/discussions/2959) and [#3163](https://github.com/encode/httpx/discussions/3163).
-- openai-python [#1254](https://github.com/openai/openai-python/issues/1254).
-- channels_redis [#332](https://github.com/django/channels_redis/issues/332) and [#340](https://github.com/django/channels_redis/issues/340).
-- conductor-oss [#507](https://github.com/conductor-oss/python-sdk/issues/507): a cached client whose pool is bound to a dead loop doesn't report itself as closed, so it gets reused.
-- The asynch ClickHouse driver's [PR #21](https://github.com/Leechael/asynch/pull/21): Celery's `async_to_sync` hands pooled connections to a new loop on every run, so the PR reconnects when the running loop has changed.
-- SQLAlchemy [#5626](https://github.com/sqlalchemy/sqlalchemy/issues/5626), pytest-asyncio [#38](https://github.com/pytest-dev/pytest-asyncio/issues/38), and Prefect [#13181](https://github.com/PrefectHQ/prefect/issues/13181).
-
-**Performance and the bridging layer itself:**
 - ★ [Django Forum, "A datapoint for asgiref performance"](https://forum.djangoproject.com/t/a-datapoint-for-asgiref-performance/34633), 2024: 3–5 ms per wrapped call in production. The poster later said only `sync_to_async` was measured. Adam Johnson replied "I agree that is slow"; there's no fix yet.
-- asgiref [#194](https://github.com/django/asgiref/issues/194): `force_new_loop` "spins a new thread and event loop every time". It's also a hang after fork, the same hazard we handled.
-- I confirmed in the installed asgiref 3.11.1 that `async_to_sync` called from a plain thread starts a new single-thread executor and runs `asyncio.run()` in it, so each call gets a fresh thread and loop.
-
-**Celery, a big source of extra loops:**
-- [#3884](https://github.com/celery/celery/issues/3884), the long-standing request for asyncio tasks.
-- [Discussion #9058](https://github.com/celery/celery/discussions/9058): keep one loop thread so async resources aren't rebuilt on every task.
-- [PR #10634](https://github.com/celery/celery/pull/10634): one shared loop per worker process.
-- [Hatchet's "problems with Celery"](https://hatchet.run/blog/problems-with-celery).
-
-**People who built your design:**
-- ★ [death and gravity, "Running async code from sync code"](https://death.andgravity.com/asyncio-bridge), 2023, updated 2025. Same journey and same answer: a loop in a thread plus `run_coroutine_threadsafe`, published as `asyncio-thread-runner`. Signals and subprocesses are given up, and the conclusion is, verbatim, "I guess?"
-- fsspec's ["fsspecIO" thread](https://filesystem-spec.readthedocs.io/en/latest/_modules/fsspec/asyn.html). s3fs and gcsfs serve every caller through one shared loop thread, with special handling after fork. This is the largest production instance I found.
-- ★ Prefect: [`run_coro_as_sync`](https://docs.prefect.io/v3/api-ref/python/prefect-utilities-asyncutils) runs on a shared loop thread. Then in [#15008](https://github.com/PrefectHQ/prefect/issues/15008) they set out to migrate away from it, citing "complex event loop and threading logic that risks performance degradation and more difficult to inspect failure modes". The issue was closed in February 2026 and reopened in May.
-- [unsync](https://pypi.org/project/unsync/) (an ambient loop thread), [asyncio-loop-local](https://github.com/t184256/asyncio-loop-local) (the opposite strategy: one singleton per loop), and anyio's portals. I couldn't confirm the docs for anyio's `BlockingPortalProvider`, which shares one portal across threads.
-
-**Proposals to bend asyncio itself:**
 - nest_asyncio was [archived in 2024](https://github.com/erdewit/nest_asyncio/) and forked as [nest-asyncio2](https://github.com/larsoner/nest-asyncio2).
 - A re-entrant `asyncio.run()` was proposed in [CPython PR #93338](https://github.com/python/cpython/pull/93338), and earlier in [bpo-33523](https://bugs.python.org/issue33523) ("large interconnected codebases… in transition") and [bpo-22239](https://bugs.python.org/issue22239).
 - [CPython PR #141696](https://github.com/python/cpython/pull/141696) (2025) is still fixing how `_chain_future` handles cancellation for `run_coroutine_threadsafe`. The standard library's bridge is still being repaired.
-
-**The official stances:**
-- The httpx maintainers ([#3163](https://github.com/encode/httpx/discussions/3163)) want to move toward allowing only `async with` clients, so that clients "aren't used across different invocations of an event loop".
-- ★ The new [Python 3.15 page on asyncio and free threading](https://docs.python.org/3/library/asyncio-threading.html) says each thread "should have its own event loop which should not be shared across threads."
-- [SQLAlchemy's asyncio docs](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html) cover multiple loops by disposing the engine or using `NullPool`.
-
-**Wider commentary:** Armin Ronacher's [async posts](https://lucumr.pocoo.org/tags/async), Rob Blackbourn's [ASGI event loop gotcha](https://rob-blackbourn.medium.com/asgi-event-loop-gotcha-76da9715e36d), the [discord.py FAQ](https://discordpy.readthedocs.io/en/async/faq.html) (which recommends `run_coroutine_threadsafe`), and [django-asgi-lifespan](https://pypi.org/project/django-asgi-lifespan/0.2.0/), a third-party add-on because Django core doesn't support ASGI lifespan events.
-
-3. **Under ASGI, Django already hides much of the problem, which I hadn't checked before.** I verified in the asgiref source: when `sync_to_async` runs a sync view in a thread, it records the server's loop for that thread. An `async_to_sync` call from that thread then runs on that loop. So the whole request path in a worker shares one loop, and a client created lazily on it mostly works. New loops come from elsewhere:
-   - threads asgiref didn't start;
-   - management commands and cron jobs;
-   - Celery tasks;
-   - tests;
-   - startup code such as `AppConfig.ready()`, which runs outside any loop;
-   - WSGI deployments.
-
-   In those places, rebuilding the client every time is tolerable, unless connections are scarce. That's exactly your niche. So the pain is common, but severe pain is rarer, and severity is what produces libraries.
+- [discord.py FAQ](https://discordpy.readthedocs.io/en/async/faq.html) (which recommends `run_coroutine_threadsafe`), and [django-asgi-lifespan](https://pypi.org/project/django-asgi-lifespan/0.2.0/), a third-party add-on because Django core doesn't support ASGI lifespan events.

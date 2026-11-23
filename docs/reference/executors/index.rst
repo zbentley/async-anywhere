@@ -20,8 +20,9 @@ The executor documentation uses some terms (e.g. :term:`job` and :term:`main tas
             SingletonEventLoopExecutor
 
       - .. toctree::
-            :maxdepth: 4
+            :maxdepth: 1
 
+            When to Use <when_to_use>
             Cancellation <cancellation>
             Stopping <stopping>
             Fork Safety <fork_safety>
