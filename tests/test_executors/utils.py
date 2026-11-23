@@ -21,7 +21,6 @@ import pytest
 from async_anywhere.executors import EventLoopExecutor
 from async_anywhere.futures import AwaitableFuture, UncancellableAwaitableFuture
 
-
 # For tests whose short timings an overloaded machine can upset: reran on failure, but not after a hang
 TIMING_SENSITIVE = pytest.mark.flaky(reruns=2, rerun_except="from pytest-timeout")
 

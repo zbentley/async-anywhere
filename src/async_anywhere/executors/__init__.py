@@ -29,7 +29,6 @@ from async_anywhere.misc import wait_forever
 from async_anywhere.state_tracker import State
 from async_anywhere.state_tracker.waitable import WaitableStateTracker
 
-
 # Set by each executor in every context it runs code in, on its own thread: see EventLoopExecutor.current()
 _current_executor: ContextVar[EventLoopExecutor | None] = ContextVar("current_executor", default=None)
 # From Python 3.14, asyncio records who awaits what, which current_job() follows to a job: see its warning

@@ -12,10 +12,8 @@ from pathlib import Path
 
 import async_anywhere
 
-
 # Every module imported, then awaiting on asyncio, which is what asks whether it's in a trio task
-SCRIPT = textwrap.dedent(
-    """
+SCRIPT = textwrap.dedent("""
     import sys
     sys.modules["trio"] = sys.modules["anyio"] = None  # So that importing them raises, as if they weren't installed
     sys.path.insert(0, sys.argv[1])  # The source the tests import
@@ -38,8 +36,7 @@ SCRIPT = textwrap.dedent(
         return await pending, await worker.bridge(job)(), type(await worker.shutdown(wait=False)).__name__
 
     print(repr((modules, asyncio.run(main()))))
-    """
-)
+    """)
 
 
 def test_everything_imports_and_works_on_asyncio_without_trio_or_anyio():

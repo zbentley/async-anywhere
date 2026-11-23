@@ -12,7 +12,6 @@ import pytest
 from async_anywhere.exceptions import CleanStop, EventLoopExecutorStopped
 from tests.test_executors.utils import Tidy, Works, bridge, running
 
-
 pytestmark = pytest.mark.backends("asyncio", "uvloop", "trio")
 
 

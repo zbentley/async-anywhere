@@ -8,7 +8,6 @@ from typing import Coroutine
 
 from async_anywhere.futures import AwaitableFuture
 
-
 # Before 3.14, task factories may refuse eager_start: asyncio's own eager_task_factory does
 _factories_take_eager_start = sys.version_info >= (3, 14)
 

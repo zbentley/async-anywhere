@@ -18,7 +18,6 @@ from _pytest.threadexception import ThreadExceptionMeta, thread_exceptions as th
 from async_anywhere.executors import _fork_safety
 from async_anywhere.executors.singleton import SingletonEventLoopExecutor
 
-
 pytest.register_assert_rewrite("tests.test_executors.utils")  # Before test modules import it
 
 

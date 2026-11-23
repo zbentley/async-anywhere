@@ -22,7 +22,6 @@ from async_anywhere.executors import EventLoopExecutor
 from async_anywhere.futures import AwaitableFuture
 from tests.test_executors.utils import AWAITED_BY, BlocksLoop, Tidy, Works, bridge, running, stop_begun
 
-
 # Lifecycle
 
 

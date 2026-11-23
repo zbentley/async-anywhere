@@ -12,7 +12,6 @@ from sphinx.domains.python import PyClasslike
 import sphinx.util.typing
 from sphinx.util.typing import restify
 
-
 project = "async-anywhere"
 author = "Zac Bentley"
 copyright = "2026, Zac Bentley"  # noqa: A001

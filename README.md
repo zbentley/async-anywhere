@@ -1,6 +1,7 @@
 # async-anywhere
 
 [![Tests](https://img.shields.io/github/actions/workflow/status/zbentley/async-anywhere/test.yml?branch=main&label=tests)](https://github.com/zbentley/async-anywhere/actions/workflows/test.yml?query=branch%3Amain)
+[![Black](https://img.shields.io/github/actions/workflow/status/zbentley/async-anywhere/black.yml?branch=main&label=black)](https://github.com/zbentley/async-anywhere/actions/workflows/black.yml?query=branch%3Amain)
 [![PyPI](https://img.shields.io/pypi/v/async-anywhere)](https://pypi.org/project/async-anywhere/)
 [![Docs](https://img.shields.io/readthedocs/async-anywhere/latest)](https://async-anywhere.readthedocs.io/en/latest/)
 ![Python 3.13.3+](https://img.shields.io/badge/python-3.13.3%2B-blue)

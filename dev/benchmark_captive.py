@@ -14,7 +14,6 @@ from asgiref.sync import AsyncSingleThreadContext, SyncToAsync, async_to_sync, s
 
 from async_anywhere.executors import EventLoopExecutor
 
-
 DELAY = 0.01
 monotonic = time.monotonic
 

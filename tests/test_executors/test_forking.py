@@ -18,7 +18,6 @@ from async_anywhere.exceptions import CleanStop, EventLoopExecutorForked, EventL
 from async_anywhere.futures import AwaitableFuture
 from tests.test_executors.utils import Works, bridge, forked, reason, running, stop_begun
 
-
 pytestmark = pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
 
 
