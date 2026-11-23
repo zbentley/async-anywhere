@@ -8,19 +8,19 @@ authors = [
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
+  "Framework :: AsyncIO",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3",
-  "Topic :: Async Concurrency Management",
 ]
 dependencies = [
     "attrs>=25.4.0",
     "sniffio>=1.3.0,<2.0",
 ]
-description = "async_anywhere"
+description = "Interact with your async code from any thread or event loop"
 dynamic = ["version"]
-license = {file = "LICENSE"}
+license = "MIT"
+license-files = ["LICENSE"]
 name = "async_anywhere"
 readme = "README.md"
 requires-python = ">=3.14"
