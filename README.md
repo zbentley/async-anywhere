@@ -6,7 +6,7 @@
 
 `async-anywhere` is a set of tools which address common Python concurrency needs. It contains tools for bridging between any number of blocking threads and `async` event loops, tools for modelling state machines and state transitions, `fork(2)`-safety semantics for common concurrency primitives, and more.
 
-If you've run up against the limits of what `asgiref` supports, are struggling with code that needs to coordinate between multiple threads and event loops, dealing with deadlocks caused by interacting with `Future` objects after a `fork(2)`, or you need to maintain stateful/continuously-running async components of a larger program, this module may help!
+If you are struggling with code that needs to coordinate between multiple threads and event loops, dealing with deadlocks caused by interacting with `Future` objects after a `fork(2)`, or you need to maintain stateful/continuously-running async components of a larger program, this module may help!
 
 It includes:
 
@@ -33,7 +33,7 @@ Or via `uv`:
 uv add git+https://github.com/zbentley/async-anywhere.git@main
 ```
 
-`async-anywhere` is a pure-Python module with no compiled components, and aims to have as few pure-python transitive dependencies as possible.
+`async-anywhere` is a pure-Python module with no required compiled components, and aims to have as few pure-python transitive dependencies as possible.
 
 ### Compatibility
 
@@ -125,6 +125,19 @@ This module can be used in a variety of situations, including uses where `async`
 - `AwaitableFuture` is useful if you have code which heavily uses `asyncio.Future` or `concurrent.futures.Future` directly, and you want a friendlier (and more performant in many cases) API ([when to use `AwaitableFuture`](docs/reference/futures/when_to_use.md)).
 - `StateTracker` is useful for code that wants to model "state machines without hooks": code that transitions between states in a graph, but doesn't want to model all of its code as hooks on particular state transitions ([when to use `StateTracker`](docs/reference/state_tracker/when_to_use.md)).
 
+For how `EventLoopExecutor` compares to other tools that bridge synchronous and `async` code, see [Prior Art](docs/reference/executors/prior_art.md).
+
+## Fork Safety
+
+The different subcomponents of this module are fork-safe, in that they have documented semantics and avoid unexpected blocking or state corruption in the presence of code that uses `os.fork()`:
+
+- [`EventLoopExecutor` fork safety](docs/reference/executors/fork_safety.md).
+- [`AwaitableFuture` fork safety](docs/reference/futures/fork_safety.md).
+- [`StateTracker` fork safety](docs/reference/state_tracker/fork_safety.md).
+
+**Note** that care is still needed when forking in the presence of this module or concurrent Python code generally; read
+the above carefully in order to understand tradeoffs related to `fork(2)`.
+
 ## Development and Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md)
@@ -140,4 +153,3 @@ Code supplied by contributors will be reviewed regardless of provenance, but we 
 ## License
 
 `async-anywhere` is free and open source software. See `LICENSE` for more information.
-

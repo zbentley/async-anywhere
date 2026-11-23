@@ -23,6 +23,7 @@ The executor documentation uses some terms (e.g. :term:`job` and :term:`main tas
             :maxdepth: 1
 
             When to Use <when_to_use>
+            Prior Art <prior_art>
             Cancellation <cancellation>
             Stopping <stopping>
             Fork Safety <fork_safety>
