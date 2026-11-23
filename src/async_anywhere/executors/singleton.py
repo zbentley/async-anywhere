@@ -114,8 +114,14 @@ class SingletonEventLoopExecutor(Executor):
         If a previously-constructed instance is stopped or stopping, it is signalled to shut down (optionally
         :ref:`cancelling <cancellation>` any outstanding :term:`jobs`; see the ``cancel_futures_on_stopping_executors``
         constructor parameter for details) and a new instance is constructed. The new instance will not run any jobs or
-        its :term:`main task` until the old instance finishes shutting down."""
-        # fut = AwaitableFuture(cancel_pending_in_forked_child=True)
+        its :term:`main task` until the old instance finishes shutting down.
+
+        If called from :term:`code in an executor` managed by the invocant, and that executor is stopping, the executor
+        is returned rather than replaced, so jobs submitted from there are refused as they would be on that executor.
+        Note that this behavior may change in a future release."""
+        current = self._current_executor()
+        if current is not None and current.state is not EventLoopExecutor.Running:
+            return current  # Its replacement would wait for this code to finish, so couldn't run calls it awaits
         with self._wrapped_executor as executor:
             if executor is not None:
                 if executor.state is EventLoopExecutor.Running:
@@ -244,3 +250,6 @@ class SingletonEventLoopExecutor(Executor):
         See :py:meth:`EventLoopExecutor.bridge` for more details.
         """
         return update_wrapper(partial(self.submit, func), func)
+
+
+__all__ = ["SingletonEventLoopExecutor"]

@@ -49,3 +49,6 @@ async def wait_forever(*unused) -> Never:
     else:
         await asyncio.Future()
     raise RuntimeError("Invariant violation: wait_forever returned somehow!")
+
+
+__all__ = ["gather", "wait_forever"]

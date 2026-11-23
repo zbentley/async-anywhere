@@ -204,16 +204,14 @@ def test_async_futures_need_a_running_loop_unless_told_otherwise():
     current = asyncio.new_event_loop()
     asyncio.set_event_loop(current)
     try:
-        assert future.as_async_future(require_running_loop=False).get_loop() is current
+        assert future.as_async_future(require_event_loop=False).get_loop() is current
     finally:
         asyncio.set_event_loop(None)
         current.close()
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: require_running_loop refuses a closed loop, but not one that isn't running")
-def test_async_futures_refuse_a_given_loop_that_isnt_running(owner):
-    with pytest.raises(RuntimeError):
-        AwaitableFuture().as_async_future(owner)
+def test_async_futures_accept_a_given_loop_that_isnt_running(owner):
+    assert AwaitableFuture().as_async_future(owner).get_loop() is owner
 
 
 async def test_an_async_future_cancelled_after_the_future_finished_isnt_returned_again():
@@ -612,7 +610,7 @@ def test_a_forked_process_can_finish_futures_other_threads_were_using_as_it_fork
 @FORKS
 def test_a_forked_process_drops_async_futures_waits_on_futures_it_doesnt_cancel(owner):
     future = UncancellableAwaitableFuture()
-    waiting = future.as_async_future(owner, require_running_loop=False)
+    waiting = future.as_async_future(owner, require_event_loop=False)
     with forked() as f:
         if f.child:
             assert len(future._done_callbacks) == 0  # As its loop's copy here never runs

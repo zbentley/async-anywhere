@@ -22,7 +22,7 @@ class WaitableStateTracker[T](StateTracker, ABC):
 
         >>> class MyTracker(WaitableStateTracker):
         >>>     First = State(initial=True)
-        >>>     Second = State(soruces=[First])
+        >>>     Second = State(sources=[First])
         >>>     Third = State(sources=[Second])
 
         >>> t = MyTracker()
@@ -34,7 +34,7 @@ class WaitableStateTracker[T](StateTracker, ABC):
         >>> assert "foo" == await t.wait_for_state(MyTracker.Second)
         >>>
         >>> # Wait for either of two states
-        >>> await t.wait_for_state(MyTracker.Seconds, MyTracker.Third)
+        >>> await t.wait_for_state(MyTracker.Second, MyTracker.Third)
         >>>
         >>> # Wait for results synchronously, with a timeout
         >>> fut = t.wait_for_state(MyTracker.Third)
@@ -138,3 +138,6 @@ class WaitableStateTracker[T](StateTracker, ABC):
         for future in waiters:
             future.set_result_if_not_done(result)
         return old_state
+
+
+__all__ = ["WaitableStateTracker"]

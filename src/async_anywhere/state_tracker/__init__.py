@@ -272,7 +272,7 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
 
     __slots__ = ('_last_transition', '_condition')
 
-    def __init__(self, thread_safe: bool = True) -> None:
+    def __init__(self, *, thread_safe: bool = True) -> None:
         r"""
         Args:
             thread_safe: If True, a per-instance thread-recursive lock is held by :py:meth:`_transition`,
@@ -512,3 +512,6 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
             self._check_state(s)
         raise StateTrackerError(self, "Not in required state(s)", desired_state, *desired_states)
 
+
+
+__all__ = ["State", "StateTracker"]

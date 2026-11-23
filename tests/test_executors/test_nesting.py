@@ -126,7 +126,10 @@ async def test_an_executor_handed_out_by_the_one_that_made_it_can_be_used_from_a
             case _:
                 await outer.shutdown(wait=False, cancel_futures=outer_is == "interrupted")
         if outer_is != "running":
-            assert outer.state is outer.Shutdown and not outer._thread.is_alive()
+            assert outer.state is outer.Shutdown
+            # Shutdown is entered on its own thread, which then exits: soon, but not necessarily before this runs
+            await anyio.to_thread.run_sync(outer._thread.join, 2)
+            assert not outer._thread.is_alive()
             with pytest.raises(EventLoopExecutorStopped):
                 await outer.work()
 

@@ -239,7 +239,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             return self._completed_at
 
     def as_async_future(
-        self, loop: asyncio.AbstractEventLoop | None = None, require_running_loop=True
+        self, loop: asyncio.AbstractEventLoop | None = None, *, require_event_loop: bool = True
     ) -> asyncio.Future[T] | Awaitable[T]:
         r"""
         Returns an :py:obj:`asyncio.Future` or :doc:`Trio <trio:index>` awaitable linked to the invocant such that it
@@ -263,14 +263,14 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         Args:
             loop: The event loop to which the returned :py:obj:`asyncio.Future` should be bound, or None. If None,
                 either Trio will be used (if it is running) or the current asyncio event loop will be used.
-            require_running_loop: If ``loop`` is supplied, or if ``loop`` is None and Trio is not active, the event loop
-                used for the returned ``asyncio.Future`` must be running, otherwise an error will be raised by this
-                method. Just for convenience/runtime bug-checking, since it's easy in async Python to attach futures to
-                the wrong event loop or stopped event loops.
+            require_event_loop: If ``loop`` is None and Trio is not active, the event loop used for the returned
+                ``asyncio.Future`` must be running; if ``loop`` is supplied, it must not be closed. Otherwise an error
+                will be raised by this method. Just for convenience/runtime bug-checking, since it's easy in async
+                Python to attach futures to the wrong event loop or closed event loops.
 
         Raises:
-            :py:obj:`RuntimeError`: if ``require_running_loop=True`` and ``loop`` (or the current event loop, if Trio
-                is not active) is not running.
+            :py:obj:`RuntimeError`: if ``require_event_loop=True`` and either ``loop`` is closed, or ``loop`` is None
+                and no event loop is running (and Trio is not active).
 
         Returns:
             :**Outside of Trio**:
@@ -310,8 +310,8 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         if loop is None:
             if TrioRuntime.in_task(): # TODO remove dot lookup
                 return TrioAwaitableFuture(self, TrioRuntime.current_token())
-            loop = asyncio.get_running_loop() if require_running_loop else asyncio.get_event_loop()
-        elif require_running_loop and loop.is_closed():
+            loop = asyncio.get_running_loop() if require_event_loop else asyncio.get_event_loop()
+        elif require_event_loop and loop.is_closed():
             raise RuntimeError('Event loop is closed')
         return AsyncioAwaitableFuture(self, loop)
 
@@ -438,7 +438,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             del self
 
     def add_done_callback(
-        self, fn: Callable[[Self], Any], run_in_forked_child: bool = False, raise_if_failed_immediately=False,
+        self, fn: Callable[[Self], Any], *, run_in_forked_child: bool = False, raise_if_failed_immediately: bool = False,
     ) -> object:
         r"""
         Adds a callback which will be called when this future :term:`complete`\ s, and which is called immediately, here,

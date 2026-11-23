@@ -127,18 +127,17 @@ def test_a_replacements_idle_countdown_starts_once_it_runs():
         assert type(why) is CleanStop and why.args == ("(idle) expired",)
 
 
-@pytest.mark.parametrize("waits_for", ["a call", "a state"])
-def test_a_stopping_executors_calls_go_to_its_replacement_but_cant_wait_for_it_there(waits_for):
+def test_a_stopping_executors_calls_to_it_are_refused_rather_than_replacing_it():
     with running_singleton(cancel_futures_on_stopping_executors=False) as singleton:
-        started, go, made = AwaitableFuture(), AwaitableFuture(), []
+        started, go = AwaitableFuture(), AwaitableFuture()
 
         async def drains():
             started.set_result(None)
             await go
-            replacement = singleton.get()  # Made here, as this worker is stopping
-            made.append(singleton.submit(work))  # To it, though it runs nothing until this worker has finished
-            waited = made[0] if waits_for == "a call" else replacement.wait_for_state(replacement.Shutdown)
-            return replacement, waited.result(1)
+            assert singleton.get() is first  # Not replaced here: its replacement would wait for this to finish
+            with pytest.raises(EventLoopExecutorStopped):
+                singleton.submit(work)
+            return "refused"
 
         first = singleton.get()
         call = singleton.submit(drains)
@@ -146,10 +145,36 @@ def test_a_stopping_executors_calls_go_to_its_replacement_but_cant_wait_for_it_t
         first.shutdown(wait=False)  # A drain, which the call holds up
         first.wait_for_state(first.Stopping).result(5)
         go.set_result(None)
-        with pytest.raises(WouldBlock):
-            call.result(5)
-        assert made[0].result(5) == "done"  # Once first had finished
+        assert call.result(5) == "refused"
+        assert singleton.submit(work).result(5) == "done"  # From outside it, on a replacement
         assert singleton.get() is not first
+
+
+@pytest.mark.parametrize("cancel", [True, False], ids=["cancelling", "not cancelling"])
+def test_a_stopping_executors_main_cant_restart_it_by_calling_it_as_it_cleans_up(cancel):
+    seen = AwaitableFuture()
+
+    async def main(worker):
+        try:
+            await asyncio.Future()
+        finally:
+            try:
+                seen.set_result(await call())
+            except EventLoopExecutorStopped as error:
+                seen.set_result(error)
+
+    with running_singleton(main=main, cancel_futures_on_stopping_executors=cancel) as singleton:
+
+        @singleton.bridge
+        async def call():
+            return "called"
+
+        first = singleton.get()
+        first.submit(work).result(5)  # Its main has started
+        singleton.shutdown(wait=False).result(5)
+        assert isinstance(seen.result(0), EventLoopExecutorStopped)
+        with singleton._wrapped_executor as stored:
+            assert stored is first  # No replacement made
 
 
 def test_executors_it_has_replaced_are_let_go():
@@ -165,7 +190,7 @@ def test_executors_it_has_replaced_are_let_go():
         assert [ref() is None for ref in replaced] == [True, True, False]  # The last kept, until get() replaces it
 
 
-def test_callbacks_on_an_executors_thread_as_it_shuts_down_cant_wait_for_its_replacement():
+def test_callbacks_on_an_executors_thread_as_it_shuts_down_are_refused_rather_than_replacing_it():
     with running_singleton() as singleton:
         first, seen = singleton.get(), AwaitableFuture()
 
@@ -180,7 +205,7 @@ def test_callbacks_on_an_executors_thread_as_it_shuts_down_cant_wait_for_its_rep
         shutdown = first.wait_for_state(first.Shutdown)  # Held, as its waiter set holds it only weakly
         shutdown.add_done_callback(waits)
         first.shutdown(wait=False)
-        assert seen.result(5) is WouldBlock
+        assert issubclass(seen.result(5), EventLoopExecutorStopped)
 
 
 @pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="Interrupts the main thread with signal.pthread_kill()")

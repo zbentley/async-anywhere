@@ -139,9 +139,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
           at this time. To run Trio code in an executor, use Trio's facilities for :ref:`acting as a "guest" of another
           event loop <trio:guest-mode>`, e.g. :py:func:`trio.lowlevel.start_guest_run`.
     """
-    # TODO move trio docs into their own submod
 
-    # TODO: its validator's errors name _parent_task, not its "main" alias
     _parent_task: Callable[[EventLoopExecutor], Coroutine[Any, Any, Any]] = field(
         alias="main",
         default=wait_forever,
@@ -149,7 +147,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     )
     """The executor's :term:`main task`. A coroutine function (``async def``) that will be wrapped in an 
     :py:obj:`asyncio.Task` and started inside the executor during construction. When this function completes, the 
-    executor will stop itself via ``shutdown(wait=False)``; "main" otherwise is treated like a long-running :term:`job`
+    executor will stop itself via ``shutdown(wait=False, cancel_futures=True)``; "main" otherwise is treated like a long-running :term:`job`
     submitted to the executor. Jobs run on the executor will run concurrently with this function.
     
     The supplied callable will be invoked only from within a running event loop, and must take a single parameter: the
@@ -214,7 +212,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         An EventLoopExecutor is a WaitableStateTracker whose state moves linearly, thus:
         ``EventLoopExecutor.Running`` -> ``EventLoopExecutor.Stopping`` -> ``EventLoopExecutor.Shutdown``
 
-        After construction, executors will be in the Running state until something causes them to stop (see "Stopping"(TODO)).
+        After construction, executors will be in the Running state until something causes them to stop (see :ref:`stopping`).
 
         Users can observe and wait for state changes by using WaitableStateTracker's `wait_for_state` method, e.g.:
 
@@ -827,3 +825,5 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                 if stopping:
                     self._interrupt(False)
                 expiry.reset(self._idle_timeout)
+
+__all__ = ["EventLoopExecutor"]
