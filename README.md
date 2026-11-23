@@ -3,7 +3,7 @@
 [![Tests](https://img.shields.io/github/actions/workflow/status/zbentley/async-anywhere/test.yml?branch=main&label=tests)](https://github.com/zbentley/async-anywhere/actions/workflows/test.yml?query=branch%3Amain)
 [![PyPI](https://img.shields.io/pypi/v/async-anywhere)](https://pypi.org/project/async-anywhere/)
 [![Docs](https://img.shields.io/readthedocs/async-anywhere/latest)](https://async-anywhere.readthedocs.io/en/latest/)
-![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue)
+![Python 3.13.3+](https://img.shields.io/badge/python-3.13.3%2B-blue)
 [![Free-threaded: tested](https://img.shields.io/badge/free--threaded-3.14t%20tested-blue)](https://github.com/zbentley/async-anywhere/blob/main/.github/workflows/test.yml)
 ![Platform: Linux | macOS](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey)
 
@@ -38,8 +38,6 @@ uv add async-anywhere
 
 ## Examples
 
-The below examples assume a running asyncio event loop.
-
 ### `AwaitableFuture`
 
 ```python
@@ -47,11 +45,11 @@ from async_anywhere.futures import AwaitableFuture
 from threading import Thread
 import asyncio
 
+loop = asyncio.new_event_loop()
 fut = AwaitableFuture(
     # Don't allow calls to .result() if this loop is running; that'll deadlock.
-    prevent_blocking_wait_within=[asyncio.get_event_loop()],
+    prevent_blocking_wait_within=[loop],
 )
-# 
 fut.add_done_callback(lambda f: print(f"Future {f} is done!"), run_in_forked_child=True)
 
 async def foo():
@@ -64,7 +62,7 @@ Thread(target=asyncio.run, args=(foo(),)).start()
 # Set the result from anywhere:
 Thread(target=fut.set_result, args=("All done!",)).start()
 # Wait from event loops without a wrapper:
-asyncio.run(fut) 
+print(loop.run_until_complete(fut))
 # ... or synchronously:
 print(fut.result(timeout=1))
 ```
@@ -98,7 +96,7 @@ print(fut.result(timeout=2))  # ...or from blocking code.
 
 # Wait for executors to shut down from async code
 async def finish():
-    await executor.shutdown(wait=True, cancel_futures=True)
+    await executor.shutdown(wait=False, cancel_futures=True)
 
 
 # ...or synchronous code
