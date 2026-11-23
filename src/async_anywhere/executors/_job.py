@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from inspect import CORO_CREATED, getcoroutinestate
+from types import CoroutineType
 from typing import Coroutine
 
 from async_anywhere.futures import AwaitableFuture
+
+
+# Before 3.14, task factories may refuse eager_start: asyncio's own eager_task_factory does
+_factories_take_eager_start = sys.version_info >= (3, 14)
 
 
 class _ExecutorJob(AwaitableFuture):
@@ -21,14 +27,18 @@ class _ExecutorJob(AwaitableFuture):
     @property
     def task(self) -> asyncio.Task | None:
         """Its job's task, once started, until finished. Only on the executor's loop."""
-        return target if isinstance(target := self._target, asyncio.Task) else None
+        # Not isinstance(asyncio.Task): a task factory's tasks needn't be, as asyncio.tasks._PyTask isn't
+        return None if isinstance(target := self._target, CoroutineType) else target
 
     def start(self, loop: asyncio.AbstractEventLoop):
         # eager_start=True ensures that the job is queued to run before anything dispatched after it. Not setting this
         # leads to confusing priority semantics between jobs started inside the executor vs. outside.
         # Its first step runs in create_task(), so current_job() finds it by its coroutine meanwhile.
         try:
-            task = loop.create_task(self._target, eager_start=True)
+            if _factories_take_eager_start or loop.get_task_factory() is None:
+                task = loop.create_task(self._target, eager_start=True)
+            else:  # Started eagerly or not, as the factory decides
+                task = loop.create_task(self._target)
         except Exception as ex:  # A task factory refusing it, say: else its waiters hang, as asyncio only logs a callback's error
             if getcoroutinestate(job := self._target) != CORO_CREATED:  # Its first step ran, so _job() handled it
                 raise
@@ -48,7 +58,7 @@ class _ExecutorJob(AwaitableFuture):
         # mustn't keep alive
         target, self._target = self._target, None
         # Its coroutine, never started, so never will be: not running its first step, which this ends, eagerly
-        if target is not None and not isinstance(target, asyncio.Task) and getcoroutinestate(target) == CORO_CREATED:
+        if isinstance(target, CoroutineType) and getcoroutinestate(target) == CORO_CREATED:
             target.close()  # As Python warns about coroutines dropped unawaited
             return True
         return False

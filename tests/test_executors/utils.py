@@ -24,6 +24,10 @@ from async_anywhere.futures import AwaitableFuture, UncancellableAwaitableFuture
 # For tests whose short timings an overloaded machine can upset: reran on failure, but not after a hang
 TIMING_SENSITIVE = pytest.mark.flaky(reruns=2, rerun_except="from pytest-timeout")
 
+# From Python 3.14, asyncio records who awaits what, so current_job() finds jobs from tasks they await: before, from
+# their own tasks alone
+AWAITED_BY = hasattr(asyncio.Future, "_asyncio_awaited_by")
+
 
 class bridge:
     """Bridges a method of a Harness to its worker, as harness.method(...), marking each call as its job starts."""

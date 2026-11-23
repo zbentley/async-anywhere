@@ -6,6 +6,8 @@ import asyncio
 import concurrent.futures
 import contextvars
 import gc
+import logging
+import sys
 import threading
 import time
 import traceback
@@ -17,7 +19,7 @@ import pytest
 from async_anywhere.exceptions import CleanStop, StateTrackerError, EventLoopExecutorStopped, WouldBlock
 from async_anywhere.executors import EventLoopExecutor
 from async_anywhere.futures import AwaitableFuture
-from tests.test_executors.utils import BlocksLoop, Tidy, Works, bridge, running, stop_begun
+from tests.test_executors.utils import AWAITED_BY, BlocksLoop, Tidy, Works, bridge, running, stop_begun
 
 
 # Lifecycle
@@ -620,7 +622,7 @@ async def test_current_job_is_a_calls_future_in_it_and_in_tasks_it_awaits():
             ]
 
         call = job()
-        assert [found is call for found in await call] == [True] * 5
+        assert [found is call for found in await call] == [True] + [AWAITED_BY] * 4  # Else None, from other tasks
 
 
 async def test_current_job_is_none_outside_calls_and_what_they_await():
@@ -693,7 +695,7 @@ async def test_calls_whose_tasks_cant_be_made_fail_with_why_and_never_run():
     make_loop = EventLoopExecutor.__init__.__kwdefaults__["loop_factory"]  # asyncio's or uvloop's: see conftest.py
 
     def refuse_jobs(loop, coro, **kwargs):
-        if refusing and kwargs.get("eager_start"):  # Only jobs' tasks start eagerly: see _ExecutorJob.start()
+        if refusing and coro.__qualname__.startswith("EventLoopExecutor._job["):  # Its jobs': see submit()
             raise RuntimeError("refused")
         return asyncio.Task(coro, loop=loop, **kwargs)
 
@@ -717,6 +719,65 @@ async def test_calls_whose_tasks_cant_be_made_fail_with_why_and_never_run():
         with pytest.raises(RuntimeError, match=r"^refused$"):
             await drained
         assert ran == ["made"]
+
+
+def failed_construction(logger):
+    """Joins the threads of executors named for `logger` whose construction failed: they end as soon as it does."""
+    for thread in threading.enumerate():  # Ending without an unhandled error, which pytest would fail the test over
+        if thread.name == logger.name:
+            thread.join(5)
+            assert not thread.is_alive()
+
+
+def test_executors_on_loops_that_cant_make_tasks_fail_as_made_with_why():
+    make_loop = EventLoopExecutor.__init__.__kwdefaults__["loop_factory"]
+    logger = logging.getLogger(f"{__name__}.cant_make_tasks")  # Its thread's name too
+
+    def refuse(loop, coro, **kwargs):
+        coro.close()  # As Python warns about coroutines dropped unawaited
+        raise RuntimeError("refused")
+
+    def loop_factory():
+        loop = make_loop()
+        loop.set_task_factory(refuse)
+        return loop
+
+    with pytest.raises(EventLoopExecutorStopped, match=r"main task raised RuntimeError\('refused'\)") as raised:
+        EventLoopExecutor(loop_factory=loop_factory, logger=logger)
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    failed_construction(logger)
+
+
+def python_task_loop_factory():
+    # Making the tasks asyncio.Task's pure-Python twin does, as nest_asyncio makes every task. Not an asyncio.Task, and
+    # on 3.14, not seen by asyncio.current_task()
+    make_loop = EventLoopExecutor.__init__.__kwdefaults__["loop_factory"]
+    loop = make_loop()
+    loop.set_task_factory(lambda loop, coro, **kwargs: asyncio.tasks._PyTask(coro, loop=loop, **kwargs))
+    return loop
+
+
+@pytest.mark.skipif(sys.version_info >= (3, 14), reason="asyncio.current_task() can't see them from 3.14")
+async def test_calls_run_and_drain_as_ever_on_loops_making_pure_python_tasks():
+    async with running(loop_factory=python_task_loop_factory) as worker:
+
+        @worker.bridge
+        async def finds_itself():
+            await asyncio.sleep(0)
+            return worker.current_job()
+
+        call = finds_itself()
+        assert await call is call
+        assert type(await worker.shutdown(wait=False)).__name__ == "CleanStop"  # Its call gone: not left waiting on it
+
+
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="asyncio.current_task() sees them before 3.14")
+def test_executors_on_loops_making_tasks_current_task_cant_see_fail_as_made_with_why():
+    logger = logging.getLogger(f"{__name__}.current_task_cant_see")
+    with pytest.raises(EventLoopExecutorStopped, match=r"tasks asyncio\.current_task\(\) can't see") as raised:
+        EventLoopExecutor(loop_factory=python_task_loop_factory, logger=logger)
+    assert isinstance(raised.value.__cause__, TypeError)
+    failed_construction(logger)
 
 
 class FailsCleanup(Works):

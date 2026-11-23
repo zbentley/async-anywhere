@@ -27,6 +27,8 @@ from async_anywhere.state_tracker.waitable import WaitableStateTracker
 
 # Set by each executor in every context it runs code in, on its own thread: see EventLoopExecutor.current()
 _current_executor: ContextVar[EventLoopExecutor | None] = ContextVar("current_executor", default=None)
+# From Python 3.14, asyncio records who awaits what, which current_job() follows to a job: see its warning
+_awaited_by: Final = hasattr(asyncio.Future, "_asyncio_awaited_by")
 
 
 @final
@@ -451,9 +453,22 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             *dispatched* from a job but is not directly *called* by it (e.g. if the job backgrounds an ``asyncio.Task``
             or runs work on a thread via ``asgiref`` or ``asyncio.to_thread``), this method returns None.
 
-            Cancelling the returned future cancels the job, just as its caller cancelling it would. Do not call
-            ``set_result()`` or ``set_exception()`` on it: the job's caller would get that result or error, and the
-            job's own outcome would be logged as an error once the job ends.
+            Cancelling the returned future cancels the job, just as its caller cancelling it would.
+
+        Warning:
+            This method may spuriously return None on certain Pythons and event loops, when called from within an
+            executor job's subtasks or multiplexers (:py:func:`asyncio.gather`, :py:func:`asyncio.wait`,
+            :py:func:`asyncio.shield` or an :py:class:`asyncio.TaskGroup`).
+
+            :py:meth:`current`, on the other hand can be trusted to always return the current active executor, if any.
+            Prefer that method over this one unless you really need a best-effort way of getting a handle to the current
+            job.
+
+            This method is particularly unreliable on Python 3.13, and in the presence of ``as_completed()``. On Python
+            3.14 and later, it does a better job, but may still spuriously return None from job subtasks due to CPython
+            bugs (`python/cpython#156523 <https://github.com/python/cpython/issues/156523>`_,
+            `python/cpython#161766 <https://github.com/python/cpython/issues/161766>`_,
+            `python/cpython#162061 <https://github.com/python/cpython/issues/162061>`_).
         """
         loop = asyncio._get_running_loop()
         if loop is not self._loop or (task := asyncio.current_task(loop)) is None:  # Jobs are tasks on this loop
@@ -465,7 +480,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                     return job
                 if (started := job.task) is not None:
                     calls[started] = job
-        if (future := calls.get(task)) is not None:
+        if (future := calls.get(task)) is not None or not _awaited_by:  # Before 3.14, a job's own task alone
             return future
         # Else a job awaiting this, maybe via other tasks: asyncio records who awaits what, for capture_call_graph()
         seen, todo = {task}, [task]
@@ -691,8 +706,13 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
     def _main(self):
         async def run():
+            if (task := asyncio.current_task()) is None:  # Else every job would fail, its task unknown: see _job()
+                raise TypeError(
+                    "loop_factory made a loop whose tasks asyncio.current_task() can't see, such as "
+                    f"asyncio.tasks._PyTask from Python 3.14 (as nest_asyncio makes): {self._loop!r}"
+                )
             self._expiry.reset(self._idle_timeout)  # "Reset that clock!" - Idris Elba
-            self._runner.set_result(asyncio.current_task())
+            self._runner.set_result(task)
             await self._parent_task(self)
 
         loop = self._loop
@@ -708,12 +728,13 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             if stopping:
                 # The main task ending was the stop, so it interrupts calls, as shutdown(cancel_futures=True) would
                 self._interrupt(True)
-            # One turn runs the start()s posted so far, whose calls _job() fails as interrupted; _finalize() fails any never started
-            loop.run_until_complete(asyncio.sleep(0))
-            # Let calls still in flight finish (or, if they were interrupted, clean up) before re-cancelling them and
-            # aborting them.
-            if len(tasks := self._tasks) > 0:
-                loop.run_until_complete(asyncio.wait(tasks))
+            if self._runner.done():  # Else the main task never ran, so nothing could be submitted: nothing to drain
+                # One turn runs the start()s posted so far, whose calls _job() fails as interrupted; _finalize() fails any never started
+                loop.run_until_complete(asyncio.sleep(0))
+                # Let calls still in flight finish (or, if they were interrupted, clean up) before re-cancelling them and
+                # aborting them.
+                if len(tasks := self._tasks) > 0:
+                    loop.run_until_complete(asyncio.wait(tasks))
         except BaseException as exc:
             # Should never happen, except for a KeyboardInterrupt or SystemExit from the main task or a call: asyncio
             # lets those escape the loop from any task. Record the crash (logging it, if it's the first stop), so that
@@ -721,6 +742,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             self._unclean_stop("the executor's event loop crashed", exc)
             raise
         finally:
+            ran = self._runner.done()  # Else nothing ran on the loop to clean up after, nor might its tasks be made
             # If run() couldn't launch at all for whatever reason (e.g. a user-supplied event loop that could not be
             # run), fail the runner future. The constructor waits on that future as a signal that the executor's ready;
             # failures here will crash the constructor with an informative error.
@@ -729,7 +751,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # sockets, and closing it may unregister fds from the epoll it shares with the parent
             forked = self._forked
             try:
-                if not forked:
+                if ran and not forked:
                     # TODO log the non-call/non-run tasks this cancels
                     tasks = asyncio.all_tasks(loop)
                     # Calls among them (after a crash) tell their waiters why: see _job()
@@ -758,7 +780,10 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         # doesn't interrupt, once no calls are left in flight) only if the executor hasn't interrupted anything yet.
         if again or not self._interrupted:
             self._interrupted.set()  # Even with none to cancel, so calls not yet started never start: see _job()
-            for task in {self._runner.result(timeout=0), *self._tasks}:
+            tasks = self._tasks
+            if self._runner.done() and self._runner.exception(timeout=0) is None:  # Else the main task never ran
+                tasks.append(self._runner.result(timeout=0))
+            for task in tasks:
                 task.cancel()
 
 
