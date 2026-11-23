@@ -266,7 +266,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         # TODO: setting the executor in the context early/eagerly via the context= argument to Thread causes reference
         # loops, GC load, and potentially-immortal stopped executor instances, since thread context objects are not
         # garbage collected when we need them to be.
-        rv = Thread(target=self._main, name=self.logger.name, daemon=True, context=context)
+        rv = Thread(target=context.run, args=(self._main,), name=self.logger.name, daemon=True)
         self._blocking_checker.add(rv)  # Prevent blocking waits on the captive thread
         return rv
 

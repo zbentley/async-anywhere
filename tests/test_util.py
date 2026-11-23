@@ -17,6 +17,16 @@ from async_anywhere.exceptions import WouldBlock
 from tests.test_executors.utils import forked
 
 
+def locked(lock) -> bool:
+    """RLock.locked(), which Python has only from 3.14: held by this thread, or by another, so not free to take."""
+    if lock._is_owned():
+        return True
+    if lock.acquire(blocking=False):
+        lock.release()
+        return False
+    return True
+
+
 def interrupting(method):
     """Wraps method, raising KeyboardInterrupt (with what it returned) as it returns, as a signal handler can."""
 
@@ -31,7 +41,7 @@ def test_entering_lets_go_of_a_lock_taken_as_a_signal_handler_raises():
     lock, protected.acquire = protected.acquire.__self__, interrupting(protected.acquire)
     with pytest.raises(KeyboardInterrupt, match="True"), protected:  # So taken
         pass
-    assert not lock.locked()
+    assert not locked(lock)
 
 
 def test_entering_leaves_alone_a_lock_whose_wait_for_another_thread_is_interrupted():
@@ -55,7 +65,7 @@ def test_conditions_interrupted_as_wait_lets_go_still_raise_and_leave_their_lock
     # RuntimeError: from __exit__ letting go of what's let go already, with the KeyboardInterrupt as its context
     with pytest.raises((KeyboardInterrupt, RuntimeError)), condition:
         condition.wait()
-    assert not lock.locked()
+    assert not locked(lock)
 
 
 def test_condition_protected_has_every_field_threading_condition_sets():
@@ -79,10 +89,10 @@ def test_condition_protected_waits_with_its_lock_held_reentrantly():
     while len(condition._waiters) == 0:  # Until it's waiting
         time.sleep(0.001)
     with condition:
-        assert condition._is_owned() and condition.locked()
+        assert condition._is_owned() and locked(condition._lock)
         condition.notify()
     waiter.join(5)
-    assert woke == [True, 2] and not condition.locked()
+    assert woke == [True, 2] and not locked(condition._lock)
 
 
 def test_condition_protected_holds_its_lock_while_entered():
@@ -92,14 +102,14 @@ def test_condition_protected_holds_its_lock_while_entered():
         assert not elsewhere.submit(protected.acquire, blocking=False).result()  # Other threads wait for it
         with protected as reentered:  # But not its own: it's recursive
             assert reentered is value
-    assert not protected.acquire.__self__.locked()
+    assert not locked(protected.acquire.__self__)
 
 
 def test_condition_protected_releases_its_lock_as_errors_leave():
     protected = ConditionProtected(None)
     with pytest.raises(KeyError), protected:
         raise KeyError
-    assert not protected.acquire.__self__.locked()
+    assert not locked(protected.acquire.__self__)
 
 
 def test_condition_protected_values_are_replaced_for_later_entries():
@@ -140,7 +150,7 @@ def test_a_forked_process_resets_conditions_other_threads_held_or_waited_on_but_
             assert len(waited_on._waiters) == 0  # Its thread isn't here: notify() mustn't count it
             assert own._is_owned()  # Still this thread's, so it lets go as usual
             own.release()
-            assert not own._lock.locked()
+            assert not locked(own._lock)
     own.release()
     release.set()
     with waited_on:

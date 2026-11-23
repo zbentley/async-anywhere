@@ -25,7 +25,19 @@ class _ExecutorJob(AwaitableFuture):
         # eager_start=True ensures that the job is queued to run before anything dispatched after it. Not setting this
         # leads to confusing priority semantics between jobs started inside the executor vs. outside.
         # Its first step runs in create_task(), so current_job() finds it by its coroutine meanwhile.
-        task = loop.create_task(self._target, eager_start=True)
+        try:
+            task = loop.create_task(self._target, eager_start=True)
+        except Exception as ex:  # A task factory refusing it, say: else its waiters hang, as asyncio only logs a callback's error
+            if getcoroutinestate(job := self._target) != CORO_CREATED:  # Its first step ran, so _job() handled it
+                raise
+            reported = self.set_exception_if_not_done(ex)
+            try:
+                job.send(None)  # _job(), seeing its future done, just does its cleanup: no await, so it returns at once
+            except StopIteration:
+                pass
+            if not reported:  # Cancelled by its caller first: asyncio logs it, as it would a task's unretrieved error
+                raise
+            return
         if not task.done():  # Else it ended in its first step, and was finish()ed already
             self._target = task
 

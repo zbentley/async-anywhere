@@ -678,6 +678,37 @@ async def test_calls_cancelled_before_they_start_never_run():
         assert ran == ["after"]
 
 
+async def test_calls_whose_tasks_cant_be_made_fail_with_why_and_never_run():
+    refusing, ran = True, []
+    make_loop = EventLoopExecutor.__init__.__kwdefaults__["loop_factory"]  # asyncio's or uvloop's: see conftest.py
+
+    def refuse_jobs(loop, coro, **kwargs):
+        if refusing and kwargs.get("eager_start"):  # Only jobs' tasks start eagerly: see _ExecutorJob.start()
+            raise RuntimeError("refused")
+        return asyncio.Task(coro, loop=loop, **kwargs)
+
+    def loop_factory():
+        loop = make_loop()
+        loop.set_task_factory(refuse_jobs)
+        return loop
+
+    async with running(loop_factory=loop_factory) as worker:
+        @worker.bridge
+        async def record(label):
+            ran.append(label)
+
+        with pytest.raises(RuntimeError, match=r"^refused$"):
+            await record("refused")
+        refusing = False
+        await record("made")
+        refusing = True
+        drained = record("refused as the executor drains")
+        assert type(await worker.shutdown(wait=False)).__name__ == "CleanStop"  # Not left waiting for it forever
+        with pytest.raises(RuntimeError, match=r"^refused$"):
+            await drained
+        assert ran == ["made"]
+
+
 class FailsCleanup(Works):
     @bridge
     async def failing_cleanup(self):
