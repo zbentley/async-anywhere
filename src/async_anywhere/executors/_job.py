@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 from inspect import CORO_CREATED, getcoroutinestate
 from typing import Coroutine

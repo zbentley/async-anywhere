@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # Register its fork handler first, so that it runs first (os.register_at_fork() runs them in order):
 import async_anywhere.futures  # noqa: F401
 from async_anywhere._util.fork_safety import ForkSafeInstanceTracker

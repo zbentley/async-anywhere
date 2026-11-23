@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Awaitable, TYPE_CHECKING
 
 import attr

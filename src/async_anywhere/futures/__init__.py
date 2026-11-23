@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import concurrent.futures
 from concurrent.futures._base import CANCELLED_AND_NOTIFIED, FINISHED, PENDING, RUNNING

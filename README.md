@@ -1,5 +1,12 @@
 # async-anywhere
 
+[![Tests](https://img.shields.io/github/actions/workflow/status/zbentley/async-anywhere/test.yml?branch=main&label=tests)](https://github.com/zbentley/async-anywhere/actions/workflows/test.yml?query=branch%3Amain)
+[![PyPI](https://img.shields.io/pypi/v/async-anywhere)](https://pypi.org/project/async-anywhere/)
+[![Docs](https://img.shields.io/readthedocs/async-anywhere/latest)](https://async-anywhere.readthedocs.io/en/latest/)
+![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue)
+[![Free-threaded: tested](https://img.shields.io/badge/free--threaded-3.14t%20tested-blue)](https://github.com/zbentley/async-anywhere/blob/main/.github/workflows/test.yml)
+![Platform: Linux | macOS](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey)
+
 `async-anywhere` is a set of tools which address common Python concurrency needs. It contains tools for bridging between any number of blocking threads and `async` event loops, tools for modelling state machines and state transitions, `fork(2)`-safety semantics for common concurrency primitives, and more.
 
 If you are struggling with code that needs to coordinate between multiple threads and event loops, dealing with deadlocks caused by interacting with `Future` objects after a `fork(2)`, or you need to maintain stateful/continuously-running async components of a larger program, this module may help!
@@ -15,7 +22,7 @@ See "Examples" below, or [the API documentation](https://async-anywhere.readthed
 
 ## Installation and Requirements
 
-This module can be installed from [PyPI](https://pypi.org/project/async-anywhere/), with `pip`:
+This module requires Python 3.13.3+, and can be installed from [PyPI](https://pypi.org/project/async-anywhere/), with `pip`:
 
 ```console
 pip install async-anywhere
@@ -28,18 +35,6 @@ uv add async-anywhere
 ```
 
 `async-anywhere` is a pure-Python module with no required compiled components, and aims to have as few pure-python transitive dependencies as possible.
-
-### Compatibility
-
-This module is tested and used in production on Linux and MacOS systems. BSDs are likely supported, but tests on those systems have not yet been performed. Windows support is planned.
-
-`async-anywhere` supports:
-
-- Code written for `asyncio`.
-- Code written for `trio`.
-- Code written for `anyio`.
-- Code using `AbstractEventLoop`, including `uvloop`.
-- Correct, minimally locking operations with or without the Global Interpreter Lock (GIL).
 
 ## Examples
 
@@ -112,6 +107,18 @@ executor.shutdown(wait=True, cancel_futures=True).result()
 ```
 
 `EventLoopExecutor` is ideal for integrating third-party `async` code that wants to own the event loop/entry point (e.g. [`discordpy`](https://discordpy.readthedocs.io/en/stable/quickstart.html)) into a larger program that may not be `async`, may block the event loop, or may use multiple event loop runtimes. Useful when you need more than `asgiref.async_to_sync` can provide.
+
+### Compatibility
+
+This module is tested and used in production on Linux and MacOS systems. BSDs are likely supported, but tests on those systems have not yet been performed. Windows support is planned.
+
+`async-anywhere` supports:
+
+- Code written for `asyncio`.
+- Code written for `trio`, though Trio support is a bit fussy to use and will be improved in a future release.
+- Code written for `anyio`.
+- Code using `AbstractEventLoop`, including `uvloop`.
+- Correct, minimally locking operations with or without the Global Interpreter Lock (GIL).
 
 ## When should you use this module?
 

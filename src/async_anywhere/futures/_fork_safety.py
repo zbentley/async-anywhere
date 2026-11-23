@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from weakref import WeakSet
 
 from async_anywhere._util.fork_safety import ForkSafeInstanceTracker
