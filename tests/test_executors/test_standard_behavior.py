@@ -1,5 +1,6 @@
 """EventLoopExecutor as it runs: constructing workers, using them as executors, bridging functions, and how calls compare with
 awaiting coroutines."""
+
 from __future__ import annotations
 
 import asyncio
@@ -199,7 +200,11 @@ async def test_submit_runs_a_coroutine_function_with_its_arguments():
 
     async with running() as worker:
         assert await worker.submit(echo, "f", 1, key="v") == ("f", (1,), {"key": "v"})
-        assert await worker.submit(echo, fn="as a keyword") == ("as a keyword", (), {})  # submit()'s own is positional-only
+        assert await worker.submit(echo, fn="as a keyword") == (
+            "as a keyword",
+            (),
+            {},
+        )  # submit()'s own is positional-only
 
 
 async def test_jobs_are_named_after_their_function():
@@ -234,7 +239,9 @@ def test_maps_timeout_cancels_calls_in_flight():
         results = worker.map(worker.sleeps, [10], timeout=0.05)
         with pytest.raises(TimeoutError):
             next(results)
-        worker.reached("cancelled").result(1)  # Unlike a thread pool's, a call's future can be cancelled once it's running
+        worker.reached("cancelled").result(
+            1
+        )  # Unlike a thread pool's, a call's future can be cancelled once it's running
 
 
 def test_with_shuts_the_executor_down_as_it_exits_letting_calls_finish():
@@ -368,7 +375,9 @@ async def test_blocking_waits_on_the_executors_thread_are_refused_outside_its_lo
     kwargs = {
         "nothing": {},
         "loops": {"prevent_blocking_wait_within": (other,)},
-        "any loop": {"prevent_blocking_wait_within": (AwaitableFuture.AnyEventLoop,)},  # Outside any loop, this alone refuses nothing
+        "any loop": {
+            "prevent_blocking_wait_within": (AwaitableFuture.AnyEventLoop,)
+        },  # Outside any loop, this alone refuses nothing
     }[given]
     async with running(Works) as worker:
         call = worker.waits_for(AwaitableFuture())  # In flight, so pending until the stop interrupts it
@@ -487,7 +496,8 @@ async def test_calls_async_futures_are_cancelled_and_interrupted_as_awaiting_the
         stopping = worker.shutdown(wait=False, cancel_futures=True)
         with pytest.raises(
             concurrent.futures.CancelledError,
-            check=lambda error: not isinstance(error, asyncio.CancelledError) and isinstance(error.__cause__, EventLoopExecutorStopped),
+            check=lambda error: not isinstance(error, asyncio.CancelledError)
+            and isinstance(error.__cause__, EventLoopExecutorStopped),
         ):
             await interrupted.as_async_future()
         await stopping
@@ -720,6 +730,7 @@ async def test_calls_whose_tasks_cant_be_made_fail_with_why_and_never_run():
         return loop
 
     async with running(loop_factory=loop_factory) as worker:
+
         @worker.bridge
         async def record(label):
             ran.append(label)

@@ -1,5 +1,6 @@
 """SingletonEventLoopExecutor's workers, made as they're needed, each replacement running nothing until the worker it
 replaces has finished, and its shutdown()."""
+
 from __future__ import annotations
 
 import asyncio
@@ -294,7 +295,9 @@ def test_a_forked_process_can_use_it_though_a_thread_that_isnt_there_held_its_lo
         try:
             with forked() as f:
                 if f.child:
-                    assert singleton.submit(work).result(5) == "done"  # Rather than waiting for a lock no one here holds
+                    assert (
+                        singleton.submit(work).result(5) == "done"
+                    )  # Rather than waiting for a lock no one here holds
                     singleton.shutdown()
         finally:
             release.set_result(None)
@@ -360,7 +363,9 @@ def test_shutdown_cant_wait_on_the_executors_own_thread():
             singleton.shutdown()  # wait=True
 
         worker = singleton.get()
-        with pytest.raises(WouldBlock, match=r"Waiting for <bound method EventLoopExecutor\.shutdown .* would deadlock in <Thread"):
+        with pytest.raises(
+            WouldBlock, match=r"Waiting for <bound method EventLoopExecutor\.shutdown .* would deadlock in <Thread"
+        ):
             singleton.submit(stop_waiting).result(5)
         assert worker.state is worker.Running and singleton.get() is worker  # Refusing to wait stopped nothing
 

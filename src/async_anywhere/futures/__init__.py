@@ -86,7 +86,9 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     # So once a lock-free read of _last_transition finds it done, rereading it for that state's data can't tear
     _Pending: Final[State] = State(initial=True)
     _Running: Final[State] = State(sources=_Pending)
-    _Cancelled: Final[State] = State(sources=(_Pending, _Running))  # From Running only in a forked process: see _fork_safety
+    _Cancelled: Final[State] = State(
+        sources=(_Pending, _Running)
+    )  # From Running only in a forked process: see _fork_safety
     _Succeeded: Final[State] = State(sources=(_Pending, _Running))  # Its transition's data is the result
     _Failed: Final[State] = State(sources=(_Pending, _Running))  # Its transition's data is the exception
 
@@ -95,14 +97,15 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     BlockingNotAllowed = staticmethod(BlockingNotAllowed)
 
     __slots__ = (
-        '_blocking_checker',  # Refuses blocking waits where they'd deadlock (see BlockingChecker), or None
-        '_cancel_pending_in_forked_child',
-        '_transform_result',
-        '_completed_at',
-        '_exception_tb', # See set_exception()
-        '_done_callbacks',
-        '_waiters',
+        "_blocking_checker",  # Refuses blocking waits where they'd deadlock (see BlockingChecker), or None
+        "_cancel_pending_in_forked_child",
+        "_transform_result",
+        "_completed_at",
+        "_exception_tb",  # See set_exception()
+        "_done_callbacks",
+        "_waiters",
     )
+
     def __init__(
         self,
         *,
@@ -310,11 +313,11 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
 
         """
         if loop is None:
-            if TrioRuntime.in_task(): # TODO remove dot lookup
+            if TrioRuntime.in_task():  # TODO remove dot lookup
                 return TrioAwaitableFuture(self, TrioRuntime.current_token())
             loop = asyncio.get_running_loop() if require_event_loop else asyncio.get_event_loop()
         elif require_event_loop and loop.is_closed():
-            raise RuntimeError('Event loop is closed')
+            raise RuntimeError("Event loop is closed")
         return AsyncioAwaitableFuture(self, loop)
 
     def __await__(self):
@@ -358,11 +361,16 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     def _get_result(self, expect_success: bool, timeout: float | None):
         try:
             match self._last_transition[1]:  # Rereads below can't tear: see the note above _Pending
-                case self._Succeeded if expect_success: return self._last_transition[2]
-                case self._Succeeded: return None
-                case self._Failed if expect_success: raise self._last_transition[2].with_traceback(self._exception_tb)
-                case self._Failed: return self._last_transition[2]
-                case self._Cancelled: raise concurrent.futures.CancelledError
+                case self._Succeeded if expect_success:
+                    return self._last_transition[2]
+                case self._Succeeded:
+                    return None
+                case self._Failed if expect_success:
+                    raise self._last_transition[2].with_traceback(self._exception_tb)
+                case self._Failed:
+                    return self._last_transition[2]
+                case self._Cancelled:
+                    raise concurrent.futures.CancelledError
             if self._blocking_checker is not None and (timeout is None or timeout > 0):  # Else it only polls
                 self._blocking_checker.check(self)
             # Convert positive infinity to None/wait-forever
@@ -440,7 +448,11 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             del self
 
     def add_done_callback(
-        self, fn: Callable[[Self], Any], *, run_in_forked_child: bool = False, raise_if_failed_immediately: bool = False,
+        self,
+        fn: Callable[[Self], Any],
+        *,
+        run_in_forked_child: bool = False,
+        raise_if_failed_immediately: bool = False,
     ) -> object:
         r"""
         Adds a callback which will be called when this future :term:`complete`\ s, and which is called immediately, here,
@@ -503,9 +515,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             futures_logger().exception("exception calling callback for %r", self)
         return token
 
-    def remove_done_callback(
-        self, fn_or_token: Callable[[Self], Any] | object
-    ) -> int:
+    def remove_done_callback(self, fn_or_token: Callable[[Self], Any] | object) -> int:
         r"""
         Unschedules a callback added via :py:meth:`add_done_callback` from the set of functions to be
         run when this future :term:`complete`\ s.
@@ -627,7 +637,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         # asyncio.Future/Task do not.
         # To avoid that condition, we store and always re-raise from the original traceback that was recieved by
         # set_exception().
-        with self._condition: # Recursive lock, so _transition works within it
+        with self._condition:  # Recursive lock, so _transition works within it
             if not self.state.terminal:
                 self._exception_tb = exception.__traceback__
             self._transition(self._Failed, exception)
@@ -706,18 +716,20 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         return self._last_transition[2] if self._last_transition[1] is self._Succeeded else None
 
     def done(self) -> bool:
-        """Returns True if this future has :term:`completed`, False otherwise.
-        """
+        """Returns True if this future has :term:`completed`, False otherwise."""
         return self._last_transition[1].terminal
 
     def cancelled(self) -> bool:
-        """Returns True if this future was :term:`completed` by being cancelled False otherwise.
-        """
+        """Returns True if this future was :term:`completed` by being cancelled False otherwise."""
         return self._last_transition[1] is self._Cancelled
 
     # See _state. Cancelling notifies concurrent.futures' waiters at once, so it's never just CANCELLED.
     _CF_STATES = {
-        _Pending: PENDING, _Running: RUNNING, _Cancelled: CANCELLED_AND_NOTIFIED, _Succeeded: FINISHED, _Failed: FINISHED
+        _Pending: PENDING,
+        _Running: RUNNING,
+        _Cancelled: CANCELLED_AND_NOTIFIED,
+        _Succeeded: FINISHED,
+        _Failed: FINISHED,
     }
 
     # For Executor API compliance

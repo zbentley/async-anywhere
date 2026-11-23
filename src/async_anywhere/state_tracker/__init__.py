@@ -21,9 +21,11 @@ def _structural_invariant(cls: type, cond: Any, msg: str):
         raise TypeError(f"{cls.__qualname__}: {msg}")
     return cond
 
+
 # This lock orchestrates the extremely rare conflict risk of importing modules/declaring subclasses in parallel:
 _binding_lock = threading.Lock()
 _UNLOCKED = nullcontext()  # Every thread-unsafe StateTracker's lock: it holds nothing, so one is enough
+
 
 @attr.define(frozen=True, eq=False, repr=False, str=False, hash=False, init=False)
 class State:
@@ -50,6 +52,7 @@ class State:
         A State is only ever equal to itself. States with the same parameters from two different StateTrackers
         will not be treated as equivalent.
     """
+
     # As declared, until StateTracker.__init_subclass__ replaces it with every State this one can transition to
     _destinations: Collection[Transition] = attr.field()
     _sources: Collection[Transition] = attr.field()
@@ -157,7 +160,11 @@ class State:
         return name, obj.__module__, obj.__name__, vars(obj).get("__firstlineno__")
 
     def __set_name__(self, owner: type, name: str):
-        _structural_invariant(owner, isinstance(name, str), "State name is not a string; you are probably doing something wrong and unsupported like constructing a class with invalid parameters using type(...).")
+        _structural_invariant(
+            owner,
+            isinstance(name, str),
+            "State name is not a string; you are probably doing something wrong and unsupported like constructing a class with invalid parameters using type(...).",
+        )
         with _binding_lock:
             # Class builders that add slots (attrs, dataclasses) rebind States to a class rebuilt from a copy of its
             # namespace. This check makes sure that they're always bound at the same place.
@@ -165,7 +172,7 @@ class State:
             _structural_invariant(
                 owner,
                 bound is None or self._binding(name, owner) == self._binding(self.name, bound),
-                f"Cannot bind State {bound.__qualname__ if bound else ''}.{self.name} as '{name}'; a State can only be bound once"
+                f"Cannot bind State {bound.__qualname__ if bound else ''}.{self.name} as '{name}'; a State can only be bound once",
             )
             # Hack around frozen-ness to update the state object. This is safe, since it happens only at compile time
             # and only when a State object is first bound to its StateTracker. Attempts to rebind a State later fail
@@ -184,7 +191,7 @@ class _StateTrackerMeta(ABCMeta):
         _structural_invariant(
             cls,
             not isinstance(value, State) and not isinstance(inspect.getattr_static(cls, name, None), State),
-            f"Cannot set {name}; States can't be rebound, or added to a class after it's declared"
+            f"Cannot set {name}; States can't be rebound, or added to a class after it's declared",
         )
         super().__setattr__(name, value)
 
@@ -192,7 +199,7 @@ class _StateTrackerMeta(ABCMeta):
         _structural_invariant(
             cls,
             not isinstance(inspect.getattr_static(cls, name, None), State),
-            f"Cannot delete {name}; States can't be removed from a class after it's declared"
+            f"Cannot delete {name}; States can't be removed from a class after it's declared",
         )
         super().__delattr__(name)
 
@@ -270,7 +277,7 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
     # lock-free readers always see a state and its data together
     _last_transition: tuple[State | None, State, object]
 
-    __slots__ = ('_last_transition', '_condition')
+    __slots__ = ("_last_transition", "_condition")
 
     def __init__(self, *, thread_safe: bool = True) -> None:
         r"""
@@ -326,7 +333,7 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
                 _structural_invariant(
                     cls,
                     state in seen,
-                    f'State "{source}" has a source or destination state that is not part of this state tracker: {state}'
+                    f'State "{source}" has a source or destination state that is not part of this state tracker: {state}',
                 )
 
         if Any in states:
@@ -345,12 +352,12 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
             is_abstract = cls._abstract = ABC in cls.__bases__ or inspect.isabstract(cls)
         declarers = [k for k in cls.__mro__ if any(isinstance(v, State) for v in vars(k).values())]
         if len(declarers) == 1:
-            states =  frozenset(v for v in vars(declarers[0]).values() if isinstance(v, State))
+            states = frozenset(v for v in vars(declarers[0]).values() if isinstance(v, State))
         else:
             _structural_invariant(
                 cls,
                 len(declarers) == 0,
-                f"States must all be declared on one class, but are declared on {', '.join(k.__qualname__ for k in declarers)}"
+                f"States must all be declared on one class, but are declared on {', '.join(k.__qualname__ for k in declarers)}",
             )
             states = frozenset()
         destinations = defaultdict(set)
@@ -359,10 +366,12 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
             _structural_invariant(
                 cls,
                 inspect.getattr_static(cls, state.name, None) is state,
-                f"{cls.__qualname__}.{state.name} is not {state!r}; States can't be shadowed, or added to a class after it's declared"
+                f"{cls.__qualname__}.{state.name} is not {state!r}; States can't be shadowed, or added to a class after it's declared",
             )
             if state.initial:
-                _structural_invariant(cls, initial is None, f"Multiple states with initial=True: '{state}' and '{initial}'")
+                _structural_invariant(
+                    cls, initial is None, f"Multiple states with initial=True: '{state}' and '{initial}'"
+                )
                 initial = state
 
             destinations[state].update(cls._check_states(states, state, *state._destinations))
@@ -372,7 +381,7 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
         _structural_invariant(
             cls,
             initial is not None or (is_abstract and len(states) == 0),
-            "No states were declared with initial=True; one and only one initial state is required"
+            "No states were declared with initial=True; one and only one initial state is required",
         )
         with _binding_lock:
             for state in states:
@@ -412,9 +421,8 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
     def _check_state(self, state: State) -> State:
         if state not in self.states:
             err = StateTrackerError(
-                self,
-            f"State '{state.name}' is not one of this class's states. Valid states:",
-            *self.states)
+                self, f"State '{state.name}' is not one of this class's states. Valid states:", *self.states
+            )
             raise TypeError(err.args[0])
         return state
 
@@ -511,7 +519,6 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
         for s in (desired_state, *desired_states):
             self._check_state(s)
         raise StateTrackerError(self, "Not in required state(s)", desired_state, *desired_states)
-
 
 
 __all__ = ["State", "StateTracker"]

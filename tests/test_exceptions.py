@@ -1,5 +1,6 @@
 """async_anywhere.exceptions: the library's own exceptions, which all mix in AsyncAnywhereException, and which can be
 imported without importing the rest of the library."""
+
 from __future__ import annotations
 
 import asyncio
@@ -38,7 +39,9 @@ EXCEPTIONS = {
     "EventLoopExecutorStopped": lambda: EventLoopExecutorStopped("(idle) manually stopped", KeyError("why")),
     "CleanStop": lambda: CleanStop("(idle) expired"),
     "EventLoopExecutorForked": EventLoopExecutorForked,
-    "JobCancelledByExecutorShutdown": lambda: JobCancelledByExecutorShutdown.from_cancellation(asyncio.CancelledError(), CleanStop("stopped")),
+    "JobCancelledByExecutorShutdown": lambda: JobCancelledByExecutorShutdown.from_cancellation(
+        asyncio.CancelledError(), CleanStop("stopped")
+    ),
 }
 
 
@@ -50,7 +53,6 @@ def test_importing_it_imports_no_other_part_of_the_library():
         [sys.executable, "-c", code], env={**os.environ, "PYTHONPATH": src}, capture_output=True, text=True, check=True
     )
     assert ran.stdout.split() == ["async_anywhere", "async_anywhere.exceptions"]
-
 
 
 def test_only_exceptions_we_never_instantiate_are_marked_abstract_and_the_rest_are_tested_below():
@@ -82,7 +84,10 @@ def test_copies_keep_the_originals_state():
     copy = AsyncAnywhereException.copy_exception(original)
     assert copy is not original and type(copy) is SystemExit and copy.code == 3  # Builtins' own state too
     assert copy.__traceback__ is original.__traceback__ and copy.__notes__ == ["note"]
-    assert (copy.__cause__, copy.__context__) == (original.__cause__, original.__context__) and copy.__suppress_context__
+    assert (copy.__cause__, copy.__context__) == (
+        original.__cause__,
+        original.__context__,
+    ) and copy.__suppress_context__
     with pytest.raises(SystemExit) as raised:
         sys.exit(3)
     assert not AsyncAnywhereException.copy_exception(raised.value).__suppress_context__

@@ -1,4 +1,5 @@
 """Tests for async_anywhere._util's helpers."""
+
 from __future__ import annotations
 
 import concurrent.futures

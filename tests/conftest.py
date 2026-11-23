@@ -1,5 +1,6 @@
 """Suite-wide options, the backends async tests run on (see pytest_generate_tests()), and the strict teardown every test
 gets: see strict_teardown()."""
+
 from __future__ import annotations
 
 import gc

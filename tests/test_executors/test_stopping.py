@@ -1,4 +1,5 @@
 """How EventLoopExecutors stop: idle expiry, the parent task ending, interrupts, crashes, drains, shutdown(), and the teardown."""
+
 from __future__ import annotations
 
 import asyncio
@@ -206,7 +207,9 @@ async def test_interrupted_calls_on_the_executors_thread_are_cancelled_as_usual(
         await worker.reached("work")
         await worker.shutdown(wait=False, cancel_futures=True)
         error = await worker.reached("raised")
-        assert isinstance(error, concurrent.futures.CancelledError) and type(error.__cause__) is EventLoopExecutorStopped
+        assert (
+            isinstance(error, concurrent.futures.CancelledError) and type(error.__cause__) is EventLoopExecutorStopped
+        )
         assert not isinstance(error, asyncio.CancelledError)  # Not converted, as for other threads
 
 
@@ -262,7 +265,9 @@ async def test_calls_on_the_executors_thread_are_interrupted_like_any_other():
         await worker.reached("tidy")
         await worker.shutdown(wait=False, cancel_futures=True)
         assert worker.reached("tidied").result_or_none() == 1
-        with pytest.raises(concurrent.futures.CancelledError, check=lambda error: isinstance(error.__cause__, EventLoopExecutorStopped)):
+        with pytest.raises(
+            concurrent.futures.CancelledError, check=lambda error: isinstance(error.__cause__, EventLoopExecutorStopped)
+        ):
             worker.left.result(1)  # Interrupted, and told why
 
 
@@ -534,7 +539,9 @@ async def test_draining_caller_gets_why_when_another_stop_finishes_the_executor(
 
 class ReturnsWhenStopped(Works):
     async def _run(self):
-        await self.wait_for_state(self.Stopping)  # Returns as soon as the worker stops, rather than waiting to be cancelled
+        await self.wait_for_state(
+            self.Stopping
+        )  # Returns as soon as the worker stops, rather than waiting to be cancelled
 
 
 async def test_a_drain_outlasts_run_returning():
@@ -600,7 +607,9 @@ class Stops(Works):
 
 async def test_shutdown_cant_wait_on_the_executors_own_thread():
     async with running(Stops) as worker:
-        with pytest.raises(WouldBlock, match=r"Waiting for <bound method EventLoopExecutor\.shutdown .* would deadlock in <Thread"):
+        with pytest.raises(
+            WouldBlock, match=r"Waiting for <bound method EventLoopExecutor\.shutdown .* would deadlock in <Thread"
+        ):
             await worker.stop_waiting()
         assert worker.state is worker.Running
 
@@ -839,7 +848,9 @@ class LeavesWork(Works):
         ),
     ],
 )
-async def test_work_left_running_is_cancelled_then_abandoned(kind, left, caplog, request, executor_loop, thread_exceptions):
+async def test_work_left_running_is_cancelled_then_abandoned(
+    kind, left, caplog, request, executor_loop, thread_exceptions
+):
     async with running(LeavesWork) as worker:
         await worker.leave(kind)
         started = time.monotonic()

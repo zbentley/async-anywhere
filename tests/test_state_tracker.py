@@ -27,10 +27,12 @@ class MyStateTracker(StateTracker):
     Second: Final[State] = State(sources=[Initial])
     Third: Final[State] = State(sources=[Initial])
 
+
 def test_basic_state_tracker():
     inst = MyStateTracker()
     assert inst.state is inst.Initial
     assert inst.state == inst.Initial
+
 
 @pytest.mark.parametrize("thread_safe", [False, True], ids=["unlocked", "locked"])
 def test_transition(thread_safe):
@@ -41,6 +43,7 @@ def test_transition(thread_safe):
     with pytest.raises(StateTrackerError, match="Could not transition"):
         inst._transition(MyStateTracker.Third)
     assert inst.state is MyStateTracker.Second
+
 
 def test_after_state_change_runs_under_the_lock_once_transitioned():
     seen = []
@@ -55,10 +58,13 @@ def test_after_state_change_runs_under_the_lock_once_transitioned():
     Hooked()._transition(Hooked.Next, "data")
     assert seen == [(True, Hooked.Next, (Hooked.Initial, Hooked.Next, "data"))]
 
+
 def test_concrete_tracker_requires_states():
     with pytest.raises(TypeError, match="initial=True"):
+
         class Empty(StateTracker):
             pass
+
 
 def test_abstract_tracker_may_omit_states():
     class ViaABC(StateTracker, abc.ABC):
@@ -70,18 +76,23 @@ def test_abstract_tracker_may_omit_states():
 
     assert ViaABC.states == ViaAbstractMethod.states == frozenset()
 
+
 def test_abstractness_is_not_inherited():
     class Base(StateTracker, abc.ABC):
         pass
 
     with pytest.raises(TypeError, match="initial=True"):
+
         class Concrete(Base):
             pass
 
+
 def test_abstract_tracker_with_states_requires_initial():
     with pytest.raises(TypeError, match="initial=True"):
+
         class Partial(StateTracker, abc.ABC):
             A: Final[State] = State()
+
 
 def test_abstract_tracker_may_declare_states():
     class Base(StateTracker, abc.ABC):
@@ -92,11 +103,13 @@ def test_abstract_tracker_may_declare_states():
 
     assert Concrete().state is Base.A
 
+
 def test_waitable_subclass():
     class Waitable(WaitableStateTracker):
         A: Final[State] = State(initial=True)
 
     assert Waitable().state is Waitable.A
+
 
 def test_subclasses_inherit_states_but_cannot_add_them():
     class Child(MyStateTracker):
@@ -107,6 +120,7 @@ def test_subclasses_inherit_states_but_cannot_add_them():
 
     fourth = State(sources=[MyStateTracker.Second])
     with pytest.raises(TypeError, match="declared on one class"):
+
         class Extended(MyStateTracker):
             Fourth = fourth
 
@@ -115,15 +129,20 @@ def test_subclasses_inherit_states_but_cannot_add_them():
     with pytest.raises(TypeError, match="not one of this class's states"):
         inst._transition(fourth)
 
+
 def test_subclasses_cannot_declare_another_initial_state():
     with pytest.raises(TypeError, match="declared on one class"):
+
         class Overridden(MyStateTracker):
             NewInitial: Final[State] = State(initial=True)
 
+
 def test_subclasses_cannot_shadow_states():
     with pytest.raises(TypeError, match="shadowed"):
+
         class Shadowed(MyStateTracker):
             Second = None
+
 
 def test_states_cannot_be_rebound_added_or_deleted():
     class Child(MyStateTracker):
@@ -143,6 +162,7 @@ def test_states_cannot_be_rebound_added_or_deleted():
     MyStateTracker.not_a_state = 1
     del MyStateTracker.not_a_state
 
+
 def test_mixin_states_are_shared():
     class Mixin:
         Idle: Final[State] = State(initial=True)
@@ -159,6 +179,7 @@ def test_mixin_states_are_shared():
     a._transition(Mixin.Busy)
     b._transition(Mixin.Busy)
     assert a.state is b.state is Mixin.Busy
+
 
 def test_any_and_self_survive_resolving_again():
     class Mixin:
@@ -178,13 +199,16 @@ def test_any_and_self_survive_resolving_again():
         with pytest.raises(StateTrackerError):
             inst._transition(Mixin.Idle)
 
+
 def test_mixin_states_cannot_be_added_to():
     class Mixin:
         Idle: Final[State] = State(initial=True)
 
     with pytest.raises(TypeError, match="declared on one class"):
+
         class Both(Mixin, StateTracker):
             Other: Final[State] = State(sources=[Mixin.Idle])
+
 
 def test_state_cannot_be_bound_twice():
     shared = State(initial=True)
@@ -193,13 +217,16 @@ def test_state_cannot_be_bound_twice():
         A = shared
 
     with pytest.raises(TypeError, match="can only be bound once"):
+
         class Other(StateTracker):
             A = shared
 
     with pytest.raises(TypeError, match="can only be bound once"):
+
         class Aliased(StateTracker):
             A: Final[State] = State(initial=True)
             B = A
+
 
 @pytest.mark.parametrize(
     "builder", [attr.define(init=False), dataclasses.dataclass(slots=True, init=False)], ids=["attrs", "dataclass"]
@@ -225,15 +252,18 @@ def test_slotted_class_builders(builder):
     inst._transition(Declared.End)
     assert inst.state is Declared.End
 
+
 @pytest.mark.parametrize(
     "builder", [attr.define(init=False), dataclasses.dataclass(slots=True, init=False)], ids=["attrs", "dataclass"]
 )
 def test_slotted_class_builders_reject_non_classvar_states(builder):
     with pytest.raises(TypeError, match="not part of this state tracker"):
+
         @builder
         class Declared(StateTracker):
             Start: ClassVar[Final[State]] = State(initial=True)
             End: Final[State] = State(sources=[Start])  # A field, so the builder drops it from the class it rebuilds
+
 
 def test_require():
     inst = MyStateTracker()
@@ -242,6 +272,7 @@ def test_require():
     with pytest.raises(StateTrackerError, match="Not in required state"):
         inst.require(MyStateTracker.Second)
 
+
 def test_try_transition():
     inst = MyStateTracker()
     assert inst._try_transition(MyStateTracker.Second, "data")
@@ -249,6 +280,7 @@ def test_try_transition():
     assert not inst._try_transition(MyStateTracker.Third) and inst.state is MyStateTracker.Second  # Refused
     with pytest.raises(TypeError, match="not one of this class's states"):
         inst._try_transition(MyWaitable.A)  # Not refused, but wrong
+
 
 def test_error_is_copyable():
     with pytest.raises(StateTrackerError) as info:
@@ -266,6 +298,7 @@ class MyWaitable(WaitableStateTracker):
     B: Final[State] = State(sources=[A])
     C: Final[State] = State(sources=[A, B])
 
+
 def test_waitable_trackers_can_be_frozen():
     @attr.define(init=False, frozen=True)
     class Frozen(WaitableStateTracker):
@@ -279,6 +312,7 @@ def test_waitable_trackers_can_be_frozen():
     inst._transition(Frozen.End, "data")
     assert inst.state is Frozen.End and ended.result(0) == "data"
 
+
 def test_wait_for_current_state_is_done():
     inst = MyWaitable()
     assert inst.wait_for_state(MyWaitable.A, MyWaitable.B, return_states=True).result(0) == (None, MyWaitable.A, None)
@@ -290,6 +324,7 @@ def test_wait_for_current_state_is_done():
     done = inst.wait_for_state(MyWaitable.C, MyWaitable.A, return_states=True)
     assert done.result(0) == (MyWaitable.B, MyWaitable.C, None)
 
+
 def test_waiters_get_the_transitions_data_unless_asked_for_its_states_too():
     inst, data = MyWaitable(), object()
     assert inst.wait_for_state(MyWaitable.A).result(0) is None  # The initial state's, which no transition entered
@@ -298,9 +333,11 @@ def test_waiters_get_the_transitions_data_unless_asked_for_its_states_too():
     assert waiting.result(0) is data and inst.wait_for_state(MyWaitable.B).result(0) is data  # Done already
     assert with_states.result(0) == (MyWaitable.A, MyWaitable.B, data)
 
+
 def test_wait_for_state_validates_states():
     with pytest.raises(TypeError, match="not one of this class's states"):
         MyWaitable().wait_for_state(MyWaitable.A, MyStateTracker.Initial)
+
 
 def test_wait_for_state_resolves_on_transition():
     inst = MyWaitable()
@@ -311,10 +348,12 @@ def test_wait_for_state_resolves_on_transition():
     inst._transition(MyWaitable.C)  # Its future, done, is still among C's waiters
     assert future.result(0)[1] is MyWaitable.B
 
+
 class CyclicWaitable(WaitableStateTracker):
     A: Final[State] = State(initial=True, destinations=[Self])
     B: Final[State] = State(sources=[A])
     C: Final[State] = State(sources=[B], destinations=[A])
+
 
 def test_ignore_current_state_waits_to_reenter_it():
     inst = CyclicWaitable()
@@ -322,6 +361,7 @@ def test_ignore_current_state_waits_to_reenter_it():
     assert not future.done()
     inst._transition(CyclicWaitable.A, "data")
     assert future.result(0) == (CyclicWaitable.A, CyclicWaitable.A, "data")
+
 
 def test_ignore_current_state_waits_for_any_given_state():
     inst = CyclicWaitable()
@@ -331,6 +371,7 @@ def test_ignore_current_state_waits_for_any_given_state():
     inst._transition(CyclicWaitable.C, "data")
     assert future.result(0) == (CyclicWaitable.B, CyclicWaitable.C, "data")
 
+
 def test_waiters_refuse_cancellation():
     inst = MyWaitable()
     future = inst.wait_for_state(MyWaitable.B)
@@ -338,11 +379,13 @@ def test_waiters_refuse_cancellation():
     inst._transition(MyWaitable.B, "data")
     assert future.result(0) == "data"
 
+
 def test_try_transition_resolves_waiters():
     inst = MyWaitable()
     future = inst.wait_for_state(MyWaitable.B)
     assert inst._try_transition(MyWaitable.B, "data") and future.result(0) == "data"
     assert not inst._try_transition(MyWaitable.B)  # B can't transition to itself
+
 
 def test_dropped_waiters_are_not_resolved():
     inst = MyWaitable()
@@ -351,6 +394,7 @@ def test_dropped_waiters_are_not_resolved():
     gc.collect()
     inst._transition(MyWaitable.B)
     assert len(resolved) == 0
+
 
 async def test_prevent_blocking_wait_within():
     inst, here = MyWaitable(), (asyncio.get_running_loop(),)
@@ -361,6 +405,7 @@ async def test_prevent_blocking_wait_within():
     done = inst.wait_for_state(MyWaitable.A, prevent_blocking_wait_within=here)
     assert done.result(0) is None  # Done, so not checked
 
+
 @pytest.mark.parametrize(
     "kwargs",
     [{"transform_result": str}, {"done_callbacks": []}, {"nonsense": True}],
@@ -369,6 +414,7 @@ async def test_prevent_blocking_wait_within():
 def test_wait_for_state_refuses_kwargs_its_futures_cannot_take(kwargs):
     with pytest.raises(TypeError):
         MyWaitable().wait_for_state(MyWaitable.B, **kwargs)
+
 
 @pytest.mark.backends("asyncio", "uvloop", "trio")
 async def test_wait_for_state_across_threads():
@@ -379,6 +425,7 @@ async def test_wait_for_state_across_threads():
     with anyio.fail_after(5):
         assert await future == "data"
     thread.join()
+
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork()")
 def test_a_forked_process_resets_trackers_locks_before_futures_callbacks_run():

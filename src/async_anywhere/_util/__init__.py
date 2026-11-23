@@ -26,10 +26,12 @@ def BlockingNotAllowed() -> bool:
     :py:class:`WouldBlock` instead of blocking in all cases."""
     return True
 
+
 # TODO better annotate: incorporate constant sentinels.
 # TODO better annotate: refer to it elsewhere.
 # TODO better annotate: inline in docs.
 type BlockingEnvironments = Collection[asyncio.AbstractEventLoop | Thread | Callable[[], bool]]
+
 
 @cache
 def futures_logger() -> logging.Logger:
@@ -43,8 +45,10 @@ def futures_logger() -> logging.Logger:
     of :py:class:`concurrent.futures.Future` to affect this logger as well.
     """
     import concurrent.futures._base
+
     # TODO guard against the symbol moving?
     return concurrent.futures._base.LOGGER.getChild("async_anywhere")
+
 
 class Toggleable:
     # TODO perf of having a __bool__ *property*?
@@ -59,11 +63,13 @@ class Toggleable:
     def __bool__(self):
         return self._value
 
+
 @final
 class ConditionProtected[T](threading.Condition):
     """A threading.Condition over an RLock, which also guards a value, which entering it gives. Never left held by a signal
     handler's exception (see __enter__()), and reset in each child process os.fork()ed from one that has it, unless the
     forking thread held it (see _at_fork_reinit())."""
+
     # __exit__ is a slot, not a method: with-statements look it up on the class, whose slot descriptor gives them this
     # instance's lock's own (C) __exit__, so leaving a with-block runs no Python frame
     __slots__ = ("_value", "__exit__")
@@ -161,6 +167,7 @@ _conditions = _ConditionForkSafety()
 class BlockingChecker:
     """Where blocking waits for a future would deadlock, so are refused: on given threads, in given event loops (both held
     weakly), in any running event loop or trio task (AnyEventLoop), or anywhere (BlockingNotAllowed)."""
+
     __slots__ = ("_environments",)
 
     def __init__(self, environments: BlockingEnvironments = ()):
@@ -178,7 +185,9 @@ class BlockingChecker:
             elif environment is AnyEventLoop or environment is BlockingNotAllowed:
                 weakened.append(environment)
             else:
-                raise TypeError(f"Blocking waits can be refused in event loops, on threads, or by AnyEventLoop or BlockingNotAllowed, not {environment!r}")
+                raise TypeError(
+                    f"Blocking waits can be refused in event loops, on threads, or by AnyEventLoop or BlockingNotAllowed, not {environment!r}"
+                )
         return tuple(weakened)
 
     def copy(self, *, add: BlockingEnvironments = ()) -> BlockingChecker:

@@ -1,4 +1,5 @@
 """Tests for AwaitableFuture on its own, without a worker."""
+
 from __future__ import annotations
 
 import asyncio
@@ -36,7 +37,9 @@ async def test_awaiting_works_on_any_loop():
 
     elsewhere = asyncio.ensure_future(asyncio.to_thread(asyncio.run, wait()))
     here = asyncio.ensure_future(wait())
-    while len(future._done_callbacks) < 2:  # noqa: ASYNC110 (Until both wait, through their loops' async futures, rather than find it done)
+    while (
+        len(future._done_callbacks) < 2
+    ):  # noqa: ASYNC110 (Until both wait, through their loops' async futures, rather than find it done)
         await asyncio.sleep(0.001)
     threading.Thread(target=future.set_result, args=("done",)).start()
     assert await here == "done" and await elsewhere == "done"
@@ -118,7 +121,15 @@ async def test_refusing_all_blocking_waits_refuses_them_anywhere():
 
 async def test_where_to_refuse_blocking_waits_is_given_as_a_collection_of_loops_threads_or_sentinels():
     loop = asyncio.get_running_loop()
-    for given in loop, threading.current_thread(), AwaitableFuture.BlockingNotAllowed, iter([loop]), "all", [lambda: True], [None]:
+    for given in (
+        loop,
+        threading.current_thread(),
+        AwaitableFuture.BlockingNotAllowed,
+        iter([loop]),
+        "all",
+        [lambda: True],
+        [None],
+    ):
         with pytest.raises(TypeError):  # Not a collection, or of what can't refuse waits
             AwaitableFuture(prevent_blocking_wait_within=given)
 
@@ -137,7 +148,11 @@ def test_failure_is_what_a_done_future_failed_with():
     pending, succeeded, failed = AwaitableFuture(), AwaitableFuture(), AwaitableFuture()
     succeeded.set_result("done")
     failed.set_exception(error := ValueError("failed"))
-    assert pending.exception_or_none() is None and succeeded.exception_or_none() is None and failed.exception_or_none() is error
+    assert (
+        pending.exception_or_none() is None
+        and succeeded.exception_or_none() is None
+        and failed.exception_or_none() is error
+    )
     cancelled = AwaitableFuture()
     cancelled.cancel()
     assert cancelled.exception_or_none() is None  # The fourth state: neither succeeded nor failed
@@ -154,7 +169,9 @@ def test_failure_is_what_a_done_future_failed_with():
 async def test_async_futures_are_on_the_given_or_running_loop():
     future = AwaitableFuture()
     here = future.as_async_future()
-    assert here.get_loop() is future.as_async_future(asyncio.get_running_loop()).get_loop() is asyncio.get_running_loop()
+    assert (
+        here.get_loop() is future.as_async_future(asyncio.get_running_loop()).get_loop() is asyncio.get_running_loop()
+    )
 
     async def elsewhere():
         there = future.as_async_future()
@@ -290,7 +307,9 @@ async def test_a_finished_future_lets_go_of_its_async_futures():
     waiting = weakref.ref(future.as_async_future())
     gc.disable()  # So that only refcounting frees it
     try:
-        assert waiting() is not None  # Held by its done-callback while the future is pending, as asyncio.wrap_future()'s is
+        assert (
+            waiting() is not None
+        )  # Held by its done-callback while the future is pending, as asyncio.wrap_future()'s is
         future.set_result("done")
         assert waiting() is None  # Finished at once, on its loop, and dropped with the future's done-callbacks
     finally:
@@ -311,7 +330,9 @@ async def test_a_finished_future_lets_go_of_its_async_futures():
     ],
 )
 def test_what_it_raises_doesnt_hold_it(method, finish, raises):
-    future = AwaitableFuture(prevent_blocking_wait_within=[AwaitableFuture.BlockingNotAllowed] if finish == "refuse" else None)
+    future = AwaitableFuture(
+        prevent_blocking_wait_within=[AwaitableFuture.BlockingNotAllowed] if finish == "refuse" else None
+    )
     holder = []
     if finish == "fail":
         future.set_exception(ValueError())
@@ -456,7 +477,9 @@ async def test_awaiting_works_with_any_library():
     async with anyio.create_task_group() as group:
         group.start_soon(wait, done)
         group.start_soon(wait, failed)
-        while not (done._done_callbacks and failed._done_callbacks):  # noqa: ASYNC110 (Until both wait, rather than find them done)
+        while not (
+            done._done_callbacks and failed._done_callbacks
+        ):  # noqa: ASYNC110 (Until both wait, rather than find them done)
             await anyio.sleep(0.001)
         threading.Thread(target=done.set_result, args=("done",)).start()  # From another thread, as a worker's would be
         threading.Thread(target=failed.set_exception, args=(error := ValueError(),)).start()
@@ -639,7 +662,9 @@ def test_futures_left_pending_in_a_forked_process_are_readied_again_in_processes
 @FORKS
 def test_a_forked_process_lets_go_of_futures_that_had_finished_as_it_forked():
     future = AwaitableFuture()
-    future._transition(future._Succeeded, "finished")  # As set_result() does, before it runs callbacks and unregisters it
+    future._transition(
+        future._Succeeded, "finished"
+    )  # As set_result() does, before it runs callbacks and unregisters it
     assert future in _fork_safety.futures
     with forked() as f:
         if f.child:

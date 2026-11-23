@@ -1,4 +1,5 @@
 """Every EventLoopExecutor test runs with workers on asyncio's own loop, and on uvloop's: see executor_loop()."""
+
 from __future__ import annotations
 
 import pytest

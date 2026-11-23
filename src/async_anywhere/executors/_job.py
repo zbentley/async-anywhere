@@ -39,7 +39,9 @@ class _ExecutorJob(AwaitableFuture):
                 task = loop.create_task(self._target, eager_start=True)
             else:  # Started eagerly or not, as the factory decides
                 task = loop.create_task(self._target)
-        except Exception as ex:  # A task factory refusing it, say: else its waiters hang, as asyncio only logs a callback's error
+        except (
+            Exception
+        ) as ex:  # A task factory refusing it, say: else its waiters hang, as asyncio only logs a callback's error
             if getcoroutinestate(job := self._target) != CORO_CREATED:  # Its first step ran, so _job() handled it
                 raise
             reported = self.set_exception_if_not_done(ex)

@@ -4,8 +4,10 @@ import os
 from abc import ABC, abstractmethod
 from weakref import WeakSet
 
+
 class ForkSafeInstanceTracker(WeakSet, ABC):
     __slots__ = ("ensure_registered", "ensure_unregistered")
+
     def __init__(self):
         super().__init__()
 

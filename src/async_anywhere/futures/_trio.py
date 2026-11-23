@@ -20,6 +20,7 @@ class TrioAwaitableFuture[T](Awaitable[T]):
 
     def __await__(self):
         import trio as _trio
+
         event, token = _trio.Event(), self._token
 
         def complete(_):

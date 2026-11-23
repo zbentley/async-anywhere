@@ -1,20 +1,21 @@
 """Prototype: faster lock/nullcontext-swappable wrapper, since context managers are slow
 
-    class Counter:
-        __slots__ = ("_guard", "count")
+class Counter:
+    __slots__ = ("_guard", "count")
 
-        def __init__(self, thread_safe=True):
-            self.count = 0
-            self._guard = Guard(self, RLock() if thread_safe else None, (Counter._bump,))
+    def __init__(self, thread_safe=True):
+        self.count = 0
+        self._guard = Guard(self, RLock() if thread_safe else None, (Counter._bump,))
 
-        @locked
-        def _bump(self):
-            self.count += 1
-            return self.count
+    @locked
+    def _bump(self):
+        self.count += 1
+        return self.count
 
-        def bump(self):
-            return self._guard._bump()
+    def bump(self):
+        return self._guard._bump()
 """
+
 from collections.abc import Callable
 from threading import RLock
 from types import MethodType
@@ -51,7 +52,11 @@ class Guard:
         self._bound = functions
         for function in functions:  # Not via bind(), whose checks cost more than the binding: made per owner
             function = function.function
-            setattr(self, function.__name__, MethodType(function, value) if lock is None else MethodType(_run, (function, value, lock)))
+            setattr(
+                self,
+                function.__name__,
+                MethodType(function, value) if lock is None else MethodType(_run, (function, value, lock)),
+            )
 
     def bind(self, function: locked | Callable[[object], object]) -> locked:
         if not isinstance(function, locked):
@@ -61,7 +66,15 @@ class Guard:
             raise ValueError(f"{self!r} already has {name!r}")
         self._bound += (function,)
         lock = self._lock
-        setattr(self, name, MethodType(function.function, self._value) if lock is None else MethodType(_run, (function.function, self._value, lock)))
+        setattr(
+            self,
+            name,
+            (
+                MethodType(function.function, self._value)
+                if lock is None
+                else MethodType(_run, (function.function, self._value, lock))
+            ),
+        )
         return function
 
     def unlock(self):

@@ -1,5 +1,6 @@
 """async_anywhere without trio or anyio installed, which it uses only if they are: in a subprocess, as importing can't
 be undone."""
+
 from __future__ import annotations
 
 import ast
@@ -48,6 +49,8 @@ def test_everything_imports_and_works_on_asyncio_without_trio_or_anyio():
     )
     assert ran.returncode == 0 and not ran.stderr, ran.stderr
     modules, results = ast.literal_eval(ran.stdout)
-    assert modules == sorted(module.name for module in pkgutil.walk_packages(async_anywhere.__path__, "async_anywhere."))
+    assert modules == sorted(
+        module.name for module in pkgutil.walk_packages(async_anywhere.__path__, "async_anywhere.")
+    )
     assert "async_anywhere._util.trio" in modules and "async_anywhere.futures._trio" in modules
     assert results == ("awaited", "bridged", "CleanStop")

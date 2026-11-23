@@ -7,6 +7,7 @@ Note:
       functionality. Standard automatic mutation via the Python runtime (e.g. call stack stitching) is permitted.
 
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -85,6 +86,7 @@ class AsyncAnywhereException(ABC, Exception):
 
 # Futures
 
+
 class WouldBlock(AsyncAnywhereException, RuntimeError):
     """Raised when synchronously waiting for an action performed by ``async_anywhere`` would block in an environment
     where blocking is not allowed.
@@ -93,6 +95,7 @@ class WouldBlock(AsyncAnywhereException, RuntimeError):
     a future to complete from a thread or event loop that the user marked as forbidden for blocking waits via the
     ``prevent_blocking_wait_within`` parameter of :py:meth:`AwaitableFuture.__init__`.
     """
+
     def __init__(self, subject, environment) -> None:
         """:meta private:"""
         # A thread or loop, or else AnyEventLoop or BlockingNotAllowed, from _util: named as users find them
@@ -100,14 +103,18 @@ class WouldBlock(AsyncAnywhereException, RuntimeError):
             environment = f"- AwaitableFuture.{environment.__name__}"
         else:
             environment = f"in {environment!r}"
-        super().__init__(f"Waiting for {subject!r} would deadlock {environment} (configured via prevent_blocking_wait_within)")
+        super().__init__(
+            f"Waiting for {subject!r} would deadlock {environment} (configured via prevent_blocking_wait_within)"
+        )
 
 
 # State trackers
 
+
 class StateTrackerError(AsyncAnywhereException, asyncio.InvalidStateError, concurrent.futures.InvalidStateError):
     r"""Raised when invalid configuration is requested for or invalid actions are performed on a
     :py:class:`StateTracker`."""
+
     def __init__(
         self,
         source: StateTracker,
@@ -136,6 +143,7 @@ class EventLoopExecutorStopped(AsyncAnywhereException, Exception):
 
     Raised (and sometimes returned) from various EventLoopExecutor functions, and may also be raised from :term:`job`
     futures when jobs are aborted due to executor stop."""
+
     def __init__(self, summary: str, cause: BaseException | None = None):
         """:meta private:"""
         super().__init__(summary)
@@ -146,9 +154,11 @@ class CleanStop(EventLoopExecutorStopped):
     r"""Indicates that an :py:class:`EventLoopExecutor` stopped without :ref:`cancelling <cancellation>` any :term:`job`\ s (the
     :term:`main task` is always cancelled regardless)."""
 
+
 class EventLoopExecutorBroken(EventLoopExecutorStopped, ABC):
     """Indicates that an :py:class:`EventLoopExecutor` cannot perform the requested action(s) because it was stopped
     due to an internal error or unsupported state."""
+
 
 class EventLoopExecutorForked(EventLoopExecutorBroken):
     """Indicates that an :py:class:`EventLoopExecutor` cannot perform the requested action(s) because it was created in
@@ -166,7 +176,9 @@ class JobCancelledByExecutorShutdown(AsyncAnywhereException, concurrent.futures.
 
     @classmethod
     def from_cancellation(
-        cls, cancelled: asyncio.CancelledError | EventLoopExecutorStopped, stopped: EventLoopExecutorStopped | None = None
+        cls,
+        cancelled: asyncio.CancelledError | EventLoopExecutorStopped,
+        stopped: EventLoopExecutorStopped | None = None,
     ) -> Self:
         """For a job cancelled by a stop: given its asyncio.CancelledError, and why the executor stopped; or, for a job
         never started, why the executor stopped. Always ``raise from`` -ed a copy of the original stop cause.
@@ -176,6 +188,8 @@ class JobCancelledByExecutorShutdown(AsyncAnywhereException, concurrent.futures.
         if isinstance(cancelled, EventLoopExecutorStopped):
             interrupted, stopped = cls(), cancelled
         else:
-            interrupted = cls(*cancelled.args).with_traceback(cancelled.__traceback__)  # Ending where the job was cancelled
+            interrupted = cls(*cancelled.args).with_traceback(
+                cancelled.__traceback__
+            )  # Ending where the job was cancelled
         interrupted.__cause__ = stopped.copy()
         return interrupted

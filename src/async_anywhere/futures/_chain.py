@@ -7,6 +7,7 @@ import concurrent.futures._base
 import enum
 from functools import partial
 
+
 class chain(enum.IntFlag):  # noqa: N801 (Lower case, deliberately)
     DO_NOTHING = 0
     CANCEL_OTHER = 1
@@ -52,7 +53,9 @@ class chain(enum.IntFlag):  # noqa: N801 (Lower case, deliberately)
         if action == chain.DO_NOTHING._value_:
             return
         into_asyncio = isinstance(other, asyncio.Future) or asyncio.isfuture(other)
-        if action & chain.FAIL_OTHER._value_ and into_asyncio != (isinstance(done, asyncio.Future) or asyncio.isfuture(done)):
+        if action & chain.FAIL_OTHER._value_ and into_asyncio != (
+            isinstance(done, asyncio.Future) or asyncio.isfuture(done)
+        ):
             # Into the other kind of future, a cancellation becomes that kind's: as asyncio's own chaining does, and back
             if into_asyncio:
                 value = asyncio.futures._convert_future_exc(value)
@@ -105,12 +108,20 @@ class chain(enum.IntFlag):  # noqa: N801 (Lower case, deliberately)
         add_done_callback() isn't thread-safe.
         """
         actions = tuple(
-            map(int, (on_source_cancel, on_source_fail, on_source_complete, on_dest_cancel, on_dest_fail, on_dest_complete))
+            map(
+                int,
+                (on_source_cancel, on_source_fail, on_source_complete, on_dest_cancel, on_dest_fail, on_dest_complete),
+            )
         )
         for action in actions:
             if (action & cls._EXCLUSIVE).bit_count() > 1:
-                raise ValueError(f"An action can only be one of CANCEL_OTHER, FAIL_OTHER and COMPLETE_OTHER, not {action}")
-        for future, other, (on_cancel, on_fail, on_complete) in ((source, dest, actions[:3]), (dest, source, actions[3:])):
+                raise ValueError(
+                    f"An action can only be one of CANCEL_OTHER, FAIL_OTHER and COMPLETE_OTHER, not {action}"
+                )
+        for future, other, (on_cancel, on_fail, on_complete) in (
+            (source, dest, actions[:3]),
+            (dest, source, actions[3:]),
+        ):
             if on_cancel == on_fail == on_complete == cls.DO_NOTHING._value_:
                 continue  # A direction that does nothing needs no callback
             callback = partial(cls._chain_callback, other, on_cancel, on_fail, on_complete)

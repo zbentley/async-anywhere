@@ -1,5 +1,6 @@
 """EventLoopExecutors in processes forked from their own: see _fork_safety. These tests are synchronous, as a process
 forked from a running event loop's thread carries a copy of it that asyncio no longer counts as running."""
+
 from __future__ import annotations
 
 import asyncio
@@ -60,8 +61,12 @@ def test_a_forked_process_cant_use_its_copies_of_executors_nor_wait_for_them():
                 worker.shutdown(wait=False)
             with pytest.raises(EventLoopExecutorForked):
                 worker.shutdown()
-            assert type(in_flight.exception(1)) is EventLoopExecutorForked  # Rather than timing out: nothing here runs it
-            assert type(stopping.result(1)) is EventLoopExecutorForked and draining.state is draining.Shutdown  # Likewise
+            assert (
+                type(in_flight.exception(1)) is EventLoopExecutorForked
+            )  # Rather than timing out: nothing here runs it
+            assert (
+                type(stopping.result(1)) is EventLoopExecutorForked and draining.state is draining.Shutdown
+            )  # Likewise
             with pytest.raises(EventLoopExecutorForked):
                 other_work()
             with pytest.raises(EventLoopExecutorForked):

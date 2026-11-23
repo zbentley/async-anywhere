@@ -1,5 +1,6 @@
 """EventLoopExecutors made on other workers' threads, by their parent tasks or calls: used there, as a worker's client,
 or handed out to callers, who can use them from anywhere, whether or not the worker that made them is still running."""
+
 from __future__ import annotations
 
 import asyncio
@@ -74,8 +75,12 @@ async def test_interrupting_an_executor_cancels_the_inner_calls_its_jobs_await()
         await outer.shutdown(wait=False, cancel_futures=True)
         with pytest.raises(concurrent.futures.CancelledError):
             await call
-        assert await inner.reached("tidied") == 1  # Cancelled once, by the outer job, as the inner worker wasn't interrupted
-        assert type(await outer.reached("inner stopped")) is CleanStop  # Then drained by the outer parent task's cleanup
+        assert (
+            await inner.reached("tidied") == 1
+        )  # Cancelled once, by the outer job, as the inner worker wasn't interrupted
+        assert (
+            type(await outer.reached("inner stopped")) is CleanStop
+        )  # Then drained by the outer parent task's cleanup
 
 
 @pytest.mark.parametrize("how", ["stopped", "interrupted", "main task returned"])
@@ -112,7 +117,9 @@ class MakesInRun(Forwards):
         return self.inner
 
 
-@pytest.mark.parametrize("cls, method", [(Maker, "make"), (MakesInRun, "made")], ids=["in a call", "in the parent task"])
+@pytest.mark.parametrize(
+    "cls, method", [(Maker, "make"), (MakesInRun, "made")], ids=["in a call", "in the parent task"]
+)
 @pytest.mark.parametrize("outer_is", ["running", "stopped", "interrupted", "main task returned"])
 async def test_an_executor_handed_out_by_the_one_that_made_it_can_be_used_from_anywhere(cls, method, outer_is):
     async with running(cls) as outer:

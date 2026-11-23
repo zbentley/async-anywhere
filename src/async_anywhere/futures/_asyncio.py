@@ -12,7 +12,7 @@ _convert_future_exc = asyncio.futures._convert_future_exc
 
 
 class AsyncioAwaitableFuture[T](asyncio.Future[T]):
-    __slots__ = ('_source',)
+    __slots__ = ("_source",)
 
     def __init__(self, source: AwaitableFuture[T], loop: asyncio.AbstractEventLoop):
         super().__init__(loop=loop)
@@ -48,10 +48,10 @@ class AsyncioAwaitableFuture[T](asyncio.Future[T]):
 
     # As asyncio.Task's: only its source finishes it, through _finish(), so it never disagrees with it
     def set_result(self, result):
-        raise RuntimeError('set_result not allowed on asyncio.Futures returned from AwaitableFuture.as_async_future')
+        raise RuntimeError("set_result not allowed on asyncio.Futures returned from AwaitableFuture.as_async_future")
 
     def set_exception(self, exception):
-        raise RuntimeError('set_exception not allowed on asyncio.Futures returned from AwaitableFuture.as_async_future')
+        raise RuntimeError("set_exception not allowed on asyncio.Futures returned from AwaitableFuture.as_async_future")
 
     def _deliver(self, source: AwaitableFuture[T]):
         # source's done-callback (see __init__())

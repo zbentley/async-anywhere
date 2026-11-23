@@ -62,6 +62,7 @@ class SingletonEventLoopExecutor(Executor):
         >>> await singleton.shutdown()
 
     """
+
     def __init__(
         self,
         *,

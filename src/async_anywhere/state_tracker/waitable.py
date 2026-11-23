@@ -15,6 +15,7 @@ _data = itemgetter(2)  # A transition's data, from its (old state, new state, da
 _set_last_transition, _set_condition = StateTracker._last_transition.__set__, StateTracker._condition.__set__
 # Old state and data are None for the initial state, which no transition entered
 
+
 class WaitableStateTracker[T](StateTracker, ABC):
     """A :py:class:`StateTracker` which can be waited on, synchronously or asynchronously, via :py:meth:`wait_for_state`.
 
@@ -43,9 +44,10 @@ class WaitableStateTracker[T](StateTracker, ABC):
         >>> fut = t.wait_for_state(MyTracker.Third)
         >>> fut.result(timeout=1)
     """
+
     _waiters: dict[State, WeakSet[UncancellableAwaitableFuture[T]]]
 
-    __slots__ = ('_waiters',)
+    __slots__ = ("_waiters",)
 
     def __init__(self):
         """
@@ -120,7 +122,9 @@ class WaitableStateTracker[T](StateTracker, ABC):
         states = [self._check_state(state) for state in (state, *states)]
         future = UncancellableAwaitableFuture(  # Giving up on it leaves it, and other waiters, alone
             # No done_callbacks: resolved below under the lock, they'd run under it too
-            **kwargs, transform_result=None if return_states else _data, done_callbacks=None
+            **kwargs,
+            transform_result=None if return_states else _data,
+            done_callbacks=None,
         )
         with self._condition:
             if not ignore_current_state and self.state in states:
@@ -146,6 +150,7 @@ class WaitableStateTracker[T](StateTracker, ABC):
         for future in waiters:
             future.set_result_if_not_done(result)
         return old_state
+
 
 _set_waiters = WaitableStateTracker._waiters.__set__
 

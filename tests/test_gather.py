@@ -1,4 +1,5 @@
 """Tests for gather(), which stands in for asyncio.gather()."""
+
 from __future__ import annotations
 
 import asyncio

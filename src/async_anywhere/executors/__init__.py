@@ -14,8 +14,13 @@ from attrs import define, field
 from sniffio import current_async_library_cvar
 
 from async_anywhere._util import BlockingChecker, ConditionProtected, Toggleable
-from async_anywhere.exceptions import CleanStop, EventLoopExecutorBroken, JobCancelledByExecutorShutdown, \
-    EventLoopExecutorStopped, EventLoopExecutorForked
+from async_anywhere.exceptions import (
+    CleanStop,
+    EventLoopExecutorBroken,
+    JobCancelledByExecutorShutdown,
+    EventLoopExecutorStopped,
+    EventLoopExecutorForked,
+)
 from async_anywhere.executors import _fork_safety
 from async_anywhere.executors._job import _ExecutorJob
 from async_anywhere.executors._timer import Timer
@@ -35,8 +40,8 @@ _awaited_by: Final = hasattr(asyncio.Future, "_asyncio_awaited_by")
 @define(
     init=False,  # See __init__(), which sets every field through __attrs_init__()
     frozen=True,  # Every attribute: WaitableStateTracker writes its own past this
-    eq=False, # Make equality and hashing use object identity alone.
-    repr=False, # Repr gets extremely verbose and not useful.
+    eq=False,  # Make equality and hashing use object identity alone.
+    repr=False,  # Repr gets extremely verbose and not useful.
     auto_attribs=False,
 )
 class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
@@ -180,7 +185,6 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     Shutdown: ClassVar[Final[State]] = State(sources=Stopping)
     """This state is entered once, after the executor has shut down its event loop and has joined its captive thread."""
 
-
     def __init__(
         self,
         *,
@@ -188,7 +192,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         idle_timeout: float | timedelta = float("inf"),
         loop_factory: Callable[[], asyncio.AbstractEventLoop] = asyncio.new_event_loop,
         logger: logging.Logger | None = None,
-        _blocking_checker=None, # Should not be set by external callers
+        _blocking_checker=None,  # Should not be set by external callers
     ):
         """
         When constructed with no arguments, ``EventLoopExecutor`` will operate in the mode that most use-cases probably
@@ -271,7 +275,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         _fork_safety.executors.ensure_registered(self)
         try:
             thread.start()
-            self._runner.result() # Wait for the captive thread to signal that it's ready and running the event loop
+            self._runner.result()  # Wait for the captive thread to signal that it's ready and running the event loop
         except BaseException:
             # Any error during construction (e.g. KeyboardInterrupt) risks leaving a background thread running on the
             # system, expecting work. While this class can't be made interrupt-safe generally, it is easy to signal for
@@ -334,7 +338,6 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         """
         # TODO fix doc render indent of kwargs parameter after https://github.com/sphinx-doc/sphinx/issues/9141 is fixed
 
-
         # TODO assess storing a partial FutureFactory of some kind
         # TODO assess storing a precreated future e.g. with the done callback _internally set.
         # TODO assess copying template futures.
@@ -355,7 +358,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # Compute job names for use in tracebacks, so users see exceptions as arising from
             # "EventLoopExecutor._job[user.function.name]". This helps distinguish failures when multiple jobs are
             # running on the executor.
-            f"{self._job.__qualname__}[{getattr(func, '__qualname__', None) or type(func).__qualname__}]"
+            f"{self._job.__qualname__}[{getattr(func, '__qualname__', None) or type(func).__qualname__}]",
         )
         job = self._job(func, args, kwargs, future)  # Nothing in it runs until future.start()
         job.__qualname__, future._target = name, job
@@ -592,13 +595,15 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                 self._unclean_stop("manually stopped")
             else:
                 self._clean_stop("stopped")
-            if cancel_futures:  # Once stopped, as _job() then reads why, and before the loop gets to calls not yet started
+            if (
+                cancel_futures
+            ):  # Once stopped, as _job() then reads why, and before the loop gets to calls not yet started
                 self._interrupted.set()
         if cancel_futures or not busy:  # Otherwise the last call to end does: see _job()
             try:
                 self._loop.call_soon_threadsafe(self._interrupt, cancel_futures)
             except RuntimeError:
-                pass # the loop has closed, so the executor has already stopped
+                pass  # the loop has closed, so the executor has already stopped
         stopped = self.wait_for_state(self.Shutdown)
         if wait:
             stopped.result()
@@ -621,6 +626,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                 # main task's TaskGroup cancelling its children, say) mustn't cancel it twice.
                 if (task := future.task) is not None and not (self._interrupted and task.cancelling()):
                     task.cancel()
+
             # TODO can we call it directly if on the loop?
             # TODO can we have a util method that decides call-soon/threadsafe/local-call?
             try:
@@ -785,7 +791,6 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             for task in tasks:
                 task.cancel()
 
-
     async def _job(self, func, args, kwargs, future: _ExecutorJob):
         """
         Runs a job on the executor's event loop. All jobs are submitted by their start().
@@ -796,7 +801,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
         # We're a little precious about performance in this method since it's on the hot path:
         task, expiry = asyncio.current_task(), self._expiry
-        expiry.reset(None) # Suspend the idle timeout
+        expiry.reset(None)  # Suspend the idle timeout
         try:
             # If the job was cancelled by its caller or failed by the executor e.g. forking, do nothing.
             if future.done():
@@ -853,5 +858,6 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                 if stopping:
                     self._interrupt(False)
                 expiry.reset(self._idle_timeout)
+
 
 __all__ = ["EventLoopExecutor"]
