@@ -1,6 +1,6 @@
 # Contributing to `async-anywhere`
 
-1. Clone this repo from GitHub.
+1. Clone [this repo](https://github.com/zbentley/async-anywhere) from GitHub.
 2. Run the tests with `pytest`, e.g. via `uv run pytest`.
 3. Make a PR!
 

@@ -121,6 +121,26 @@ def qualify_stdlib_names(app, doctree):
             text.parent.replace(text, nodes.Text(target))
 
 
+# .md pages link to the hosted docs, so that their links work on GitHub and PyPI too
+_HOSTED_DOCS = 'https://async-anywhere.readthedocs.io/en/latest/'
+
+
+def localize_hosted_links(app, doctree, docname):
+    # Point links to the hosted docs at this build's own pages, so each version's docs link within that version
+    for ref in doctree.findall(nodes.reference):
+        uri = ref.get('refuri', '')
+        if not uri.startswith(_HOSTED_DOCS):
+            continue
+        path, _, anchor = uri.removeprefix(_HOSTED_DOCS).partition('#')
+        target = path.removesuffix('.html') or 'index'
+        if target not in app.env.all_docs or (len(anchor) > 0 and not any(
+            anchor in node['ids'] for node in app.env.get_doctree(target).findall(nodes.Element)
+        )):
+            raise ValueError(f'{docname}: hosted docs link has no target in this build: {uri}')
+        ref['refuri'] = app.builder.get_relative_uri(docname, target) + uri.removeprefix(_HOSTED_DOCS + path)
+        ref['internal'] = True
+
+
 def auto_dot(app, env, node, contnode):
     # Retry an unresolved bare Python ref as though dotted: suffix search, with the domain's own ambiguity warning
     if node['refdomain'] != 'py' or node.get('refspecific'):
@@ -182,6 +202,7 @@ def setup(app):
     app.connect('autodoc-process-docstring', attrs_init_param_docs)
     app.connect('autodoc-process-docstring', executor_map_doc)
     app.connect('doctree-read', qualify_stdlib_names)
+    app.connect('doctree-resolved', localize_hosted_links)
     app.connect('missing-reference', auto_dot, priority=501)  # After intersphinx (500): exact external names win
     # Separate registrations of the same class: overriding one leaves the other as stock PyClasslike
     app.add_directive_to_domain('py', 'class', AbstractAwarePyClasslike, override=True)

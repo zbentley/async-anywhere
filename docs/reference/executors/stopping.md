@@ -2,8 +2,8 @@
 
 # Stopping `EventLoopExecutor`s
 
-An {py:class}`.EventLoopExecutor` can be **stopped**, meaning that its {py:class}`.WaitableStateTracker` API is in the
-`Stopping` or `Shutdown` {py:class}`.State`.
+An [`EventLoopExecutor`](https://async-anywhere.readthedocs.io/en/latest/reference/executors/EventLoopExecutor.html#async_anywhere.executors.EventLoopExecutor) can be **stopped**, meaning that its [`WaitableStateTracker`](https://async-anywhere.readthedocs.io/en/latest/reference/state_tracker/WaitableStateTracker.html#async_anywhere.state_tracker.waitable.WaitableStateTracker) API is in the
+`Stopping` or `Shutdown` [`State`](https://async-anywhere.readthedocs.io/en/latest/reference/state_tracker/State.html#async_anywhere.state_tracker.State).
 
 Once an executor is stopped, attempts to submit new jobs will fail with an error.
 
@@ -11,8 +11,8 @@ Once an executor is stopped, attempts to submit new jobs will fail with an error
 
 Executors are stopped in these situations:
 
-- {py:meth}`.EventLoopExecutor.shutdown` is called by the user.
-- The executor's {term}`main task` returns or raises an exception.
+- [`EventLoopExecutor.shutdown()`](https://async-anywhere.readthedocs.io/en/latest/reference/executors/EventLoopExecutor.html#async_anywhere.executors.EventLoopExecutor.shutdown) is called by the user.
+- The executor's [main task](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-main-task) returns or raises an exception.
 - [`os.fork()`](https://docs.python.org/3/library/os.html#os.fork) is called: in this case, the executor will register as stopped in the child process, and will continue running as usual in the parent.
 - When the captive event loop used by the executor crashes (e.g. if user code inside the executor calls `asyncio.get_event_loop().close()`, or if any unhandled loop-breaking error occurs).
 - Any code running on the executor's event loop (job or not) raises [`SystemExit`](https://docs.python.org/3/builtins/exceptions.html#SystemExit) or [`KeyboardInterrupt`](https://docs.python.org/3/builtins/exceptions.html#KeyboardInterrupt). Raising other `BaseException`s besides `CancelledError` is unsupported and may also trigger executor crash.
@@ -23,9 +23,9 @@ When an executor is stopped, the following behavior happens:
 
 1. Immediately upon being stopped, new jobs can no longer be submitted to the executor.
 2. The executor is put into the `Stopping` State.
-3. The executor's captive event loop then waits for all {term}`job`s to complete. Jobs and the {term}`main task` can receive cancellations during this phase: see [Cancellation with `EventLoopExecutor`](cancellation.md).
+3. The executor's captive event loop then waits for all [job](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-job)s to complete. Jobs and the [main task](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-main-task) can receive cancellations during this phase: see [Cancellation with `EventLoopExecutor`](https://async-anywhere.readthedocs.io/en/latest/reference/executors/cancellation.html).
    - This step is skipped when an executor is stopped due to `os.fork()`, in the child process.
-4. Once those jobs have completed, if the {term}`main task` is still running, and has not been cancelled, `asyncio.Task.cancel()` is called on it.
+4. Once those jobs have completed, if the [main task](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-main-task) is still running, and has not been cancelled, `asyncio.Task.cancel()` is called on it.
    - This step is skipped when an executor is stopped due to `os.fork()`, in the child process.
 5. Once all jobs have completed (or once waiting for them fails due to e.g. a broken event loop), `asyncio.Task.cancel()` is called on *all* remaining tasks on the executor's event loop (including any still-running jobs, the main task, and tasks created/backgrounded by them).
    - This step is skipped when an executor is stopped due to `os.fork()`, in the child process.

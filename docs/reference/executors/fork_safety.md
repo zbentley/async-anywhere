@@ -5,7 +5,7 @@
 > [!WARNING]
 > It is **never** safe to fork *within* an `EventLoopExecutor`'s thread, for the same reasons that it is never
 > safe to fork within a running [`asyncio.Task`](https://docs.python.org/3/library/asyncio-task.html#asyncio.Task)
-> (which describes all {term}`code in an executor`).
+> (which describes all [code in an executor](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-code-in-an-executor)).
 >
 > The only guaranteed-safe things you can do after forking inside an executor are:
 >
@@ -22,7 +22,7 @@ Other than that, EventLoopExecutor is "fork-safe", in that it preserves the foll
   will **never** indefinitely block, whether or not `fork(2)` was invoked by CPython's
   [`os.fork()`](https://docs.python.org/3/library/os.html#os.fork).
 - An EventLoopExecutor created before `fork(2)` will refuse to be used in a child process. Attempts to interact with it
-  will fail; it will register as having been [shut down](stopping.md) at the moment
+  will fail; it will register as having been [shut down](https://async-anywhere.readthedocs.io/en/latest/reference/executors/stopping.html) at the moment
   [`os.fork()`](https://docs.python.org/3/library/os.html#os.fork) was called.
 - Constructing and using new EventLoopExecutors after a fork, in the parent or the child process, will work normally.
 
@@ -34,7 +34,7 @@ was never retrieved" warnings, and much more. For example, the following situati
 in child processes during or after `fork(2)`:
 
 - Discarding an incomplete [`asyncio.Task`](https://docs.python.org/3/library/asyncio-task.html#asyncio.Task) (or a
-  future which wraps a Task, like those returned by {py:meth}`.EventLoopExecutor.submit`) may trigger asyncio logging
+  future which wraps a Task, like those returned by [`EventLoopExecutor.submit()`](https://async-anywhere.readthedocs.io/en/latest/reference/executors/EventLoopExecutor.html#async_anywhere.executors.EventLoopExecutor.submit)) may trigger asyncio logging
   like "Task exception was never retrieved". Python's logging functionality
   [is not fork-safe and may deadlock on IO stream locks](https://github.com/python/cpython/issues/84579).
 - Calling destructors for async-runtime-related resources, like event loops or

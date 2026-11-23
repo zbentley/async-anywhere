@@ -6,7 +6,7 @@ Many other Python modules handle bridging asynchronous and synchronous Python co
 
 ## Asgiref
 
-[`asgiref`](https://github.com/django/asgiref), discussed in [When to use `EventLoopExecutor`](when_to_use.md), is the easiest-to-use tool for bridging between sync and async code. However, it doesn't natively have an easy "async-to-async" bridge, can impose substantial overhead when starting/stopping threads and event loops, and is written to run individual routines on/off of a given event loop rather than to maintain long-running captive asynchronous workers.
+[`asgiref`](https://github.com/django/asgiref), discussed in [When to use `EventLoopExecutor`](https://async-anywhere.readthedocs.io/en/latest/reference/executors/when_to_use.html), is the easiest-to-use tool for bridging between sync and async code. However, it doesn't natively have an easy "async-to-async" bridge, can impose substantial overhead when starting/stopping threads and event loops, and is written to run individual routines on/off of a given event loop rather than to maintain long-running captive asynchronous workers.
 
 `asgiref` users often encounter bugs (e.g. [asgiref #194](https://github.com/django/asgiref/issues/194)) due to loop-mismatch. This is a byproduct of `asgiref`'s design prioritizing simplicity of bridging individual functions between sync and async code--a good tradeoff that `asgiref` maintainers mindfully made, but one with drawbacks: specifically, it's hard to see and control *which* captive loops and/or executors `asgiref` is using for a given bridging operation. 
 
@@ -30,7 +30,7 @@ Neither `asgiref` nor AnyIO provides:
 Many other libraries address these issues in a purpose-specific way:
 
 - `fsspec`'s [`fsspecIO` thread](https://filesystem-spec.readthedocs.io/en/latest/_modules/fsspec/asyn.html) routes code to a captive async event loop, and is fork-safe for common usage.
-- Prefect's [`run_coro_as_sync`](https://docs.prefect.io/v3/api-ref/python/prefect-utilities-asyncutils) runs on a shared loop thread, but in [#15008](https://github.com/PrefectHQ/prefect/issues/15008) Prefect began migrating away from that approach, citing "complex event loop and threading logic that risks performance degradation and more difficult to inspect failure modes".
+- Prefect's [`run_coro_as_sync`](https://www.prefect.io/docs/v3/api-ref/python/prefect-utilities-asyncutils) runs on a shared loop thread, but in [#15008](https://github.com/PrefectHQ/prefect/issues/15008) Prefect began migrating away from that approach, citing "complex event loop and threading logic that risks performance degradation and more difficult to inspect failure modes".
 - [`unsync`](https://pypi.org/project/unsync/) provides handles to a shared loop-containing thread, though it doesn't address lifecycle, cancellation, or fork safety.
 - [asyncio-loop-local](https://github.com/t184256/asyncio-loop-local) solves the inverse problem of creating per-loop/per-caller captive singletons, rather than sharing one across all routines in a program.
 - [SQLAlchemy](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html) addresses issues around multiple event loops by providing tools for replacing connections when new event loops are used.

@@ -6,7 +6,7 @@
 in that it *will not crash or deadlock* in either the parent or child process. However, there is an important caveat
 when using this class with forking code.
 
-If forking happens from another thread while a `StateTracker` is calling {py:meth}`.StateTracker._transition`, some,
+If forking happens from another thread while a `StateTracker` is calling [`StateTracker._transition()`](https://async-anywhere.readthedocs.io/en/latest/reference/state_tracker/StateTracker.html#async_anywhere.state_tracker.StateTracker._transition), some,
 all, or none of the following may be true when the tracker is used in a forked child process:
 
 - It might be as if the call to `_transition` never occurred. `_transition`'s side effects are only

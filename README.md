@@ -1,7 +1,3 @@
-# Status
-
-**Unfinished:** This module is feature complete but not yet finalized. I plan to finish finalizing the API, docs, tests, *et cetera* in late 2026 and publish it to PyPi, at which time this section will be removed.
-
 # async-anywhere
 
 `async-anywhere` is a set of tools which address common Python concurrency needs. It contains tools for bridging between any number of blocking threads and `async` event loops, tools for modelling state machines and state transitions, `fork(2)`-safety semantics for common concurrency primitives, and more.
@@ -10,27 +6,25 @@ If you are struggling with code that needs to coordinate between multiple thread
 
 It includes:
 
-- `AwaitableFuture`, a `concurrent.futures.Future` which can be blocked on or `await`ed on from any number of event loops or threads. It supports configurable cancellation behavior, `fork(2)` safety, lock-free operation on many paths that the stdlib serializes, and more.
-- `EventLoopExecutor`, a `concurrent.futures.Executor` which runs **`async`** code on a thread, and whose results can be waited on from anywhere. It supports idle expiration, calling into itself from within its captive thread, `fork(2)` safety, task cancellation, controlled shutdown, "parent" functions which own the event loop, and more.
-- `StateTracker`, a "state machine lite" which allows a class to transition between one of several declared states, and allows other code to wait for the tracker to enter one or more states in an `async`- and thread-agnostic way.
+- [`AwaitableFuture`](https://async-anywhere.readthedocs.io/en/latest/reference/futures/awaitable.html#async_anywhere.futures.AwaitableFuture), a `concurrent.futures.Future` which can be blocked on or `await`ed on from any number of event loops or threads. It supports configurable cancellation behavior, `fork(2)` safety, lock-free operation on many paths that the stdlib serializes, and more.
+- [`EventLoopExecutor`](https://async-anywhere.readthedocs.io/en/latest/reference/executors/EventLoopExecutor.html#async_anywhere.executors.EventLoopExecutor), a `concurrent.futures.Executor` which runs **`async`** code on a thread, and whose results can be waited on from anywhere. It supports idle expiration, calling into itself from within its captive thread, `fork(2)` safety, task cancellation, controlled shutdown, "parent" functions which own the event loop, and more.
+- [`StateTracker`](https://async-anywhere.readthedocs.io/en/latest/reference/state_tracker/StateTracker.html#async_anywhere.state_tracker.StateTracker), a "state machine lite" which allows a class to transition between one of several declared states, and allows other code to wait for the tracker to enter one or more states in an `async`- and thread-agnostic way.
 - Several other tools and utilities related to Python concurrency management.
 
-See "Examples" below, or [the API documentation]() for more information.
+See "Examples" below, or [the API documentation](https://async-anywhere.readthedocs.io/en/latest/reference/index.html) for more information.
 
 ## Installation and Requirements
 
-PyPi packages are not yet available. **PyPi packaging is [being actively worked on](https://github.com/zbentley/async-anywhere/issues/11)**.
-
-Until PyPi packaging support lands, this module can be installed from source, with `pip`:
+This module can be installed from [PyPI](https://pypi.org/project/async-anywhere/), with `pip`:
 
 ```console
-pip install git+https://github.com/zbentley/async-anywhere.git@main
+pip install async-anywhere
 ```
 
 Or via `uv`:
 
 ```console
-uv add git+https://github.com/zbentley/async-anywhere.git@main
+uv add async-anywhere
 ```
 
 `async-anywhere` is a pure-Python module with no required compiled components, and aims to have as few pure-python transitive dependencies as possible.
@@ -48,6 +42,8 @@ This module is tested and used in production on Linux and MacOS systems. BSDs ar
 - Correct, minimally locking operations with or without the Global Interpreter Lock (GIL).
 
 ## Examples
+
+The below examples assume a running asyncio event loop.
 
 ### `AwaitableFuture`
 
@@ -121,26 +117,26 @@ executor.shutdown(wait=True, cancel_futures=True).result()
 
 This module can be used in a variety of situations, including uses where `async` Python code isn't in use at all. Each of the tools in this module has affinity for particular use cases, and may not be appropriate for others.
 
-- `EventLoopExecutor` is the most powerful tool in this module, and is useful when you need to invoke `async` code from a combination of synchronous code, multiple threads, and multiple different event loops, and `asgiref.async_to_sync` isn't sufficient ([when to use `EventLoopExecutor`](docs/reference/executors/when_to_use.md)).
-- `AwaitableFuture` is useful if you have code which heavily uses `asyncio.Future` or `concurrent.futures.Future` directly, and you want a friendlier (and more performant in many cases) API ([when to use `AwaitableFuture`](docs/reference/futures/when_to_use.md)).
-- `StateTracker` is useful for code that wants to model "state machines without hooks": code that transitions between states in a graph, but doesn't want to model all of its code as hooks on particular state transitions ([when to use `StateTracker`](docs/reference/state_tracker/when_to_use.md)).
+- `EventLoopExecutor` is the most powerful tool in this module, and is useful when you need to invoke `async` code from a combination of synchronous code, multiple threads, and multiple different event loops, and `asgiref.async_to_sync` isn't sufficient ([when to use `EventLoopExecutor`](https://async-anywhere.readthedocs.io/en/latest/reference/executors/when_to_use.html)).
+- `AwaitableFuture` is useful if you have code which heavily uses `asyncio.Future` or `concurrent.futures.Future` directly, and you want a friendlier (and more performant in many cases) API ([when to use `AwaitableFuture`](https://async-anywhere.readthedocs.io/en/latest/reference/futures/when_to_use.html)).
+- `StateTracker` is useful for code that wants to model "state machines without hooks": code that transitions between states in a graph, but doesn't want to model all of its code as hooks on particular state transitions ([when to use `StateTracker`](https://async-anywhere.readthedocs.io/en/latest/reference/state_tracker/when_to_use.html)).
 
-For how `EventLoopExecutor` compares to other tools that bridge synchronous and `async` code, see [Prior Art](docs/reference/executors/prior_art.md).
+For how `EventLoopExecutor` compares to other tools that bridge synchronous and `async` code, see [Prior Art](https://async-anywhere.readthedocs.io/en/latest/reference/executors/prior_art.html).
 
 ## Fork Safety
 
 The different subcomponents of this module are fork-safe, in that they have documented semantics and avoid unexpected blocking or state corruption in the presence of code that uses `os.fork()`:
 
-- [`EventLoopExecutor` fork safety](docs/reference/executors/fork_safety.md).
-- [`AwaitableFuture` fork safety](docs/reference/futures/fork_safety.md).
-- [`StateTracker` fork safety](docs/reference/state_tracker/fork_safety.md).
+- [`EventLoopExecutor` fork safety](https://async-anywhere.readthedocs.io/en/latest/reference/executors/fork_safety.html).
+- [`AwaitableFuture` fork safety](https://async-anywhere.readthedocs.io/en/latest/reference/futures/fork_safety.html).
+- [`StateTracker` fork safety](https://async-anywhere.readthedocs.io/en/latest/reference/state_tracker/fork_safety.html).
 
 **Note** that care is still needed when forking in the presence of this module or concurrent Python code generally; read
 the above carefully in order to understand tradeoffs related to `fork(2)`.
 
 ## Development and Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md)
+See [CONTRIBUTING.md](https://github.com/zbentley/async-anywhere/blob/main/CONTRIBUTING.md)
 
 ### LLM usage
 
@@ -152,4 +148,4 @@ Code supplied by contributors will be reviewed regardless of provenance, but we 
 
 ## License
 
-`async-anywhere` is free and open source software. See `LICENSE` for more information.
+`async-anywhere` is free and open source software. See [`LICENSE`](https://github.com/zbentley/async-anywhere/blob/main/LICENSE) for more information.

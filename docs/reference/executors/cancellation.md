@@ -2,7 +2,7 @@
 
 # Cancellation with `EventLoopExecutor`
 
-User {term}`code in an executor` is cancelled (via
+User [code in an executor](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-code-in-an-executor) is cancelled (via
 [`asyncio.CancelledError`](https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.CancelledError)) in a
 variety of situations, listed below.
 
@@ -29,15 +29,15 @@ variety of situations, listed below.
 
 ## Job Cancellation
 
-{term}`Job`s are cancelled in these situations:
+[Job](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-job)s are cancelled in these situations:
 
 1. A job's caller cancels it (e.g. via `EventLoopExecutor().submit(...).cancel()` or by triggering cancellation
    during `await EventLoopExecutor().submit(...)`).
 2. `EventLoopExecutor.shutdown(cancel_futures=True)` is called.
-3. The {term}`main task` completes unexpectedly (returns or raises an exception without
+3. The [main task](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-main-task) completes unexpectedly (returns or raises an exception without
    `EventLoopExecutor.shutdown()` having been called or expiration having occurred). This has the same effect as
    calling `EventLoopExecutor.shutdown(cancel_futures=True)`.
-4. The executor finishes [shutting down](stopping.md), if tasks have not completed in response to prior cancellations.
+4. The executor finishes [shutting down](https://async-anywhere.readthedocs.io/en/latest/reference/executors/stopping.html), if tasks have not completed in response to prior cancellations.
 5. Code inside the job cancels it via `executor.current_job().cancel()`, with the same effect as its caller cancelling
    it.
 6. Code cancels the job's [`asyncio.Task`](https://docs.python.org/3/library/asyncio-task.html#asyncio.Task) directly
@@ -56,37 +56,37 @@ variety of situations, listed below.
 
 ## Main task Cancellation
 
-An executor's {term}`main task` is cancelled in these situations:
+An executor's [main task](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-main-task) is cancelled in these situations:
 
 - The idle timeout expires (which means the executor is running no jobs and has been idle for that amount of time).
 - `EventLoopExecutor.shutdown(cancel_futures=True)` is called.
-- `EventLoopExecutor.shutdown(cancel_futures=False)` is called, once no in-progress {term}`job`s are running. This
+- `EventLoopExecutor.shutdown(cancel_futures=False)` is called, once no in-progress [job](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-job)s are running. This
   cancellation will only be sent to the main task once, and will only be sent if that task has not been cancelled
   for any other reason.
-- The executor finishes [shutting down](stopping.md), if tasks have not completed in response to prior cancellations.
+- The executor finishes [shutting down](https://async-anywhere.readthedocs.io/en/latest/reference/executors/stopping.html), if tasks have not completed in response to prior cancellations.
 
 ## Non-job/non-main-task Cancellation
 
-Non-{term}`job`, non-{term}`main task` `asyncio.Task`s created inside the executor (e.g. via executor code using
+Non-[job](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-job), non-[main task](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-main-task) `asyncio.Task`s created inside the executor (e.g. via executor code using
 [`asyncio.shield()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.shield) or un-awaited/backgrounded
 [`asyncio.Task`](https://docs.python.org/3/library/asyncio-task.html#asyncio.Task)s) are cancelled in these situations:
 
 - User code supervising a Task triggers an ordinary cancellation, as with normal async Python programming.
-- The executor finishes [shutting down](stopping.md).
+- The executor finishes [shutting down](https://async-anywhere.readthedocs.io/en/latest/reference/executors/stopping.html).
 
 ## Cancellation and Trio
 
 ### Cancelling executor jobs while awaiting from Trio
 
-An {py:class}`.AwaitableFuture`, such as one returned by {py:meth}`.EventLoopExecutor.submit`, can be awaited from a
+An [`AwaitableFuture`](https://async-anywhere.readthedocs.io/en/latest/reference/futures/awaitable.html#async_anywhere.futures.AwaitableFuture), such as one returned by [`EventLoopExecutor.submit()`](https://async-anywhere.readthedocs.io/en/latest/reference/executors/EventLoopExecutor.html#async_anywhere.executors.EventLoopExecutor.submit), can be awaited from a
 [Trio](https://trio.readthedocs.io/en/stable/) task. Which exception the `await` raises depends on what was cancelled:
 
 - **The awaiting Trio code is cancelled**: if a cancel scope enclosing the `await` is cancelled (e.g. its nursery is
   cancelled, or a [`trio.move_on_after()`](https://trio.readthedocs.io/en/stable/reference-core.html#trio.move_on_after)
   deadline passes), the `await` raises
   [`trio.Cancelled`](https://trio.readthedocs.io/en/stable/reference-core.html#trio.Cancelled), as any other Trio
-  checkpoint would, and the `AwaitableFuture` is cancelled too. If the future is a {term}`job`'s, this cancels the job
-  as usual. If the future refuses cancellation (e.g. it is an {py:class}`.UncancellableAwaitableFuture`), the Trio code
+  checkpoint would, and the `AwaitableFuture` is cancelled too. If the future is a [job](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-job)'s, this cancels the job
+  as usual. If the future refuses cancellation (e.g. it is an [`UncancellableAwaitableFuture`](https://async-anywhere.readthedocs.io/en/latest/reference/futures/uncancellable.html#async_anywhere.futures.UncancellableAwaitableFuture)), the Trio code
   still receives [`trio.Cancelled`](https://trio.readthedocs.io/en/stable/reference-core.html#trio.Cancelled) and stops
   waiting, but the future is left as it was.
 - **The AwaitableFuture is cancelled elsewhere**: if the future is cancelled by anything other than the awaiting Trio
@@ -94,10 +94,10 @@ An {py:class}`.AwaitableFuture`, such as one returned by {py:meth}`.EventLoopExe
   [`concurrent.futures.CancelledError`](https://docs.python.org/3/library/concurrent.futures.html#concurrent.futures.CancelledError),
   an ordinary [`Exception`](https://docs.python.org/3/builtins/exceptions.html#Exception). It does *not* raise
   [`trio.Cancelled`](https://trio.readthedocs.io/en/stable/reference-core.html#trio.Cancelled), which Trio reserves for
-  cancellations of the waiting code's own cancel scopes. See {py:meth}`.AwaitableFuture.as_async_future` for details.
+  cancellations of the waiting code's own cancel scopes. See [`AwaitableFuture.as_async_future()`](https://async-anywhere.readthedocs.io/en/latest/reference/futures/awaitable.html#async_anywhere.futures.AwaitableFuture.as_async_future) for details.
 
 > [!NOTE]
-> Awaiting an `AwaitableFuture` that has already {term}`completed` is not a Trio checkpoint: if an enclosing cancel
+> Awaiting an `AwaitableFuture` that has already [completed](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-completed) is not a Trio checkpoint: if an enclosing cancel
 > scope is already cancelled, the `await` still produces the future's result or exception, and
 > [`trio.Cancelled`](https://trio.readthedocs.io/en/stable/reference-core.html#trio.Cancelled) is raised at the next
 > checkpoint instead.
@@ -111,7 +111,7 @@ The executor cancels a job that hands work to Trio like any other job: it cancel
 [`asyncio.Task`](https://docs.python.org/3/library/asyncio-task.html#asyncio.Task), and the job's own code decides how
 that cancellation reaches the Trio code, and how cancellations in Trio are handled.
 
-When a Trio-using {term}`job`'s `AwaitableFuture` is cancelled (e.g. by its caller, or by
+When a Trio-using [job](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-job)'s `AwaitableFuture` is cancelled (e.g. by its caller, or by
 `EventLoopExecutor.shutdown(cancel_futures=True)`):
 
 1. The job's `AwaitableFuture` is cancelled immediately: code waiting on it gets a `CancelledError` at once, without
@@ -123,10 +123,10 @@ When a Trio-using {term}`job`'s `AwaitableFuture` is cancelled (e.g. by its call
    on a Trio guest run, the outer, non-Trio wait must handle `asyncio.CancelledError` appropriately (e.g. by
    calling `.cancel()` on a Trio cancel scope that is active).
 
-When Trio code in a {term}`job` cancels itself, Trio's semantics dictate that the cancellation be handled inside the
+When Trio code in a [job](https://async-anywhere.readthedocs.io/en/latest/reference/Glossary.html#term-job) cancels itself, Trio's semantics dictate that the cancellation be handled inside the
 job. The job is completed with whatever the Trio code returns or raises, and is unaware of any internal cancellation
 events unless told about them. You can report a Trio (or otherwise "external" to the event loop) cancellation by
-cancelling a job's future (which can be obtained by {py:meth}`.EventLoopExecutor.current_job`).
+cancelling a job's future (which can be obtained by [`EventLoopExecutor.current_job()`](https://async-anywhere.readthedocs.io/en/latest/reference/executors/EventLoopExecutor.html#async_anywhere.executors.EventLoopExecutor.current_job)).
 
 > [!NOTE]
 > Trio code running as a [guest](https://trio.readthedocs.io/en/stable/reference-lowlevel.html#trio.lowlevel.start_guest_run) is not inside a job, so `current_job()` returns None there: call it from the job's

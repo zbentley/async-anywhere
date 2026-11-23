@@ -1,6 +1,6 @@
 # When to use `EventLoopExecutor`
 
-{py:class}`.EventLoopExecutor` is the most powerful tool in this module. It may be appropriate for you if:
+[`EventLoopExecutor`](https://async-anywhere.readthedocs.io/en/latest/reference/executors/EventLoopExecutor.html#async_anywhere.executors.EventLoopExecutor) is the most powerful tool in this module. It may be appropriate for you if:
 
 - You frequently need to invoke `async` code from a combination of synchronous code, multiple threads, and multiple different event loops/async contexts.
 - You've had issues with [`asgiref.async_to_sync`](https://docs.djangoproject.com/en/stable/topics/async/#asgiref.sync.async_to_sync) (e.g. high overhead, a desire to `await` on its results rather than blocking-wait for them, or repeated uses of `async_to_sync` resulting in errors related to closed or mismatched event loops).

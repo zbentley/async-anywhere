@@ -14,7 +14,7 @@ Stdlib Future-like primitives have several problems related to `fork(2)`:
 - Done callbacks added via `add_done_callback` can run twice (once in the parent and once in the child) when
   added to futures that are interacted with on both sides of a `fork(2)`.
 
-{py:class}`.AwaitableFuture` addresses all of those issues:
+[`AwaitableFuture`](https://async-anywhere.readthedocs.io/en/latest/reference/futures/awaitable.html#async_anywhere.futures.AwaitableFuture) addresses all of those issues:
 
 - `AwaitableFuture`s will never deadlock or break `concurrent.futures` code after fork.
 - `AwaitableFuture`s can be blocked on or `await`ed from any process. However, results aren't
@@ -23,5 +23,5 @@ Stdlib Future-like primitives have several problems related to `fork(2)`:
   deadlock after `fork(2)` caused by `concurrent.futures.Future`'s internal condition lock corruption.
 - `AwaitableFuture`s can be configured to cancel themselves immediately when forked into a child process,
   to prevent easy-to-make mistakes.
-- {py:meth}`.AwaitableFuture.add_done_callback` can configure callbacks to always (or never) run in forked child
+- [`AwaitableFuture.add_done_callback()`](https://async-anywhere.readthedocs.io/en/latest/reference/futures/awaitable.html#async_anywhere.futures.AwaitableFuture.add_done_callback) can configure callbacks to always (or never) run in forked child
   processes.
