@@ -663,6 +663,21 @@ async def test_current_job_is_none_outside_calls_and_what_they_await():
         assert seen == dict.fromkeys(seen)
 
 
+async def test_current_job_is_a_calls_future_in_coroutines_it_awaits():
+    async with running() as worker:
+
+        async def deeper():
+            await asyncio.sleep(0)
+            return worker.current_job()  # Awaited, not made a task of: so in the job's own task, on any Python
+
+        @worker.bridge
+        async def job():
+            return await deeper()
+
+        call = job()
+        assert await call is call
+
+
 async def test_cancelling_a_call_cancels_its_job_quietly():
     # Like a task cancelled and never awaited: the teardown fails the test if asyncio logs it as never retrieved
     async with running(Tidy) as worker:
@@ -748,6 +763,26 @@ def test_executors_on_loops_that_cant_make_tasks_fail_as_made_with_why():
     failed_construction(logger)
 
 
+async def test_calls_run_on_loops_with_asyncios_eager_task_factory(executor_loop):
+    if executor_loop == "uvloop" and sys.version_info < (3, 14):  # Not in this package's hands
+        pytest.skip("On 3.13, uvloop gives the factory eager_start for every task, the executor's own included")
+    make_loop = EventLoopExecutor.__init__.__kwdefaults__["loop_factory"]
+
+    def loop_factory():
+        loop = make_loop()
+        loop.set_task_factory(asyncio.eager_task_factory)  # Which before 3.14 refuses eager_start: see _ExecutorJob
+        return loop
+
+    async with running(loop_factory=loop_factory) as worker:
+
+        @worker.bridge
+        async def job():
+            return worker.current_job()
+
+        call = job()
+        assert await call is call
+
+
 def python_task_loop_factory():
     # Making the tasks asyncio.Task's pure-Python twin does, as nest_asyncio makes every task. Not an asyncio.Task, and
     # on 3.14, not seen by asyncio.current_task()
@@ -774,7 +809,7 @@ async def test_calls_run_and_drain_as_ever_on_loops_making_pure_python_tasks():
 @pytest.mark.skipif(sys.version_info < (3, 14), reason="asyncio.current_task() sees them before 3.14")
 def test_executors_on_loops_making_tasks_current_task_cant_see_fail_as_made_with_why():
     logger = logging.getLogger(f"{__name__}.current_task_cant_see")
-    with pytest.raises(EventLoopExecutorStopped, match=r"tasks asyncio\.current_task\(\) can't see") as raised:
+    with pytest.raises(EventLoopExecutorStopped, match=r"asyncio\.current_task\(\) returned None in a task") as raised:
         EventLoopExecutor(loop_factory=python_task_loop_factory, logger=logger)
     assert isinstance(raised.value.__cause__, TypeError)
     failed_construction(logger)

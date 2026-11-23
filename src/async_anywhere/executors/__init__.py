@@ -444,17 +444,6 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
     def current_job(self) -> AwaitableFuture | None:
         """
-        Returns:
-            The :py:class:`AwaitableFuture` of the invocant executor's :term:`job` that this method is called from
-            (the same one :py:meth:`submit` returned for it), or None if it is not called from one of the executor's
-            jobs.
-
-            Code is inside a job if it is run by a call to a function called via :py:meth:`submit`. If code is
-            *dispatched* from a job but is not directly *called* by it (e.g. if the job backgrounds an ``asyncio.Task``
-            or runs work on a thread via ``asgiref`` or ``asyncio.to_thread``), this method returns None.
-
-            Cancelling the returned future cancels the job, just as its caller cancelling it would.
-
         Warning:
             This method may spuriously return None on certain Pythons and event loops, when called from within an
             executor job's subtasks or multiplexers (:py:func:`asyncio.gather`, :py:func:`asyncio.wait`,
@@ -469,6 +458,17 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             bugs (`python/cpython#156523 <https://github.com/python/cpython/issues/156523>`_,
             `python/cpython#161766 <https://github.com/python/cpython/issues/161766>`_,
             `python/cpython#162061 <https://github.com/python/cpython/issues/162061>`_).
+
+        Returns:
+            The :py:class:`AwaitableFuture` of the invocant executor's :term:`job` that this method is called from
+            (the same one :py:meth:`submit` returned for it) on a **best-effort basis**, or None if it is not called
+            from one of the executor's jobs (or "best effort" isn't good enough; see the warning above).
+
+            Code is inside a job if it is run by a call to a function called via :py:meth:`submit`. If code is
+            *dispatched* from a job but is not directly *called* by it (e.g. if the job backgrounds an ``asyncio.Task``
+            or runs work on a thread via ``asgiref`` or ``asyncio.to_thread``), this method returns None.
+
+            Cancelling the returned future cancels the job, just as its caller cancelling it would.
         """
         loop = asyncio._get_running_loop()
         if loop is not self._loop or (task := asyncio.current_task(loop)) is None:  # Jobs are tasks on this loop
@@ -706,10 +706,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
     def _main(self):
         async def run():
-            if (task := asyncio.current_task()) is None:  # Else every job would fail, its task unknown: see _job()
+            if (task := asyncio.current_task()) is None:
                 raise TypeError(
-                    "loop_factory made a loop whose tasks asyncio.current_task() can't see, such as "
-                    f"asyncio.tasks._PyTask from Python 3.14 (as nest_asyncio makes): {self._loop!r}"
+                    "Invariant violation: asyncio.current_task() returned None in a task (known defective patterns using nest-asyncio may be present)"
                 )
             self._expiry.reset(self._idle_timeout)  # "Reset that clock!" - Idris Elba
             self._runner.set_result(task)

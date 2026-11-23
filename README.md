@@ -118,6 +118,8 @@ This module is tested and used in production on Linux and MacOS systems. BSDs ar
 - Code using `AbstractEventLoop`, including `uvloop`.
 - Correct, minimally locking operations with or without the Global Interpreter Lock (GIL).
 
+Code using [nest-asyncio](https://pypi.org/project/nest-asyncio/), or other tools which monkeypatch or mock out core `asyncio` primitives, may not work well with this library.
+
 ## When should you use this module?
 
 This module can be used in a variety of situations, including uses where `async` Python code isn't in use at all. Each of the tools in this module has affinity for particular use cases, and may not be appropriate for others.
