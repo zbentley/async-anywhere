@@ -11,6 +11,7 @@ jobs:
       publishing: true
     permissions:
       contents: read
+      actions: read  # test.yml's macos-verdict lists this run's jobs
 
   publish:
     needs: test
