@@ -10,9 +10,9 @@
 [![Free-threaded: tested](https://img.shields.io/badge/free--threaded-3.14t%20tested-blue)](https://github.com/zbentley/async-anywhere/blob/main/.github/workflows/test.yml)
 ![Platform: Linux | macOS](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey)
 
-`async-anywhere` is a set of tools which address common Python concurrency needs. It contains tools for bridging between any number of blocking threads and `async` event loops, tools for modelling state machines and state transitions, `fork(2)`-safety semantics for common concurrency primitives, and more.
+A library of tools which address common Python concurrency needs. It helps with bridging between blocking threads and `async` event loops, modelling state machines and state transitions, adding fork-safety semantics for common concurrency primitives, and more.
 
-If you are struggling with code that needs to coordinate between multiple threads and event loops, dealing with deadlocks caused by interacting with `Future` objects after a `fork(2)`, or you need to maintain stateful/continuously-running async components of a larger program, this library may help!
+If you are struggling with code that needs to coordinate between multiple threads and event loops (even if you're not using `async`/`await` anywhere), dealing with deadlocks caused by interacting with `Future` objects after a `fork(2)`, or you need to maintain stateful/continuously-running `async` components of a larger program, this library may help!
 
 It includes:
 
