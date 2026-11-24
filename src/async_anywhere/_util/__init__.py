@@ -17,13 +17,13 @@ from async_anywhere.exceptions import WouldBlock
 
 def AnyEventLoop() -> bool:
     """Sentinel for the ``prevent_blocking_wait_within`` parameter of :py:meth:`AwaitableFuture.__init__`: raises
-    :py:class:`WouldBlock` instead of blocking if any event loop or :doc:`Trio <trio:index>` task is running."""
+    :py:exc:`WouldBlock` instead of blocking if any event loop or :doc:`Trio <trio:index>` task is running."""
     return asyncio._get_running_loop() is not None or TrioRuntime.in_task()
 
 
 def BlockingNotAllowed() -> bool:
     """Sentinel for the ``prevent_blocking_wait_within`` parameter of :py:meth:`AwaitableFuture.__init__`: raises
-    :py:class:`WouldBlock` instead of blocking in all cases."""
+    :py:exc:`WouldBlock` instead of blocking in all cases."""
     return True
 
 
@@ -36,8 +36,8 @@ type BlockingEnvironments = Collection[asyncio.AbstractEventLoop | Thread | Call
 @cache
 def futures_logger() -> logging.Logger:
     """
-    What :py:class:`AwaitableFuture` logs to when un-observed errors or warnings occur (e.g. an :py:class:`Exception`
-    is raised by a callback added via ``add_done_callback``--but not a :py:class:`BaseException`, those are raised
+    What :py:class:`AwaitableFuture` logs to when un-observed errors or warnings occur (e.g. an :py:exc:`Exception`
+    is raised by a callback added via ``add_done_callback``--but not a :py:exc:`BaseException`, those are raised
     and abort callback handling!).
 
     It's a child of the logger used internally by :py:class:`concurrent.futures.Future` for the same purpose, and is

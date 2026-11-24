@@ -41,7 +41,7 @@ class AsyncAnywhereException(ABC, Exception):
 
     All :py:class:`AsyncAnywhereException`\ s can be pickled/unpickled/copied and shared between processes.
 
-    Code in this library that raises exceptions (including stdlib Exceptions and :py:class:`AsyncAnywhereException`\ s)
+    Code in this library that raises exceptions (including stdlib Exceptions and :py:exc:`AsyncAnywhereException`\ s)
     does so in a way that does not artificially prolong object lifetimes (e.g. this library will not raise errors whose
     handling or storage results in an event loop not being garbage collected when it should be). If you find that this is
     not the case in a specific situation, :ref:`file a bug <reporting_issues>`.

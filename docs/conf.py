@@ -49,9 +49,10 @@ autodoc_default_options = {
 }
 html_theme = "furo"
 nitpicky = True  # Warn about every cross-reference that doesn't resolve, which Sphinx is otherwise silent about
-nitpick_ignore = [("py:exc", "<Various Exceptions>")]  # Raises: placeholder for "whatever the referenced method raises"
-# Type params: Sphinx has nothing to link them to
-nitpick_ignore_regex = [(r"py:(class|obj)", r"(.*\.)?[PT](\.args|\.kwargs)?")]
+nitpick_ignore_regex = [
+    (r"py:exc", r"<.+>"),  # Raises: placeholders like "<Various Exceptions>"
+    (r"py:(class|obj)", r"(.*\.)?[PT](\.args|\.kwargs)?"),  # Type params: Sphinx has nothing to link them to
+]
 
 
 def _colliding_module_name(cls):

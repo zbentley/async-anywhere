@@ -451,10 +451,10 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
                 collected) until the next successful call to ``_transition``.
 
         Raises:
-            :py:class:`StateTrackerError`: if the current :py:attr:`state` cannot be transitioned to ``target`` (via
+            :py:exc:`StateTrackerError`: if the current :py:attr:`state` cannot be transitioned to ``target`` (via
                 the ``sources`` and ``destinations`` constructor parameters to :py:class:`State`).
 
-            :py:class:`TypeError`: if ``target`` is not one of the invocant's declared :py:class:`State`\ s.
+            :py:exc:`TypeError`: if ``target`` is not one of the invocant's declared :py:class:`State`\ s.
 
         Returns:
             The prior state of the invocant before it was transitioned to ``target``.
@@ -471,14 +471,14 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
     @final
     def _try_transition(self, target: State, data: object = None) -> State | Literal[False]:
         r"""
-        Tries to call :py:meth:`_transition` and returns False if it raises :py:class:`StateTrackerError`.
+        Tries to call :py:meth:`_transition` and returns False if it raises :py:exc:`StateTrackerError`.
 
         Args:
             target: see :py:meth:`_transition`.
             data: see :py:meth:`_transition`.
 
         Raises:
-            :py:class:`TypeError`: if ``target`` is not one of the invocant's declared :py:class:`State`\ s.
+            :py:exc:`TypeError`: if ``target`` is not one of the invocant's declared :py:class:`State`\ s.
 
         Returns:
             The prior state of the invocant before it was transitioned to ``target``, if the transition was successful,
@@ -504,9 +504,9 @@ class StateTracker(ABC, metaclass=_StateTrackerMeta):
                 is *any* of the supplied ``desired_state`` or ``desired_states`` values.
 
         Raises:
-            :py:class:`StateTrackerError`: if the current :py:attr:`state` is not ``desired_state`` or any of ``desired_states``.
+            :py:exc:`StateTrackerError`: if the current :py:attr:`state` is not ``desired_state`` or any of ``desired_states``.
 
-            :py:class:`TypeError`: if any of ``desired_state`` or ``desired_states`` is not one of the invocant's
+            :py:exc:`TypeError`: if any of ``desired_state`` or ``desired_states`` is not one of the invocant's
                 declared :py:class:`State`\ s.
 
         Returns:

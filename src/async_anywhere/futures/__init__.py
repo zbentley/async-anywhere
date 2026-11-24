@@ -295,7 +295,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             Note:
                 When the returned value or the invocant ``AwaitableFuture`` is cancelled, the returned Trio awaitable
                 will be marked as `failed` (not cancelled, since ``asyncio.Future``\ s notion of cancellation is not
-                present in Trio) with a :py:class:`concurrent.futures.CancelledError` exception.
+                present in Trio) with a :py:exc:`concurrent.futures.CancelledError` exception.
 
         Either return type, when awaited, produces the result, cancellation, or exception with which the invocant--
         its "parent" ``AwaitableFuture``--was completed.
@@ -392,7 +392,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
 
         #. If timeout is zero, :py:obj:`TimeoutError` is raised.
         #. If any of the threads or event loops passed to the ``prevent_blocking_wait_within`` constructor parameter is
-           the thread or event loop running in the caller of this method, :py:class:`WouldBlock` is raised.
+           the thread or event loop running in the caller of this method, :py:exc:`WouldBlock` is raised.
         #. Otherwise, waits for ``timeout`` seconds for this future to complete. If it succeeds, its result is returned.
            If it fails with an exception or is cancelled, that error is raised. If it doesn't complete in time,
            :py:obj:`TimeoutError` is raised.
@@ -405,13 +405,13 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         Raises:
             :py:obj:`TimeoutError`: if waiting for completion times out.
 
-            :py:class:`WouldBlock`: if this future is incomplete *and* blocking is not allowed (per the
+            :py:exc:`WouldBlock`: if this future is incomplete *and* blocking is not allowed (per the
                 ``prevent_blocking_wait_within`` constructor parameter) on the calling event loop or thread *and*
                 ``timeout`` is greater than zero.
 
             :py:obj:`concurrent.futures.CancelledError`: if this future is cancelled before or during this method.
 
-            :py:obj:`BaseException`: if this future was completed as failed via :py:meth:`set_exception`.
+            <Any BaseException from user code>: if this future was completed as failed via :py:meth:`set_exception`.
 
         Returns:
             The value with which this future was completed via :py:meth:`set_result` if it doesn't fail,
@@ -430,7 +430,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         Raises:
             :py:obj:`TimeoutError`: if waiting for completion times out.
 
-            :py:class:`WouldBlock`: if this future is incomplete  *and* blocking is not allowed (per the
+            :py:exc:`WouldBlock`: if this future is incomplete  *and* blocking is not allowed (per the
                 ``prevent_blocking_wait_within`` constructor parameter) on the calling event loop or thread *and*
                 ``timeout`` is greater than zero.
 
@@ -495,7 +495,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             :py:obj:`Exception`: if this future has completed *and* ``raise_if_failed_immediately=True`` *and* ``fn``
                 raises an ``Exception`` when this method calls it.
 
-            :py:obj:`BaseException`: if this future has completed *and* ``fn`` raises a non-``Exception``
+            <Any BaseException from user code>: if this future has completed *and* ``fn`` raises a non-``Exception``
                 ``BaseException`` when this method calls it.
 
         Returns:
@@ -587,11 +587,11 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             result: The result value to store.
 
         Raises:
-            :py:class:`StateTrackerError`: if the future has already been completed elsewhere. Note that
+            :py:exc:`StateTrackerError`: if the future has already been completed elsewhere. Note that
                 ``StateTrackerError`` subclasses :py:obj:`asyncio.InvalidStateError` and
                 :py:obj:`concurrent.futures.InvalidStateError` for compatibility.
 
-            :py:obj:`BaseException`: If this future is not done *and* ``transform_result`` is set *and* the
+            <Any BaseException from user code>: If this future is not done *and* ``transform_result`` is set *and* the
                 ``transform_result`` callable raises an error.
 
         Returns:
@@ -622,7 +622,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             exception: The exception to store.
 
         Raises:
-            :py:class:`StateTrackerError`: if the future has already been completed elsewhere. Note that
+            :py:exc:`StateTrackerError`: if the future has already been completed elsewhere. Note that
                 ``StateTrackerError`` subclasses :py:obj:`asyncio.InvalidStateError` and
                 :py:obj:`concurrent.futures.InvalidStateError` for compatibility.
 
@@ -665,7 +665,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             True if ``result`` was stored via ``set_result``. False if the future was :term:`completed` from elsewhere.
 
         Raises:
-            :py:obj:`BaseException`: Any exception raised by ``transform_result``, if it was passed to the constructor.
+            <Any BaseException from user code>: Any exception raised by ``transform_result``, if it was passed to the constructor.
 
 
         """

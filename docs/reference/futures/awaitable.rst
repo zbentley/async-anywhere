@@ -6,9 +6,9 @@
     .. py:attribute:: AnyEventLoop
 
         Sentinel for the ``prevent_blocking_wait_within`` parameter of :py:meth:`__init__`: raises
-        :py:class:`WouldBlock` instead of blocking if any event loop or :doc:`Trio <trio:index>` task is running.
+        :py:exc:`WouldBlock` instead of blocking if any event loop or :doc:`Trio <trio:index>` task is running.
 
     .. py:attribute:: BlockingNotAllowed
 
         Sentinel for the ``prevent_blocking_wait_within`` parameter of :py:meth:`__init__`: raises
-        :py:class:`WouldBlock` instead of blocking in all cases.
+        :py:exc:`WouldBlock` instead of blocking in all cases.

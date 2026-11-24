@@ -309,7 +309,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         Returns:
             An :py:class:`AwaitableFuture` containing the result of executing "func" on the executor's event loop.
             Attempting to block on the returned future via :py:meth:`AwaitableFuture.result` from inside the executor
-            will raise :py:class:`WouldBlock` if the future is not yet completed, to avoid accidental deadlock.
+            will raise :py:exc:`WouldBlock` if the future is not yet completed, to avoid accidental deadlock.
 
             Calling ``fork(2)`` will, in the child process, fail (complete with a EventLoopExecutorForked exception) any
             not-yet-completed futures that were returned by this method.
@@ -524,7 +524,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     ):
         """Behaves identically to :py:meth:`WaitableStateTracker.wait_for_state`, with the added invariant that
         attempting to block on the returned :py:class:`AwaitableFuture` from within the executor's own event
-        loop/thread will always raise an :py:class:`WouldBlock` (to prevent accidental deadlock) if the future is not
+        loop/thread will always raise an :py:exc:`WouldBlock` (to prevent accidental deadlock) if the future is not
         yet done.
         """
         checker = self._blocking_checker
@@ -557,7 +557,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                     being raised from the same task if users call ``shutdown(cancel_futures=True)`` repeatedly.
 
         Raises:
-            :py:class:`EventLoopExecutorBroken`: If the invocant has forked or otherwise entered into an unexpected
+            :py:exc:`EventLoopExecutorBroken`: If the invocant has forked or otherwise entered into an unexpected
                 non-running state and thus cannot respond to shutdown requests.
 
         Returns:
