@@ -2,6 +2,8 @@
 
 ["Running async code from sync code"](https://death.andgravity.com/asyncio-bridge) is a trenchant treatment of the issues that `EventLoopExecutor` tries to address, as are Armin Ronacher's [async posts](https://lucumr.pocoo.org/tags/async), and Rob Blackbourn's [ASGI event loop gotcha](https://rob-blackbourn.medium.com/asgi-event-loop-gotcha-76da9715e36d) article.
 
+Python itself has wrestled with the realities of codebases that combine multiple asyncio sections that overlap, and multiple intersecting loops ([CPython PR #93338](https://github.com/python/cpython/pull/93338), [bpo-33523](https://bugs.python.org/issue33523), [bpo-22239](https://bugs.python.org/issue22239)).
+
 Many other Python modules handle bridging asynchronous and synchronous Python code, and overlap with `EventLoopExecutor` (which bridges from `async` to `async` *or* synchronous code):
 
 ## Asgiref
@@ -48,6 +50,7 @@ Many popular Python projects have struggled with the problems that `EventLoopExe
 - The async ClickHouse driver's [PR #21](https://github.com/Leechael/asynch/pull/21) recreates connections whenever the requesting event loop changes.
 - SQLAlchemy [#5626](https://github.com/sqlalchemy/sqlalchemy/issues/5626) interacting with pytest-asyncio [#38](https://github.com/pytest-dev/pytest-asyncio/issues/38).
 - Prefect [#13181](https://github.com/PrefectHQ/prefect/issues/13181).
+- Django users have [struggled with `asgiref`'s performance/overhead](https://forum.djangoproject.com/t/a-datapoint-for-asgiref-performance/34633).
 - Celery:
   - [#3884](https://github.com/celery/celery/issues/3884), a long-standing request for asyncio tasks, hits a lot of the challenges that `EventLoopExecutor` was built to address.
   - [Discussion #9058](https://github.com/celery/celery/discussions/9058): discusses how to preserve loop-locality to prevent connection churn with async-aware drivers.

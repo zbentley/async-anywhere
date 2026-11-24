@@ -100,6 +100,9 @@ jobs:
       - name: Check the tag matches the project version
         if: inputs.publishing
         run: test -f "dist/async_anywhere-${GITHUB_REF_NAME#v}.tar.gz"
+      # British or not, this repo spells it "cancelled" and "cancelling"
+      - name: Check no tracked file spells cancelled or cancelling with one L
+        run: '! git grep -niE "cancel(ed|ing)"'
 
   docs:
     runs-on: ubuntu-latest
