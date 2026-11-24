@@ -219,6 +219,9 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         return f"<{type(self).__qualname__} at {id(self):#x} {state.name[1:]}{outcome}>"  # Without its private prefix
 
     def _after_state_change(self, old_state: State, new_state: State, data: Any):
+        """
+        :meta private:
+        """
         # Under _condition, so concurrent.futures.wait() and as_completed(), which add their waiters under it, miss nothing
         if new_state is self._Running:
             return
