@@ -12,7 +12,7 @@ import weakref
 
 import pytest
 
-from async_anywhere._util import AnyEventLoop, BlockingChecker, ConditionProtected
+from async_anywhere._util import BlockingChecker, BlockingSentinel, ConditionProtected
 from async_anywhere.exceptions import WouldBlock
 from tests.test_executors.utils import forked
 
@@ -162,7 +162,7 @@ def test_a_forked_process_resets_conditions_other_threads_held_or_waited_on_but_
 def test_blocking_checkers_and_their_copies_dont_share_later_adds():
     here = threading.current_thread()
     checker = BlockingChecker()
-    copied = checker.copy(add=[AnyEventLoop])  # Outside any loop, here: so refusing nothing
+    copied = checker.copy(add=[BlockingSentinel.AnyEventLoop])  # Outside any loop, here: so check() passes
     checker.add(here)
     copied.check("future")
     with pytest.raises(WouldBlock, match="'future' would deadlock"):
@@ -176,6 +176,6 @@ def test_blocking_checkers_let_go_of_what_has_gone_as_they_add():
     checker = BlockingChecker([gone := threading.Thread(target=print)])
     del gone
     gc.collect()
-    checker.check("future")  # Refusing nothing, once gone
+    checker.check("future")  # Passes, once it's gone
     checker.add(here := threading.current_thread())
     assert checker._environments == (weakref.ref(here),)

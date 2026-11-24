@@ -6,9 +6,9 @@ from concurrent.futures._base import CANCELLED_AND_NOTIFIED, FINISHED, PENDING, 
 from math import isinf
 from threading import Thread
 from time import monotonic
-from typing import Any, Awaitable, Callable, Self, Collection, Iterable, Final
+from typing import Any, Awaitable, Callable, Self, Collection, Iterable, Final, Literal
 
-from async_anywhere._util import AnyEventLoop, BlockingChecker, BlockingNotAllowed, futures_logger
+from async_anywhere._util import BlockingChecker, BlockingSentinel, futures_logger
 from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.futures import _fork_safety
 from async_anywhere.futures._asyncio import AsyncioAwaitableFuture
@@ -92,12 +92,12 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     _Succeeded: Final[State] = State(sources=(_Pending, _Running))  # Its transition's data is the result
     _Failed: Final[State] = State(sources=(_Pending, _Running))  # Its transition's data is the exception
 
-    # For prevent_blocking_wait_within: refusing blocking waits in any running event loop or trio task, or anywhere
-    AnyEventLoop = staticmethod(AnyEventLoop)
-    BlockingNotAllowed = staticmethod(BlockingNotAllowed)
+    # For prevent_blocking_wait_within: WouldBlock from blocking waits in any running loop or trio task, or anywhere
+    AnyEventLoop: Final = BlockingSentinel.AnyEventLoop
+    BlockingNotAllowed: Final = BlockingSentinel.BlockingNotAllowed
 
     __slots__ = (
-        "_blocking_checker",  # Refuses blocking waits where they'd deadlock (see BlockingChecker), or None
+        "_blocking_checker",  # Makes waits that would deadlock raise WouldBlock (see BlockingChecker), or None
         "_cancel_pending_in_forked_child",
         "_transform_result",
         "_completed_at",
@@ -109,8 +109,14 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
     def __init__(
         self,
         *,
-        # TODO fix doc type hint
-        prevent_blocking_wait_within: Collection[asyncio.AbstractEventLoop | Thread] | None = None,
+        prevent_blocking_wait_within: (
+            Collection[
+                asyncio.AbstractEventLoop
+                | Thread
+                | Literal[BlockingSentinel.AnyEventLoop, BlockingSentinel.BlockingNotAllowed]
+            ]
+            | None
+        ) = None,
         cancel_pending_in_forked_child: bool = False,
         transform_result: Callable[[Any], T] | None = None,
         done_callbacks: Iterable[Callable[[Self], Any]] | None = None,
@@ -122,8 +128,9 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         iteration as the stdlib does.
 
         Args:
-            prevent_blocking_wait_within: a Collection of :py:obj:`asyncio.AbstractEventLoop`\ s or
-                :py:obj:`threading.Thread`\ s, or None. When a collection is passed, this future refuses to be blocked
+            prevent_blocking_wait_within: a Collection of :py:obj:`asyncio.AbstractEventLoop`\ s,
+                :py:obj:`threading.Thread`\ s, or the sentinels :py:attr:`AnyEventLoop` and
+                :py:attr:`BlockingNotAllowed`; or None. When a collection is passed, this future refuses to be blocked
                 on from callers in it: when :py:meth:`result` is called from one of those loops or threads and this
                 future is incomplete, an error will be raised instead of allowing ``.result()`` to synchronously block.
 
@@ -177,7 +184,7 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
         self._completed_at: float | None = None
         # None for most futures: skipping the comprehension saves ~20 ns on hot paths
         self._done_callbacks: dict[_DoneCallbackToken, Callable[[Self], Any]] = (
-            {} if done_callbacks is None else {_DoneCallbackToken(): c for c in done_callbacks}
+            {} if done_callbacks is None else {_DoneCallbackToken(): fn for fn in done_callbacks}
         )
 
         # Mutated only by code in concurrent.futures.wait() and .as_completed(). Contains opaque objects installed and
@@ -761,11 +768,11 @@ class AwaitableFuture[T](concurrent.futures.Future[T], StateTracker, Awaitable[T
             This method exists to satisfy part of the concurrent.futures.Executor/as_completed/wait API and should
             generally **not** be called by user code.
         """
-        # cancel() has notified concurrent.futures' waiters already: so this just refuses a cancelled future, each time
+        # cancel() has notified concurrent.futures' waiters already: so this just returns False if cancelled, each time
         with self._condition:
             if self.cancelled():
                 return False
-            self._transition(self._Running)  # Refused once it's running or finished
+            self._transition(self._Running)  # Raises StateTrackerError once it's running or finished
         return True
 
 

@@ -5,6 +5,7 @@ import logging
 import threading
 from collections import deque
 from collections.abc import Callable, Collection
+from enum import Enum, auto
 from functools import cache
 from threading import RLock, Thread, current_thread
 from typing import final
@@ -15,22 +16,20 @@ from async_anywhere._util.trio import TrioRuntime
 from async_anywhere.exceptions import WouldBlock
 
 
-def AnyEventLoop() -> bool:
-    """Sentinel for the ``prevent_blocking_wait_within`` parameter of :py:meth:`AwaitableFuture.__init__`: raises
-    :py:exc:`WouldBlock` instead of blocking if any event loop or :doc:`Trio <trio:index>` task is running."""
-    return asyncio._get_running_loop() is not None or TrioRuntime.in_task()
+class BlockingSentinel(Enum):
+    """Sentinels for the ``prevent_blocking_wait_within`` parameter of :py:meth:`AwaitableFuture.__init__`, which users
+    find as AwaitableFuture.AnyEventLoop and AwaitableFuture.BlockingNotAllowed."""
+
+    # So Sphinx shows Literal[BlockingSentinel.AnyEventLoop] as AwaitableFuture.AnyEventLoop, linked to its docs
+    __module__, __qualname__ = "async_anywhere.futures", "AwaitableFuture"
+
+    AnyEventLoop = auto()  # Raises WouldBlock instead of blocking if any event loop or trio task is running
+    BlockingNotAllowed = auto()  # Raises WouldBlock instead of blocking in all cases
 
 
-def BlockingNotAllowed() -> bool:
-    """Sentinel for the ``prevent_blocking_wait_within`` parameter of :py:meth:`AwaitableFuture.__init__`: raises
-    :py:exc:`WouldBlock` instead of blocking in all cases."""
-    return True
-
-
-# TODO better annotate: incorporate constant sentinels.
 # TODO better annotate: refer to it elsewhere.
 # TODO better annotate: inline in docs.
-type BlockingEnvironments = Collection[asyncio.AbstractEventLoop | Thread | Callable[[], bool]]
+type BlockingEnvironments = Collection[asyncio.AbstractEventLoop | Thread | BlockingSentinel]
 
 
 @cache
@@ -182,7 +181,7 @@ class BlockingChecker:
         for environment in environments:
             if isinstance(environment, (asyncio.AbstractEventLoop, Thread)):
                 weakened.append(ref(environment))
-            elif environment is AnyEventLoop or environment is BlockingNotAllowed:
+            elif isinstance(environment, BlockingSentinel):
                 weakened.append(environment)
             else:
                 raise TypeError(
@@ -196,7 +195,7 @@ class BlockingChecker:
         new._environments = self._environments + BlockingChecker._weakened(add)
         return new
 
-    def add(self, environment: asyncio.AbstractEventLoop | Thread | Callable[[], bool]):
+    def add(self, environment: asyncio.AbstractEventLoop | Thread | BlockingSentinel):
         # Dropping what's gone, as a SingletonEventLoopExecutor's checker gets a thread for every executor it makes
         kept = [env for env in self._environments if not isinstance(env, ref) or env() is not None]
         self._environments = (*kept, *BlockingChecker._weakened((environment,)))
@@ -208,7 +207,7 @@ class BlockingChecker:
                 if isinstance(environment, ref):  # A thread or loop, or None once it's gone
                     if (culprit := environment()) is thread or (loop is not None and culprit is loop):
                         raise WouldBlock(subject, culprit)
-                elif environment():  # AnyEventLoop or BlockingNotAllowed
-                    raise WouldBlock(subject, environment)
+                elif environment is BlockingSentinel.BlockingNotAllowed or loop is not None or TrioRuntime.in_task():
+                    raise WouldBlock(subject, environment)  # BlockingNotAllowed, or AnyEventLoop in a loop or trio task
         finally:
             del subject, thread, loop, culprit  # Else what this raises would keep them alive, through its traceback

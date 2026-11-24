@@ -368,7 +368,7 @@ def test_shutdown_cant_wait_on_the_executors_own_thread():
             WouldBlock, match=r"Waiting for <bound method EventLoopExecutor\.shutdown .* would deadlock in <Thread"
         ):
             singleton.submit(stop_waiting).result(5)
-        assert worker.state is worker.Running and singleton.get() is worker  # Refusing to wait stopped nothing
+        assert worker.state is worker.Running and singleton.get() is worker  # Raising WouldBlock stopped nothing
 
 
 def test_shutdowns_future_refuses_blocking_waits_on_the_executors_own_loop():

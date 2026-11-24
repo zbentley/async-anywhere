@@ -8,7 +8,7 @@ from typing import Coroutine
 
 from async_anywhere.futures import AwaitableFuture
 
-# Before 3.14, task factories may refuse eager_start: asyncio's own eager_task_factory does
+# Before 3.14, task factories may not take eager_start: asyncio's own eager_task_factory doesn't
 _factories_take_eager_start = sys.version_info >= (3, 14)
 
 
@@ -40,7 +40,7 @@ class _ExecutorJob(AwaitableFuture):
                 task = loop.create_task(self._target)
         except (
             Exception
-        ) as ex:  # A task factory refusing it, say: else its waiters hang, as asyncio only logs a callback's error
+        ) as ex:  # A task factory raising, say: else its waiters hang, as asyncio only logs a callback's error
             if getcoroutinestate(job := self._target) != CORO_CREATED:  # Its first step ran, so _job() handled it
                 raise
             reported = self.set_exception_if_not_done(ex)

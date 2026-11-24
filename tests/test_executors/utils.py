@@ -76,13 +76,13 @@ class LoggerWatcher(logging.Handler):
 class bridge:
     """Bridges a method of a Harness to its worker, as harness.method(...), marking each call as its job starts."""
 
-    def __init__(self, func):
-        self.func = func
+    def __init__(self, fn):
+        self.fn = fn
 
     def __get__(self, harness, owner=None):
         if harness is None:
             return self
-        method = self.func.__get__(harness)
+        method = self.fn.__get__(harness)
 
         @functools.wraps(method)
         async def marked(*args, **kwargs):

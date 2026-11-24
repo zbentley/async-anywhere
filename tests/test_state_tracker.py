@@ -277,9 +277,9 @@ def test_try_transition():
     inst = MyStateTracker()
     assert inst._try_transition(MyStateTracker.Second, "data")
     assert inst.last_transition == (MyStateTracker.Initial, MyStateTracker.Second, "data")
-    assert not inst._try_transition(MyStateTracker.Third) and inst.state is MyStateTracker.Second  # Refused
+    assert not inst._try_transition(MyStateTracker.Third) and inst.state is MyStateTracker.Second  # Invalid, so False
     with pytest.raises(TypeError, match="not one of this class's states"):
-        inst._try_transition(MyWaitable.A)  # Not refused, but wrong
+        inst._try_transition(MyWaitable.A)  # Not False, but a TypeError
 
 
 def test_error_is_copyable():

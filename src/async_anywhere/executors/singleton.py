@@ -97,7 +97,7 @@ class SingletonEventLoopExecutor(Executor):
 
         self._cancel_futures_on_stopping_executors = cancel_futures_on_stopping_executors
         self._wrapped_executor: ConditionProtected[None | EventLoopExecutor] = ConditionProtected(None)
-        # Shared by its executors, each adding its own thread, so that their futures refuse blocking waits on any of them
+        # Shared by its executors, each adding its own thread: waits for their futures raise WouldBlock on any of them
         self._blocking_checker = BlockingChecker()
         executors.ensure_registered(self)
         if not lazy:
@@ -247,13 +247,13 @@ class SingletonEventLoopExecutor(Executor):
         except EventLoopExecutorStopped:
             return self.get().submit(fn, *args, **kwargs)
 
-    def bridge[**P, T](self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
+    def bridge[**P, T](self, fn: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
         """Wraps an async function and returns a wrapper which, when called, invokes the wrapped function on the
         invocant's executor via :py:meth:`submit`.
 
         See :py:meth:`EventLoopExecutor.bridge` for more details.
         """
-        return update_wrapper(partial(self.submit, func), func)
+        return update_wrapper(partial(self.submit, fn), fn)
 
 
 __all__ = ["SingletonEventLoopExecutor"]

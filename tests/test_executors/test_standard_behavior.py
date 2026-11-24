@@ -95,7 +95,7 @@ def test_arguments_are_checked_as_executors_are_constructed(kwargs, error, match
     threads = set(threading.enumerate())
     with pytest.raises(error, match=match):
         EventLoopExecutor(**kwargs)
-    assert set(threading.enumerate()) <= threads  # Refused before anything started
+    assert set(threading.enumerate()) <= threads  # Raised before anything started
 
 
 class Fetcher:
@@ -119,7 +119,7 @@ async def test_functions_can_be_bridged_whenever():
         assert await fetched == "at once"
         assert await Fetcher(worker).fetch("later") == "later"  # Once the worker is running
         await worker.shutdown(wait=False)
-        refused = Fetcher(worker)  # Once it has stopped, which is allowed, though calls are refused
+        refused = Fetcher(worker)  # Once it has stopped, which is allowed, though calls raise
         with pytest.raises(CleanStop):
             await refused.fetch("too late")
 
@@ -356,7 +356,7 @@ async def test_an_executors_state_waits_refuse_blocking_waits_in_the_loops_given
     async with running(Works) as worker:
         with pytest.raises(RuntimeError, match="would deadlock"):
             worker.wait_for_state(worker.Shutdown, prevent_blocking_wait_within=here).result(1)
-        with pytest.raises(TimeoutError):  # Off the worker's loop, nothing else is refused by default
+        with pytest.raises(TimeoutError):  # Off the worker's loop, nothing else raises WouldBlock by default
             worker.wait_for_state(worker.Shutdown).result(0)
 
 
@@ -369,7 +369,7 @@ async def test_blocking_waits_on_the_executors_thread_are_refused_outside_its_lo
         "loops": {"prevent_blocking_wait_within": (other,)},
         "any loop": {
             "prevent_blocking_wait_within": (AwaitableFuture.AnyEventLoop,)
-        },  # Outside any loop, this alone refuses nothing
+        },  # Outside any loop, this alone never raises
     }[given]
     async with running(Works) as worker:
         call = worker.waits_for(AwaitableFuture())  # In flight, so pending until the stop interrupts it
@@ -405,7 +405,7 @@ def test_a_finished_executors_futures_dont_keep_it_or_its_loop_alive():
 
 
 async def test_calls_made_once_the_executor_has_stopped_are_refused_unrun():
-    # Refused, not forgotten: a coroutine never awaited would fail the test
+    # Closed as submit() raises, not forgotten: a coroutine never awaited would fail the test
     async with running(Records) as worker:
         await worker.shutdown(wait=False)
         errors = []
@@ -635,6 +635,14 @@ async def test_current_job_is_none_outside_calls_and_what_they_await():
         assert seen == dict.fromkeys(seen)
 
 
+@pytest.mark.skipif(AWAITED_BY, reason="current_job() finds jobs from tasks they await from 3.14")
+async def test_current_job_warns_before_3_14():
+    async with running() as worker:
+        with pytest.warns(RuntimeWarning, match=r"before Python 3\.14") as warned:  # Despite pyproject.toml's filter
+            assert worker.current_job() is None
+    assert warned[0].filename == __file__
+
+
 async def test_current_job_is_a_calls_future_in_coroutines_it_awaits():
     async with running() as worker:
 
@@ -733,7 +741,7 @@ async def test_calls_run_on_loops_with_asyncios_eager_task_factory(executor_loop
 
     def loop_factory():
         loop = make_loop()
-        loop.set_task_factory(asyncio.eager_task_factory)  # Which before 3.14 refuses eager_start: see _ExecutorJob
+        loop.set_task_factory(asyncio.eager_task_factory)  # Which before 3.14 can't take eager_start: see _ExecutorJob
         return loop
 
     async with running(loop_factory=loop_factory) as worker:

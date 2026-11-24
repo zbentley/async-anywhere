@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import warnings
 from contextvars import Context, ContextVar, copy_context
 from datetime import timedelta
 from functools import partial, update_wrapper
@@ -13,7 +14,7 @@ from typing import Any, Callable, ClassVar, Coroutine, Final, Literal, final, Co
 from attrs import define, field
 from sniffio import current_async_library_cvar
 
-from async_anywhere._util import BlockingChecker, ConditionProtected, Toggleable
+from async_anywhere._util import BlockingChecker, BlockingSentinel, ConditionProtected, Toggleable
 from async_anywhere.exceptions import (
     CleanStop,
     EventLoopExecutorBroken,
@@ -232,7 +233,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                     Using this logger must not unduly block the event loop. Loggers that wait on network services or
                     slow disks can cause the executor to hang.
         """
-        # Checked before the loop is made, so that a refused argument leaves nothing to clean up
+        # Checked before the loop is made, so that raising for a bad argument leaves nothing to clean up
         if not iscoroutinefunction(main):
             raise TypeError(f"main must be a coroutine function (an async def), not {main!r}")
         if isinstance(idle_timeout, timedelta):
@@ -283,7 +284,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             raise
 
     def submit[**P, T](
-        self, func: Callable[P, Coroutine[Any, Any, T]], /, *args: P.args, **kwargs: P.kwargs
+        self, fn: Callable[P, Coroutine[Any, Any, T]], /, *args: P.args, **kwargs: P.kwargs
     ) -> AwaitableFuture[T]:
         r"""
         Submits a function to run on the executor's thread.
@@ -295,19 +296,19 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         thread it executes on, and regardless of the value of :py:obj:`sys.flags.thread_inherit_context`.
 
         Args:
-            func: The function to be called. It should return a coroutine, and should not unduly block (if it does, the
+            fn: The function to be called. It should return a coroutine, and should not unduly block (if it does, the
                 executor's loop will hang just like any other event loop). Regardless of where ``submit()`` is called from,
                 the returned coroutine will `always` be run in its own ``asyncio.Task``.
-            *args: Arguments to be passed to ``func``.
-            **kwargs: Keyword arguments to be passed to ``func``.
+            *args: Arguments to be passed to ``fn``.
+            **kwargs: Keyword arguments to be passed to ``fn``.
 
                 Note:
                     Passing any keyword arguments whose names start with an underscore (e.g. ``.submit(_foo=1)``) is
                     unsupported. Underscore-prefixed kwargs are reserved for future use by this module and may or may
-                    not be passed to "func".
+                    not be passed to "fn".
 
         Returns:
-            An :py:class:`AwaitableFuture` containing the result of executing "func" on the executor's event loop.
+            An :py:class:`AwaitableFuture` containing the result of executing "fn" on the executor's event loop.
             Attempting to block on the returned future via :py:meth:`AwaitableFuture.result` from inside the executor
             will raise :py:exc:`WouldBlock` if the future is not yet completed, to avoid accidental deadlock.
 
@@ -320,9 +321,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             choose to ignore or refuse cancellation.
 
         Note:
-            The asyncio.task running "func" may be cancelled in response to executor failures
+            The asyncio.task running "fn" may be cancelled in response to executor failures
             or user calls to :py:meth:`EventLoopExecutor.shutdown(cancel_futures=True) <shutdown>`. In those cases,
-            "func" may never be called at all. For more details, see :ref:`cancellation`.
+            "fn" may never be called at all. For more details, see :ref:`cancellation`.
 
         Warning:
             Avoid blocking the executor's event loop: this is "supported" insofar as its semantics are documented and
@@ -357,9 +358,9 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # Compute job names for use in tracebacks, so users see exceptions as arising from
             # "EventLoopExecutor._job[user.function.name]". This helps distinguish failures when multiple jobs are
             # running on the executor.
-            f"{self._job.__qualname__}[{getattr(func, '__qualname__', None) or type(func).__qualname__}]",
+            f"{self._job.__qualname__}[{getattr(fn, '__qualname__', None) or type(fn).__qualname__}]",
         )
-        job = self._job(func, args, kwargs, future)  # Nothing in it runs until future.start()
+        job = self._job(fn, args, kwargs, future)  # Nothing in it runs until future.start()
         job.__qualname__, future._target = name, job
 
         context.run(_current_executor.set, self)  # In the call's context, which its job's task copies
@@ -380,7 +381,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                     future.finish()  # Closing its coroutine, never to run
                     raise self.last_transition[2].copy()
 
-                # Accepted for good: from now on the job runs, or is interrupted, but is never refused
+                # Accepted for good: from now on the job runs, or is interrupted, but submit() won't raise for it
                 jobs.add(future)
 
             # Unlocked: asyncio's self-pipe send() drops the GIL, so holding the lock across it stalls a loop that takes it
@@ -401,24 +402,24 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             raise
         return future
 
-    def bridge[**P, T](self, func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
+    def bridge[**P, T](self, fn: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, AwaitableFuture[T]]:
         """
         Decorator version of :py:meth:`submit`, for convenience.
 
         Args:
-            func: A function to be wrapped. Should return a coroutine, and is subject to the same behaviors and constraints
+            fn: A function to be wrapped. Should return a coroutine, and is subject to the same behaviors and constraints
                 as the parameter of the same name to ``EventLoopExecutor.submit()``.
 
         Returns:
-            A wrapped version of ``func`` that takes the same arguments, but which returns an ``AwaitableFuture`` that
-            will be :term:`completed` with the result of running ``func`` on the executor's event loop and thread.
+            A wrapped version of ``fn`` that takes the same arguments, but which returns an ``AwaitableFuture`` that
+            will be :term:`completed` with the result of running ``fn`` on the executor's event loop and thread.
 
         """
         # Performance: using a partial instead of a closure saves a frame and speeds up calls a bit.
         # NB: decorated things will be bound as methods (TODO: right? Or "equivalent" to methods without descriptors?)
         # NB: we're not precomputing parts of submit's code here (e.g. the name) because it'd require a kwarg which
         #     takes partial invocation off of the fast call path.
-        return update_wrapper(partial(self.submit, func), func)
+        return update_wrapper(partial(self.submit, fn), fn)
 
     @classmethod
     def current(cls) -> EventLoopExecutor | None:
@@ -472,6 +473,10 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
             Cancelling the returned future cancels the job, just as its caller cancelling it would.
         """
+        if not _awaited_by:
+            warnings.warn(
+                "current_job() may return None from a job's subtasks before Python 3.14", RuntimeWarning, stacklevel=2
+            )
         loop = asyncio._get_running_loop()
         if loop is not self._loop or (task := asyncio.current_task(loop)) is None:  # Jobs are tasks on this loop
             return None
@@ -519,7 +524,14 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         self,
         state: State,
         *states: State,
-        prevent_blocking_wait_within: Collection[asyncio.AbstractEventLoop | Thread] | None = None,
+        prevent_blocking_wait_within: (
+            Collection[
+                asyncio.AbstractEventLoop
+                | Thread
+                | Literal[BlockingSentinel.AnyEventLoop, BlockingSentinel.BlockingNotAllowed]
+            ]
+            | None
+        ) = None,
         **kwargs,
     ):
         """Behaves identically to :py:meth:`WaitableStateTracker.wait_for_state`, with the added invariant that
@@ -586,8 +598,8 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         if wait and self.state is not self.Shutdown:
             self._blocking_checker.check(self.shutdown)
 
-        # Stopped here and now, on this thread, under the lock submit() takes: so every call is either refused, or
-        # accepted before the stop, to be drained or interrupted
+        # Stopped here and now, on this thread, under the lock submit() takes: so every call either raises in submit(),
+        # or is accepted before the stop, to be drained or interrupted
         with self._condition as jobs:
             busy = len(jobs) > 0
             if cancel_futures and busy:
@@ -710,7 +722,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         stopped = self.last_transition[2]
         while len(to_abort) > 0:
             job = to_abort.pop()
-            # Closing its coroutine, if never started: then cancelled by the stop, as _job() fails those it refuses
+            # Closing its coroutine, if never started: then cancelled by the stop, as _job() fails those it won't start
             if job.finish() and not isinstance(stopped, EventLoopExecutorForked):
                 self._fail(job, JobCancelledByExecutorShutdown.from_cancellation(stopped))
             else:
@@ -751,7 +763,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         except BaseException as exc:
             # Should never happen, except for a KeyboardInterrupt or SystemExit from the main task or a call: asyncio
             # lets those escape the loop from any task. Record the crash (logging it, if it's the first stop), so that
-            # calls refused from now on say why.
+            # calls made from now on raise an error saying why.
             self._unclean_stop("the executor's event loop crashed", exc)
             raise
         finally:
@@ -800,7 +812,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                 task.cancel()
             self._log(logging.DEBUG, "Interrupted: cancelled %d tasks", len(tasks), stacklevel=2)
 
-    async def _job(self, func, args, kwargs, future: _ExecutorJob):
+    async def _job(self, fn, args, kwargs, future: _ExecutorJob):
         """
         Runs a job on the executor's event loop. All jobs are submitted by their start().
         Only raises in the thread on a crash (e.g. a cancel race or a broken event loop); all errors from user code are
@@ -813,19 +825,19 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         expiry.reset(None)  # Suspend the idle timeout
         try:
             # If the job was cancelled by its caller or failed by the executor e.g. forking, do nothing.
-            # Named by func: with no task when start() runs this by hand, as a task factory refused it
+            # Named by fn: with no task when start() runs this by hand, as a task factory raised
             if future.done():
                 self._log(
-                    logging.DEBUG, "Not starting %s: done already", getattr(func, "__qualname__", func), stacklevel=2
+                    logging.DEBUG, "Not starting %s: done already", getattr(fn, "__qualname__", fn), stacklevel=2
                 )
                 return
             if self._interrupted:  # Accepted before an interrupt, which it never starts after: see shutdown()
                 self._log(
-                    logging.DEBUG, "Not starting %s: interrupted", getattr(func, "__qualname__", func), stacklevel=2
+                    logging.DEBUG, "Not starting %s: interrupted", getattr(fn, "__qualname__", fn), stacklevel=2
                 )
                 self._fail(future, JobCancelledByExecutorShutdown.from_cancellation(self.last_transition[2]))
                 return
-            result = func(*args, **kwargs)
+            result = fn(*args, **kwargs)
             if isawaitable(result):
                 result = await result
         except asyncio.CancelledError as ex:

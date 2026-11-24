@@ -143,7 +143,7 @@ async def test_calls_during_expiry_cleanup_are_refused():
         await worker.reached("stopped")
         with pytest.raises(CleanStop, match=r"\(idle\) expired"):
             await worker.work()
-        assert not worker.reached("cleaned up").done()  # Refused while _run() was still cleaning up
+        assert not worker.reached("cleaned up").done()  # Raised while _run() was still cleaning up
         await worker.shutdown(wait=False)
         assert worker.reached("cleaned up").done()
 
@@ -817,7 +817,7 @@ def test_submission_the_loop_never_runs_fails_instead_of_hanging(monkeypatch):
 
     def finalize_late(worker):
         # After the loop has run for the last time, but before the worker fails what's pending: submitting as a call
-        # made just before the stop, which the loop then never ran, would be. (Past bridge()'s refusing calls once the
+        # made just before the stop, which the loop then never ran, would be. (Past bridge()'s calls raising once the
         # worker has stopped.) Only on the worker's own thread, as it finishes: not in a forked process, whose copy's loop
         # has closed.
         if worker.is_current_executor():

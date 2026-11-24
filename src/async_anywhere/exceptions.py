@@ -16,6 +16,7 @@ import copyreg
 import os
 from abc import ABC
 from copy import copy
+from enum import Enum
 from typing import TYPE_CHECKING, final, Self
 
 if TYPE_CHECKING:
@@ -98,9 +99,9 @@ class WouldBlock(AsyncAnywhereException, RuntimeError):
 
     def __init__(self, subject, environment) -> None:
         """:meta private:"""
-        # A thread or loop, or else AnyEventLoop or BlockingNotAllowed, from _util: named as users find them
-        if getattr(environment, "__module__", None) == "async_anywhere._util":  # Instances of builtins have none
-            environment = f"- AwaitableFuture.{environment.__name__}"
+        # A thread or loop, or else a BlockingSentinel, from _util: named as users find them
+        if isinstance(environment, Enum):
+            environment = f"- AwaitableFuture.{environment.name}"
         else:
             environment = f"in {environment!r}"
         super().__init__(

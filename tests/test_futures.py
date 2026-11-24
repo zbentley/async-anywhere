@@ -130,7 +130,7 @@ async def test_where_to_refuse_blocking_waits_is_given_as_a_collection_of_loops_
         [lambda: True],
         [None],
     ):
-        with pytest.raises(TypeError):  # Not a collection, or of what can't refuse waits
+        with pytest.raises(TypeError):  # Not a collection, or of what isn't a loop, thread or sentinel
             AwaitableFuture(prevent_blocking_wait_within=given)
 
 
@@ -234,7 +234,7 @@ def test_async_futures_accept_a_given_loop_that_isnt_running(owner):
 async def test_an_async_future_cancelled_after_the_future_finished_isnt_returned_again():
     future = AwaitableFuture()
     future.set_result("done")
-    assert not future.as_async_future().cancel()  # As its awaiter is cancelled before the result reaches it: refused
+    assert not future.as_async_future().cancel()  # As its awaiter is cancelled before the result reaches it: False
     await asyncio.sleep(0)
     assert future.result() == "done"
     assert await future.as_async_future() == "done"
@@ -264,7 +264,7 @@ def running_future():
     return future
 
 
-# Futures that refuse cancel()
+# Futures whose cancel() returns False
 UNCANCELLABLE = pytest.mark.parametrize(
     "uncancellable", [running_future, UncancellableAwaitableFuture], ids=["running", "UncancellableAwaitableFuture"]
 )
@@ -429,7 +429,7 @@ def test_completed_at_is_when_it_finished():
     assert seen == [future.completed_at for future in futures]  # Set before its callbacks run
     assert cancelled.cancel() and seen[2] == cancelled.completed_at  # Not again
     for refusing in running_future(), UncancellableAwaitableFuture():
-        assert not refusing.cancel() and refusing.completed_at is None  # Refused, so it hasn't finished
+        assert not refusing.cancel() and refusing.completed_at is None  # Not cancelled, so it hasn't finished
 
 
 def test_done_callbacks_given_to_the_constructor_run_as_if_added_first():

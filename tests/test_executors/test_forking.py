@@ -69,7 +69,7 @@ def test_a_forked_process_cant_use_its_copies_of_executors_nor_wait_for_them():
             with pytest.raises(EventLoopExecutorForked):
                 other_work()
             with pytest.raises(EventLoopExecutorForked):
-                worker.bridge(asyncio.sleep)(0)  # Bridging is never refused, but calling is
+                worker.bridge(asyncio.sleep)(0)  # Bridging never raises, but calling does
             with pytest.raises(EventLoopExecutorForked):
                 draining_work()  # Draining at the fork, so as if running
             with pytest.raises(EventLoopExecutorForked):

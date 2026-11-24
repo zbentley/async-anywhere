@@ -2,7 +2,7 @@
     :members:
     :exclude-members: AnyEventLoop, BlockingNotAllowed, __weakref__, __new__
 
-    .. Sentinels: functions at runtime (BlockingChecker calls them), so documented by hand, as the values users pass
+    .. Sentinels: BlockingSentinel's members at runtime, so documented by hand, as the values users pass
     .. py:attribute:: AnyEventLoop
 
         Sentinel for the ``prevent_blocking_wait_within`` parameter of :py:meth:`__init__`: raises
