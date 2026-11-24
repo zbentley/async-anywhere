@@ -827,14 +827,10 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             # If the job was cancelled by its caller or failed by the executor e.g. forking, do nothing.
             # Named by fn: with no task when start() runs this by hand, as a task factory raised
             if future.done():
-                self._log(
-                    logging.DEBUG, "Not starting %s: done already", getattr(fn, "__qualname__", fn), stacklevel=2
-                )
+                self._log(logging.DEBUG, "Not starting %s: done already", getattr(fn, "__qualname__", fn), stacklevel=2)
                 return
             if self._interrupted:  # Accepted before an interrupt, which it never starts after: see shutdown()
-                self._log(
-                    logging.DEBUG, "Not starting %s: interrupted", getattr(fn, "__qualname__", fn), stacklevel=2
-                )
+                self._log(logging.DEBUG, "Not starting %s: interrupted", getattr(fn, "__qualname__", fn), stacklevel=2)
                 self._fail(future, JobCancelledByExecutorShutdown.from_cancellation(self.last_transition[2]))
                 return
             result = fn(*args, **kwargs)
