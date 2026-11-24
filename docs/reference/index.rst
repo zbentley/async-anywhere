@@ -1,7 +1,7 @@
 API Reference
 =============
 
-This is the documentation reference for ``async_anywhere``, a Python module that makes interoperation between arbitrary combinations
+This is the documentation reference for ``async_anywhere``, a Python library that makes interoperation between arbitrary combinations
 of ``async``/``await`` event loops and synchronous code easier.
 
 General Information
@@ -9,11 +9,11 @@ General Information
 
 This module is implemented in pure Python. The source code is `available on GitHub <https://github.com/zbentley/async-anywhere>`__.
 
-Some ``async_anywhere`` functionality interoperates with other async Python tools (e.g. :doc:`uvloop <uvloop:index>`, :doc:`Trio <trio:index>` or :doc:`anyio <anyio:index>`). Such tools are not listed as direct or optional dependencies of this module. When deciding whether or not to integrate with other tools, **this module will never** ``import`` **them directly**, as many Python modules have global side effects at import time. ``async_anywhere`` will only use them if they have already been imported when related functionality is invoked.
+Some ``async_anywhere`` functionality interoperates with other async Python tools (e.g. :doc:`uvloop <uvloop:index>`, :doc:`Trio <trio:index>` or :doc:`anyio <anyio:index>`). Such tools are not listed as direct or optional dependencies of this library. When deciding whether or not to integrate with other tools, **this library will never** ``import`` **them directly**, as many Python modules have global side effects at import time. ``async_anywhere`` will only use them if they have already been imported when related functionality is invoked.
 
 .. admonition:: Trio Support
 
-    Several APIs provided by this module (e.g. :py:obj:`AwaitableFuture` and :py:obj:`EventLoopExecutor`) can be used with :doc:`Trio <trio:index>`. While possible, Trio support has some sharp edges; thoroughly read associated API documentation before using this module's facilities with Trio. Improved Trio support is actively being developed for a future release. If you find any bugs or usability issues when using Trio with ``async_anywhere``, please :ref:`file an issue <reporting_issues>`!
+    Several APIs provided by this library (e.g. :py:obj:`AwaitableFuture` and :py:obj:`EventLoopExecutor`) can be used with :doc:`Trio <trio:index>`. While possible, Trio support has some sharp edges; thoroughly read associated API documentation before using this library's facilities with Trio. Improved Trio support is actively being developed for a future release. If you find any bugs or usability issues when using Trio with ``async_anywhere``, please :ref:`file an issue <reporting_issues>`!
 
 .. _reporting_issues:
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# Read documentation for this module at https://async-anywhere.readthedocs.io
+# Read documentation for this library at https://async-anywhere.readthedocs.io
 
 
 def _metadata_fields():

@@ -304,7 +304,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
 
                 Note:
                     Passing any keyword arguments whose names start with an underscore (e.g. ``.submit(_foo=1)``) is
-                    unsupported. Underscore-prefixed kwargs are reserved for future use by this module and may or may
+                    unsupported. Underscore-prefixed kwargs are reserved for future use by this library and may or may
                     not be passed to "fn".
 
         Returns:

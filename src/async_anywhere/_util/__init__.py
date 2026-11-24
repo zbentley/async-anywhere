@@ -102,10 +102,10 @@ class ConditionProtected[T](threading.Condition):
         This problem can't be solved; interrupt-unsafety is a feature of basically all Python code that doesn't manage
         signal delivery directly: https://docs.python.org/3/library/signal.html#note-on-signal-handlers-and-exceptions
 
-        Several things make this worse nowadays for this module's code:
+        Several things make this worse nowadays for this library's code:
         - Python 3.14 made the window during which context-manager-entry corruption can occur with a stdlib lock wider;
           https://github.com/python/cpython/issues/74174.
-        - Lots of code in this module is coordinated with locks and designed to be used from synchronous main-thread
+        - Lots of code in this library is coordinated with locks and designed to be used from synchronous main-thread
           Python, where signals get delivered by default.
         - We heavily use RLocks and Python context manager wrappers around locks, widening the window further.
         - EventLoopExecutor futures being waited on in the main thread are an area where CTRL+C is likely to hit a lot.
@@ -113,9 +113,9 @@ class ConditionProtected[T](threading.Condition):
           the job. Then, anyone using the executor itself as a contextmanager will hit a deadlock-wait with executor
           shutdown on exit, requiring CTRL+C spamming to shut the process down.
 
-        This method slightly mitigates those risk factors. NOTE, again, that there are plenty of places in this module
+        This method slightly mitigates those risk factors. NOTE, again, that there are plenty of places in this library
         where CTRL+C will cause a hang. This method's "release on BaseException during context manager entry" just
-        shaves off a few digits from the probability of it happening in one common case. This module provides no general
+        shaves off a few digits from the probability of it happening in one common case. This library provides no general
         facilities for interrupt-safe Python code. If you want that, run your whole program inside an event loop, move
         signal-sensitive code onto a thread, or use Trio.
         """

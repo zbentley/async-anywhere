@@ -12,7 +12,7 @@
 
 `async-anywhere` is a set of tools which address common Python concurrency needs. It contains tools for bridging between any number of blocking threads and `async` event loops, tools for modelling state machines and state transitions, `fork(2)`-safety semantics for common concurrency primitives, and more.
 
-If you are struggling with code that needs to coordinate between multiple threads and event loops, dealing with deadlocks caused by interacting with `Future` objects after a `fork(2)`, or you need to maintain stateful/continuously-running async components of a larger program, this module may help!
+If you are struggling with code that needs to coordinate between multiple threads and event loops, dealing with deadlocks caused by interacting with `Future` objects after a `fork(2)`, or you need to maintain stateful/continuously-running async components of a larger program, this library may help!
 
 It includes:
 
@@ -25,7 +25,7 @@ See "Examples" below, or [the API documentation](https://async-anywhere.readthed
 
 ## Installation and Requirements
 
-This module requires Python 3.13.3+, and can be installed from [PyPI](https://pypi.org/project/async-anywhere/), with `pip`:
+This library requires Python 3.13.3+, and can be installed from [PyPI](https://pypi.org/project/async-anywhere/), with `pip`:
 
 ```console
 pip install async-anywhere
@@ -37,7 +37,7 @@ Or via `uv`:
 uv add async-anywhere
 ```
 
-`async-anywhere` is a pure-Python module with no required compiled components, and aims to have as few pure-python transitive dependencies as possible.
+`async-anywhere` is a pure-Python library with no required compiled components, and aims to have as few pure-python transitive dependencies as possible.
 
 ## Examples
 
@@ -111,7 +111,7 @@ executor.shutdown(wait=True, cancel_futures=True).result()
 
 ### Compatibility
 
-This module is tested and used in production on Linux and MacOS systems. BSDs are likely supported, but tests on those systems have not yet been performed. Windows support is planned.
+This library is tested and used in production on Linux and MacOS systems. BSDs are likely supported, but tests on those systems have not yet been performed. Windows support is planned.
 
 `async-anywhere` supports:
 
@@ -123,11 +123,11 @@ This module is tested and used in production on Linux and MacOS systems. BSDs ar
 
 Code using [nest-asyncio](https://pypi.org/project/nest-asyncio/), or other tools which monkeypatch or mock out core `asyncio` primitives, may not work well with this library.
 
-## When should you use this module?
+## When should you use this library?
 
-This module can be used in a variety of situations, including uses where `async` Python code isn't in use at all. Each of the tools in this module has affinity for particular use cases, and may not be appropriate for others.
+This library can be used in a variety of situations, including uses where `async` Python code isn't in use at all. Each of the tools in this library has affinity for particular use cases, and may not be appropriate for others.
 
-- `EventLoopExecutor` is the most powerful tool in this module, and is useful when you need to invoke `async` code from a combination of synchronous code, multiple threads, and multiple different event loops, and `asgiref.async_to_sync` isn't sufficient ([when to use `EventLoopExecutor`](https://async-anywhere.readthedocs.io/en/latest/reference/executors/when_to_use.html)).
+- `EventLoopExecutor` is the most powerful tool in this library, and is useful when you need to invoke `async` code from a combination of synchronous code, multiple threads, and multiple different event loops, and `asgiref.async_to_sync` isn't sufficient ([when to use `EventLoopExecutor`](https://async-anywhere.readthedocs.io/en/latest/reference/executors/when_to_use.html)).
 - `AwaitableFuture` is useful if you have code which heavily uses `asyncio.Future` or `concurrent.futures.Future` directly, and you want a friendlier (and more performant in many cases) API ([when to use `AwaitableFuture`](https://async-anywhere.readthedocs.io/en/latest/reference/futures/when_to_use.html)).
 - `StateTracker` is useful for code that wants to model "state machines without hooks": code that transitions between states in a graph, but doesn't want to model all of its code as hooks on particular state transitions ([when to use `StateTracker`](https://async-anywhere.readthedocs.io/en/latest/reference/state_tracker/when_to_use.html)).
 
@@ -135,13 +135,13 @@ For how `EventLoopExecutor` compares to other tools that bridge synchronous and 
 
 ## Fork Safety
 
-The different subcomponents of this module are fork-safe, in that they have documented semantics and avoid unexpected blocking or state corruption in the presence of code that uses `os.fork()`:
+The different subcomponents of this library are fork-safe, in that they have documented semantics and avoid unexpected blocking or state corruption in the presence of code that uses `os.fork()`:
 
 - [`EventLoopExecutor` fork safety](https://async-anywhere.readthedocs.io/en/latest/reference/executors/fork_safety.html).
 - [`AwaitableFuture` fork safety](https://async-anywhere.readthedocs.io/en/latest/reference/futures/fork_safety.html).
 - [`StateTracker` fork safety](https://async-anywhere.readthedocs.io/en/latest/reference/state_tracker/fork_safety.html).
 
-**Note** that care is still needed when forking in the presence of this module or concurrent Python code generally; read
+**Note** that care is still needed when forking in the presence of this library or concurrent Python code generally; read
 the above carefully in order to understand tradeoffs related to `fork(2)`.
 
 ## Development and Contributing
@@ -150,7 +150,7 @@ See [CONTRIBUTING.md](https://github.com/zbentley/async-anywhere/blob/main/CONTR
 
 ### LLM usage
 
-Code in this module was written by hand. LLMs are sometimes used by maintainers to identify issues, prototype changes, or write tests. 
+Code in this library was written by hand. LLMs are sometimes used by maintainers to identify issues, prototype changes, or write tests. 
 
 However, all non-test generated code and documentation is reviewed and re-written by hand before being released (even if that means re-typing it verbatim). No exceptions. We believe that the mechanical act of *code authorship* itself benefits comprehension and maintainability, and thus will hand-write/transcribe all non-test code even when LLM outputs are correct. 
 
