@@ -38,7 +38,9 @@ intersphinx_mapping = {
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 autodoc_class_signature = "separated"
-python_maximum_signature_line_length = 120  # Black's limit (pyproject.toml): longer signatures get one parameter per line
+python_maximum_signature_line_length = (
+    120  # Black's limit (pyproject.toml): longer signatures get one parameter per line
+)
 autodoc_preserve_defaults = True  # Defaults as written: <function ...> reprs break signature parsing (sphinx#13340)
 autodoc_default_options = {
     "show-inheritance": True,
