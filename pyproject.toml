@@ -1,6 +1,6 @@
 [build-system]
-build-backend = "flit_core.buildapi"
-requires = ["flit_core >=4,<5"]
+build-backend = "uv_build"
+requires = ["uv_build>=0.13.9,<0.14"]
 
 [project]
 authors = [
@@ -22,12 +22,13 @@ dependencies = [
     "sniffio>=1.3.0,<2.0",
 ]
 description = "Interact with your async code from any thread or event loop"
-dynamic = ["version"]
+import-names = ["async_anywhere"]
 license = "MIT"
 license-files = ["LICENSE"]
 name = "async_anywhere"
 readme = "README.md"
 requires-python = ">=3.13.3"
+version = "0.0.1"
 
 [dependency-groups]
 dev = [
