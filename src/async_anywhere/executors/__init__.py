@@ -623,7 +623,13 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             def cancel():
                 # Not once the executor has interrupted it: an interrupt also cancelling what awaits it (the
                 # main task's TaskGroup cancelling its children, say) mustn't cancel it twice.
-                if (task := future.task) is not None and not (self._interrupted and task.cancelling()):
+                if (task := future.task) is None:
+                    return
+                name = task.get_coro().__qualname__
+                if self._interrupted and task.cancelling():
+                    self._log(logging.DEBUG, "Not cancelling %s for its caller: interrupted", name, stacklevel=2)
+                else:
+                    self._log(logging.DEBUG, "Cancelling %s for its caller", name, stacklevel=2)
                     task.cancel()
 
             # TODO can we call it directly if on the loop?
@@ -640,17 +646,17 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
     def _log(self, level: int, msg: str, *args, **kwargs):
         # Never in a forked process, where a handler's stream may be locked forever: its fork handler stops the executor
         if not self._forked and not isinstance(self.last_transition[2], EventLoopExecutorForked):
-            # Naming what recorded the stop: past this, _after_state_change(), the two transition methods, and
-            # _clean_stop() or _unclean_stop()
-            self.logger.log(level, msg, *args, stacklevel=6, **kwargs)
+            self.logger.log(level, msg, *args, **kwargs)
 
     def _after_state_change(self, old_state: State, new_state: State, data: Any):
         # Under _condition, so only the first stop (the one that enters Stopping) logs
         if new_state is self.Stopping:
+            # Naming what recorded the stop: past _log(), _after_state_change(), the two transition methods, and
+            # _clean_stop() or _unclean_stop()
             if isinstance(data, CleanStop):
-                self._log(logging.INFO, data.args[0])
+                self._log(logging.INFO, data.args[0], stacklevel=6)
             else:
-                self._log(logging.ERROR, "Stopping due to error:", exc_info=data)
+                self._log(logging.ERROR, "Stopping due to error:", exc_info=data, stacklevel=6)
 
     # Both return whether this was the first stop, so recorded. Under _condition, so that no call is accepted meanwhile.
     def _clean_stop(self, why: Literal["expired", "stopped", "main task returned"]) -> bool:
@@ -659,6 +665,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
             match why:
                 case "expired":
                     if busy:  # Accepted, but not yet started, as the countdown ended: the last call to end restarts it
+                        self._log(logging.DEBUG, "Not expiring: %d jobs accepted", len(jobs), stacklevel=2)
                         return False
                     reason = "(idle) expired"
                 case "stopped":
@@ -716,6 +723,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                     "Invariant violation: asyncio.current_task() returned None in a task (known defective patterns using nest-asyncio may be present)"
                 )
             self._expiry.reset(self._idle_timeout)  # "Reset that clock!" - Idris Elba
+            self._log(logging.DEBUG, "Started, with an idle timeout of %ss", self._idle_timeout, stacklevel=2)
             self._runner.set_result(task)
             await self._parent_task(self)
 
@@ -738,6 +746,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                 # Let calls still in flight finish (or, if they were interrupted, clean up) before re-cancelling them and
                 # aborting them.
                 if len(tasks := self._tasks) > 0:
+                    self._log(logging.DEBUG, "Waiting for %d jobs to finish", len(tasks), stacklevel=2)
                     loop.run_until_complete(asyncio.wait(tasks))
         except BaseException as exc:
             # Should never happen, except for a KeyboardInterrupt or SystemExit from the main task or a call: asyncio
@@ -789,6 +798,7 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
                 tasks.append(self._runner.result(timeout=0))
             for task in tasks:
                 task.cancel()
+            self._log(logging.DEBUG, "Interrupted: cancelled %d tasks", len(tasks), stacklevel=2)
 
     async def _job(self, func, args, kwargs, future: _ExecutorJob):
         """
@@ -803,9 +813,16 @@ class EventLoopExecutor(concurrent.futures.Executor, WaitableStateTracker):
         expiry.reset(None)  # Suspend the idle timeout
         try:
             # If the job was cancelled by its caller or failed by the executor e.g. forking, do nothing.
+            # Named by func: with no task when start() runs this by hand, as a task factory refused it
             if future.done():
+                self._log(
+                    logging.DEBUG, "Not starting %s: done already", getattr(func, "__qualname__", func), stacklevel=2
+                )
                 return
             if self._interrupted:  # Accepted before an interrupt, which it never starts after: see shutdown()
+                self._log(
+                    logging.DEBUG, "Not starting %s: interrupted", getattr(func, "__qualname__", func), stacklevel=2
+                )
                 self._fail(future, JobCancelledByExecutorShutdown.from_cancellation(self.last_transition[2]))
                 return
             result = func(*args, **kwargs)

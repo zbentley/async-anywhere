@@ -140,6 +140,7 @@ class SingletonEventLoopExecutor(Executor):
                         "SingletonEventLoopExecutor: replacement executor %r waiting for previous executor %r to finish shutting down...",
                         new,
                         previous,
+                        stacklevel=2,
                     )
                     previous.join()  # Blocking its loop, so that calls made to it wait too: an await would let them run
                 with stored as current:  # Once get() has stored it: which it never will if interrupted (by Ctrl+C, say)

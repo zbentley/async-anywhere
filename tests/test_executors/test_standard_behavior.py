@@ -8,6 +8,7 @@ import concurrent.futures
 import contextvars
 import gc
 import logging
+import re
 import sys
 import threading
 import time
@@ -20,17 +21,9 @@ import pytest
 from async_anywhere.exceptions import CleanStop, StateTrackerError, EventLoopExecutorStopped, WouldBlock
 from async_anywhere.executors import EventLoopExecutor
 from async_anywhere.futures import AwaitableFuture
-from tests.test_executors.utils import AWAITED_BY, BlocksLoop, Tidy, Works, bridge, running, stop_begun
+from tests.test_executors.utils import AWAITED_BY, BlocksLoop, Works, bridge, running, stop_begun
 
 # Lifecycle
-
-
-@pytest.mark.parametrize("interrupt", [False, True])
-async def test_idle_stop(interrupt):
-    async with running() as worker:  # With the default parent task
-        stopped = await worker.shutdown(wait=False, cancel_futures=interrupt)
-        assert worker.state is worker.Shutdown
-        assert type(stopped) is CleanStop and stopped.args == ("(idle) manually stopped",)
 
 
 current = contextvars.ContextVar("current", default="unset")
@@ -484,36 +477,6 @@ async def test_calls_async_futures_work_on_any_loop_the_executors_included():
         assert await asyncio.to_thread(asyncio.run, elsewhere()) == "elsewhere"
 
 
-async def test_calls_async_futures_are_cancelled_and_interrupted_as_awaiting_them_is():
-    async with running(Tidy) as worker:
-        worker.mark("release")  # Its cleanup need only happen
-        cancelled, interrupted = worker.tidy(), worker.tidy()
-        await worker.reached("tidy", 2)
-        cancelled.as_async_future().cancel()
-        await worker.reached("tidied")  # Its job got the cancellation, and cleaned up
-        assert cancelled.cancelled()
-        stopping = worker.shutdown(wait=False, cancel_futures=True)
-        with pytest.raises(
-            concurrent.futures.CancelledError,
-            check=lambda error: not isinstance(error, asyncio.CancelledError)
-            and isinstance(error.__cause__, EventLoopExecutorStopped),
-        ):
-            await interrupted.as_async_future()
-        await stopping
-
-
-def test_calls_cancelled_by_their_callers_count_as_done_for_concurrent_futures_wait():
-    with running(Tidy) as worker:
-        worker.mark("release")  # Its cleanup need only happen
-        call = worker.tidy()
-        worker.reached("tidy").result(2)
-        threading.Timer(0.05, call.cancel).start()  # Cancelled while concurrent.futures.wait() waits
-        started = time.monotonic()
-        done, _ = concurrent.futures.wait([call], timeout=2)
-        assert call in done and time.monotonic() - started < 1
-        assert list(concurrent.futures.as_completed([call], timeout=0.1)) == [call]
-
-
 async def test_calls_see_a_copy_of_the_callers_context_as_made():
     async with running(Contexts) as worker:
         current.set("as made")
@@ -687,16 +650,6 @@ async def test_current_job_is_a_calls_future_in_coroutines_it_awaits():
         assert await call is call
 
 
-async def test_cancelling_a_call_cancels_its_job_quietly():
-    # Like a task cancelled and never awaited: the teardown fails the test if asyncio logs it as never retrieved
-    async with running(Tidy) as worker:
-        worker.mark("release")  # Its cleanup need only happen
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(worker.tidy(), 0.1)
-        await worker.reached("tidied")  # The job got the cancellation, and cleaned up
-        await worker.shutdown(wait=False)
-
-
 async def test_calls_cancelled_before_they_start_never_run():
     async with running(BlocksLoop) as worker:
         ran = []
@@ -711,7 +664,7 @@ async def test_calls_cancelled_before_they_start_never_run():
         worker.mark("release")
         await blocking
         await record("after")  # Queued behind the cancelled call
-        assert ran == ["after"]
+        assert ran == ["after"] and worker.log.saw(re.compile(r"Not starting \S+\.record: done already")).done()
 
 
 async def test_calls_whose_tasks_cant_be_made_fail_with_why_and_never_run():

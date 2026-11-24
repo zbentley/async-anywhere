@@ -1,13 +1,15 @@
 """Utilities for EventLoopExecutor's tests: harnesses holding workers as code using them would, which tests synchronise
 with through AwaitableFutures (awaitable on the tests' loops, waited on with result() from any thread, and not reset by
-a fork), settled() to know a worker's loop has run what was queued on it, running() to stop workers and wait for them,
-and forked() to run assertions in a forked process."""
+a fork), LoggerWatcher to wait for what workers log, settled() to know a worker's loop has run what was queued on it,
+running() to stop workers and wait for them, and forked() to run assertions in a forked process."""
 
 from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import os
+import re
 import signal
 import sys
 import tempfile
@@ -27,6 +29,48 @@ TIMING_SENSITIVE = pytest.mark.flaky(reruns=2, rerun_except="from pytest-timeout
 # From Python 3.14, asyncio records who awaits what, so current_job() finds jobs from tasks they await: before, from
 # their own tasks alone
 AWAITED_BY = hasattr(asyncio.Future, "_asyncio_awaited_by")
+
+
+class LoggerWatcher(logging.Handler):
+    """Records what a logger logs, at every level (which it enables), on any thread, for saw() to wait on: for good, or
+    until `with LoggerWatcher(logger) as watcher:` leaves its block."""
+
+    def __init__(self, logger: logging.Logger):
+        super().__init__()
+        self.logger, self.records, self._waiting, self._level = logger, [], [], logger.level
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(self)
+
+    def __enter__(self) -> LoggerWatcher:
+        return self
+
+    def __exit__(self, *_):
+        self.logger.removeHandler(self)
+        self.logger.setLevel(self._level)
+
+    def saw(self, match: str | re.Pattern, times=1) -> AwaitableFuture[logging.LogRecord]:
+        """Resolved with the `times`th record, since watching began, whose message contains `match` (a str), or in which
+        `match` (a Pattern) finds a match: at once, if it was logged already. Records' `created` is time.time()'s."""
+        future = AwaitableFuture()
+        with self.lock:  # Which handle() holds around emit()
+            if not self._found(match, times, future):
+                self._waiting.append((match, times, future))
+        return future
+
+    def emit(self, record):
+        self.records.append(record)
+        self._waiting = [waiter for waiter in self._waiting if not self._found(*waiter)]
+
+    def _found(self, match: str | re.Pattern, times: int, future: AwaitableFuture) -> bool:
+        messages = [(record, record.getMessage()) for record in self.records]
+        if isinstance(match, re.Pattern):
+            found = [record for record, message in messages if match.search(message)]
+        else:
+            found = [record for record, message in messages if match in message]
+        if len(found) < times:
+            return False
+        future.set_result_if_not_done(found[times - 1])  # Unless its waiter gave up on it
+        return True
 
 
 class bridge:
@@ -50,15 +94,19 @@ class bridge:
 
 class Harness:
     """A worker, held as code using EventLoopExecutor would hold one, with what tests give it: bridged methods (see
-    bridge), _run() as its parent task, and idle_timeout. The worker's attributes are its too. By default, _run() awaits
-    runloop, which the test can resolve to end it, and which an interrupt cancels."""
+    bridge), _run() as its parent task, idle_timeout, and a logger of its own, which `log` (a LoggerWatcher) watches.
+    The worker's attributes are its too. By default, _run() awaits runloop, which the test can resolve to end it, and
+    which an interrupt cancels."""
 
     idle_timeout = float("inf")
 
     def __init__(self):
         self._marks, self._counts = {}, {}
         self.runloop = AwaitableFuture()
-        self.worker = EventLoopExecutor(main=self._parent, idle_timeout=self.idle_timeout)
+        logger = logging.Logger(type(self).__qualname__)  # Not getLogger()'s, which are kept for ever, and shared
+        logger.parent = logging.root  # Propagating, as getLogger()'s do, to pytest's capture
+        self.log = LoggerWatcher(logger)
+        self.worker = EventLoopExecutor(main=self._parent, idle_timeout=self.idle_timeout, logger=logger)
 
     def __getattr__(self, name):
         if name == "worker":  # Not yet set
