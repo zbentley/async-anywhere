@@ -1,22 +1,7 @@
 # TODOs
 
-AwaitableFuture todos:
-- call graph support
-- "task cannot await on itself" for AFs that correspond to/wrap Tasks
-- CompletedFuture, no locks, cached for None and empty string and such
-- On complete wipes out the locks and unregisters from fork safety?
-
 EventLoopExecutor todos;
-- decorate loop-only methods
-- add debug flag that causes decorator to assert, and runs loop in dbg
-- _run() interrupting itself isn't cancelled. If _run() calls shutdown(interrupt=True) itself, shutdown() raises WorkerStopped into it, but _run() isn't cancelled.
-- cope w/ interrupted jobs whose cleanup async-hangs
-- cope with (really: yell about) interrupted jobs whose cleanup SYNC hangs
-- worker *is* a state machine
-- Log never-awaited on bridge futures
-- py:exception doc tag?
 - ditch the term interrupt from all docs
-- Better trio support
 
 # Docs to incorporate into executor
 

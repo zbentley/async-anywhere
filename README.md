@@ -1,10 +1,12 @@
 # async-anywhere
 
+| [API Documentation](https://async-anywhere.readthedocs.io/en/latest/) [![Docs](https://img.shields.io/readthedocs/async-anywhere/latest)](https://async-anywhere.readthedocs.io/en/latest/) | [Source code](https://github.com/zbentley/async-anywhere) [![Last commit](https://img.shields.io/github/last-commit/zbentley/async-anywhere)](https://github.com/zbentley/async-anywhere) | [PyPI Package](https://pypi.org/project/async-anywhere/) [![PyPI](https://img.shields.io/pypi/v/async-anywhere)](https://pypi.org/project/async-anywhere/) |
+|:---:|:---:|:---:|
+
 [![Tests](https://img.shields.io/github/actions/workflow/status/zbentley/async-anywhere/test.yml?branch=main&label=tests)](https://github.com/zbentley/async-anywhere/actions/workflows/test.yml?query=branch%3Amain)
 [![Black](https://img.shields.io/github/actions/workflow/status/zbentley/async-anywhere/black.yml?branch=main&label=black)](https://github.com/zbentley/async-anywhere/actions/workflows/black.yml?query=branch%3Amain)
-[![PyPI](https://img.shields.io/pypi/v/async-anywhere)](https://pypi.org/project/async-anywhere/)
-[![Docs](https://img.shields.io/readthedocs/async-anywhere/latest)](https://async-anywhere.readthedocs.io/en/latest/)
 ![Python 3.13.3+](https://img.shields.io/badge/python-3.13.3%2B-blue)
+![Python 3.14](https://img.shields.io/badge/python-3.14-blue)
 [![Free-threaded: tested](https://img.shields.io/badge/free--threaded-3.14t%20tested-blue)](https://github.com/zbentley/async-anywhere/blob/main/.github/workflows/test.yml)
 ![Platform: Linux | macOS](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey)
 

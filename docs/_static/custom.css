@@ -5,3 +5,6 @@ table.valign-top td {
 
 /* Widens furo's left navigation column by 10% (its default is 15em) */
 .sidebar-drawer .sidebar-container { width: 16.5em; }
+
+/* Furo only centers images inside links (p .reference img), which leaves the README's unlinked badges sitting high */
+p img[src*="img.shields.io"] { vertical-align: middle; }
