@@ -16,12 +16,13 @@ permissions:
 
 jobs:
   pytest:
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}  # macos-verdict decides whether a macOS failure fails the run
     strategy:
       fail-fast: false
       matrix:
         os:
           - ubuntu-latest
-#          - macos-latest
+          - macos-latest
         python:
           - "3.14"
           - "3.14t"  # Free-threaded: no GIL
@@ -37,6 +38,31 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d  # v10.4.0
       - run: uv run --locked pytest
+
+  macos-verdict:
+    needs: pytest
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read  # Lists this run's jobs
+    steps:
+      # A job no runner ever picked up has no steps; any other failure is real
+      - name: Fail on macOS failures other than no runner being available
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}  # No checkout for gh to read the repo from
+        run: |
+          failed=0
+          while IFS=$'\t' read -r name steps; do
+            if [[ "$steps" == 0 ]]; then
+              echo "::warning::$name never got a macOS runner; ignoring its failure"
+            else
+              echo "::error::$name failed"
+              failed=1
+            fi
+          done < <(gh api --paginate "repos/{owner}/{repo}/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure" and (.labels | index("macos-latest"))) | "\(.name)\t\(.steps | length)"')
+          exit "$failed"
 
   build:
     runs-on: ubuntu-latest
@@ -71,7 +97,7 @@ jobs:
       - name: Check the run is from a tag named like a version
         if: inputs.publishing
         run: '[[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]'
-      - name: Check the tag matches __version__
+      - name: Check the tag matches the project version
         if: inputs.publishing
         run: test -f "dist/async_anywhere-${GITHUB_REF_NAME#v}.tar.gz"
 
